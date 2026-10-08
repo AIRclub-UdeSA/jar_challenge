@@ -27,6 +27,7 @@ Necesitás Ubuntu 22.04, ROS 2 Humble y el simulador. Seguí la [guía de setup]
 
 ```bash
 # 1. Fork en GitHub (botón "Fork"), y después:
+# Ojo: usá Fork, no "Use this template" (un repo creado desde un template no puede abrir PR).
 cd ~/rosmaster_ws/src
 git clone https://github.com/<tu-usuario>/jar_challenge.git
 
