@@ -1,0 +1,12 @@
+# Parámetros del equipo (reglamento §9.1).
+#
+# Acá solo van valores GENERALES: umbrales, ganancias, límites de velocidad,
+# rangos de color. Nada que dependa del mapa de la competencia: nada de
+# coordenadas, rutas ni posiciones de víctimas. El CI (tools/verificar_params.py)
+# rechaza estos archivos si rompen la regla.
+#
+nodo_equipo:
+  ros__parameters:
+    frecuencia_control_hz: 10.0
+    velocidad_lineal_max: 0.30      # m/s
+    velocidad_angular_max: 1.00     # rad/s

@@ -1,0 +1,12 @@
+# ROS 2 / colcon
+build/
+install/
+log/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Entorno local
+.venv/
+.vscode/
+.idea/

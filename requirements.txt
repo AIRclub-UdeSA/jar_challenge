@@ -1,0 +1,7 @@
+# Dependencias de Python que NO vienen con ROS (se instalan con pip al construir
+# la imagen). Las de ROS van en src/equipo_jar/package.xml y se resuelven con rosdep.
+# Fijá versiones (paquete==1.2.3) para que la imagen se construya igual siempre.
+#
+# Ejemplo:
+# numpy==1.26.4
+# opencv-python-headless==4.9.0.80

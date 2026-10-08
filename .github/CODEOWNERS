@@ -1,0 +1,5 @@
+# La organización revisa cambios a la infraestructura de validación.
+# (En la práctica, esos archivos los vuelve a
+# aplicar la organización desde su copia en cada verificación.)
+/.github/ @AIRclub-UdeSA/jar-jueces
+/tools/   @AIRclub-UdeSA/jar-jueces

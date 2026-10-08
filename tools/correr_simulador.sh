@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Una corrida corta del software del equipo en el simulador, con el juez simulado.
+#
+#   tools/correr_simulador.sh <mapa> [segundos_de_corrida]
+#
+# <mapa> es el nombre de un mapa de práctica del simulador, por ejemplo
+# maze_1_6x5 (usa worlds/<mapa>_victimas.world y maps/<mapa>.yaml).
+#
+# Levanta Gazebo sin ventana, el juez simulado y el launch del equipo; y al final
+# audita qué interfaces usó el software (§7.1). Requiere el workspace con
+# yahboom_rosmaster compilado y "sourceado", más `colcon build` de este repo.
+set -o pipefail  # sin -u: el setup.bash de ROS usa variables sin definir
+
+MAPA="${1:?uso: correr_simulador.sh <mapa> [segundos]}"
+DURACION="${2:-90}"
+
+RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$RAIZ"
+# shellcheck disable=SC1091
+[[ -f /opt/ros/humble/setup.bash ]] && source /opt/ros/humble/setup.bash
+[[ -f install/setup.bash ]] && source install/setup.bash
+export ROS_DOMAIN_ID="${JAR_ROS_DOMAIN_ID:-77}"
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
+# Gazebo comparte su transporte entre todos los procesos de la máquina, sin importar el
+# dominio de ROS: si hay otro simulador abierto, mezcla su ground truth y sus sensores.
+export IGN_PARTITION="${IGN_PARTITION:-jar_verificacion_$$}" GZ_PARTITION="${GZ_PARTITION:-jar_verificacion_$$}"
+
+SIM="$(ros2 pkg prefix --share yahboom_rosmaster_gazebo 2>/dev/null)" ||
+  { echo "::error::no encuentro yahboom_rosmaster_gazebo: compilá y hacé source del simulador"; exit 1; }
+MUNDO="$SIM/worlds/${MAPA}_victimas.world"
+YAML="$SIM/maps/${MAPA}.yaml"
+[[ -f "$MUNDO" && -f "$YAML" ]] || { echo "::error::no existe el mapa de práctica '$MAPA'"; exit 1; }
+
+SALIDA="$RAIZ/build/verificacion/$MAPA"
+mkdir -p "$SALIDA"
+PIDS=()
+limpiar() {
+  for pid in "${PIDS[@]:-}"; do [[ -n "$pid" ]] && kill -INT -- "-$pid" 2>/dev/null; done
+  sleep 2
+  for pid in "${PIDS[@]:-}"; do [[ -n "$pid" ]] && kill -KILL -- "-$pid" 2>/dev/null; done
+}
+trap limpiar EXIT
+
+echo "[1/5] Simulador: $MAPA (sin ventana)"
+setsid ros2 launch yahboom_rosmaster_gazebo rosmaster_gazebo_fortress.launch.py \
+  world:="$MUNDO" headless:=true gui:=false rviz:=false > "$SALIDA/simulador.log" 2>&1 &
+PIDS+=("$!")
+
+echo "[2/5] Juez simulado (publica /map 40 s después del primer /scan)"
+setsid python3 tools/juez_mock.py --mapa "$YAML" --esperar-topic /scan --retardo 40 \
+  --duracion "$DURACION" --salida "$SALIDA/juez.json" > "$SALIDA/juez.log" 2>&1 &
+JUEZ=$!; PIDS+=("$JUEZ")
+
+# Esperar a que el simulador esté completo: los topics del robot presentes y
+# el grafo de nodos estable. Si la línea base se toma antes, nodos del simulador
+# que arrancan tarde se confundirían con nodos del equipo.
+echo "     esperando a que el simulador termine de arrancar..."
+listos=0
+previos=-1
+for _ in $(seq 1 180); do
+  topics="$(ros2 topic list 2>/dev/null)"
+  nodos="$(ros2 node list 2>/dev/null | wc -l)"
+  if grep -qx /scan <<<"$topics" && grep -qx /odom <<<"$topics" &&
+     grep -qx /joint_states <<<"$topics" && [[ "$nodos" -eq "$previos" ]]; then
+    listos=$((listos + 1))
+  else
+    listos=0
+  fi
+  previos="$nodos"
+  [[ "$listos" -ge 4 ]] && break   # 4 chequeos seguidos (~8 s) sin cambios
+  sleep 2
+done
+[[ "$listos" -ge 4 ]] ||
+  { echo "::error::el simulador no terminó de arrancar"; tail -30 "$SALIDA/simulador.log"; exit 1; }
+
+echo "[3/5] Línea base del grafo (simulador + juez)"
+python3 tools/auditor_interfaces.py --capturar "$SALIDA/base.txt" || exit 1
+
+echo "[4/5] Software del equipo (use_sim_time:=true)"
+setsid ros2 launch equipo_jar competencia.launch.py use_sim_time:=true \
+  > "$SALIDA/equipo.log" 2>&1 &
+EQUIPO=$!; PIDS+=("$EQUIPO")
+sleep 12
+RC=0
+python3 tools/auditor_interfaces.py --auditar "$SALIDA/base.txt" || RC=1
+
+echo "[5/5] Esperando el fin de la corrida (hasta ${DURACION}s tras el mapa)"
+wait "$JUEZ" || RC=1
+cat "$SALIDA/juez.log"
+kill -0 "$EQUIPO" 2>/dev/null || { echo "::error::el launch del equipo terminó antes de tiempo"; tail -20 "$SALIDA/equipo.log"; RC=1; }
+exit $RC

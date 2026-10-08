@@ -1,0 +1,174 @@
+name: Validar entrega
+
+# Reglamento §9.2. La lógica vive en tools/verificar.sh: el workflow solo prepara
+# el entorno y la llama, para que la organización pueda correr exactamente lo
+# mismo desde su copia de confianza (la validación oficial no depende de este workflow).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validar-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Versión del simulador contra la que se valida (= la anunciada en el reglamento §3).
+  SIM_REF: jar2026-v1
+
+jobs:
+  controles:
+    name: Controles (estructura, params, estático, build, launch)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    container:
+      image: ros:humble-ros-base-jammy@sha256:860e53793ccf575e5369b5e9a19939de2bfcfb46a299954d06f54f2af54fed19
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dependencias
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3-colcon-common-extensions python3-rosdep python3-yaml python3-pytest
+          rosdep update --rosdistro humble
+          rosdep install --from-paths src --ignore-src -y --rosdistro humble
+          if [ -s requirements.txt ] && grep -qvE '^\s*(#|$)' requirements.txt; then
+            apt-get install -y --no-install-recommends python3-pip
+            pip3 install -r requirements.txt
+          fi
+
+      - name: Controles
+        shell: bash
+        run: |
+          # En el repo del template (push a main) equipo.yaml puede estar sin
+          # completar; en un PR de un fork, no.
+          # Los tests del juez (--juez) son de la organización: solo corren en el repo del
+          # template, no en los PR de los equipos.
+          MODO=""
+          if [ "${{ github.event_name }}" != "pull_request" ] || \
+             [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            MODO="--template --juez"
+          fi
+          bash tools/verificar.sh $MODO
+
+      - name: Diagnóstico si falla
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: controles-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build/verificacion/**
+            log/**
+
+  imagen:
+    name: Imagen Docker sin internet
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Construir la imagen
+        run: docker build -t equipo-jar .
+
+      - name: El launch arranca y se queda esperando sin red
+        run: |
+          # --network none: sin internet. Tiene que seguir vivo a los 25 s,
+          # esperando /map. Si el software intenta bajar algo, se cae.
+          docker run --rm -d --network none --name equipo equipo-jar
+          sleep 25
+          if [ "$(docker inspect -f '{{.State.Running}}' equipo)" != "true" ]; then
+            docker logs equipo
+            echo "::error::el launch terminó antes de tiempo sin red"
+            exit 1
+          fi
+          docker logs equipo | tail -20
+          docker stop equipo
+
+  simulador:
+    # Corrida completa con el juez simulado en mundos de práctica (§9.2:
+    # "que el software funcione en el simulador con distintos mapas").
+    # Es el control más lento y el más propenso a fallar por motivos ajenos al
+    # equipo. Conviene medir cuán estable es antes de exigirlo como requisito.
+    name: Simulador (${{ matrix.mapa }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mapa: [maze_1_6x5, maze_3_6x6]
+    container:
+      image: ros:humble-ros-base-jammy@sha256:860e53793ccf575e5369b5e9a19939de2bfcfb46a299954d06f54f2af54fed19
+      options: --shm-size=2g
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      GALLIUM_DRIVER: llvmpipe
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_QPA_PLATFORM: xcb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: entrega
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AIRclub-UdeSA/yahboom_rosmaster
+          ref: ${{ env.SIM_REF }}
+          path: simulador
+          persist-credentials: false
+
+      - name: Instalar Gazebo Fortress y dependencias
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ignition-fortress libgl1-mesa-dri mesa-utils xauth xvfb \
+            python3-colcon-common-extensions python3-rosdep python3-yaml \
+            ros-humble-gz-ros2-control ros-humble-ros-gz
+          rosdep update --rosdistro humble
+          rosdep install --from-paths simulador entrega/src --ignore-src -y --rosdistro humble
+
+      - name: Compilar el simulador
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          cd simulador && colcon build --symlink-install
+
+      - name: Compilar la entrega
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          source simulador/install/setup.bash
+          cd entrega && colcon build --base-paths src
+
+      - name: Corrida en el simulador
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          source /opt/ros/humble/setup.bash
+          source simulador/install/setup.bash
+          cd entrega
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24 -nolisten tcp" \
+            bash tools/correr_simulador.sh ${{ matrix.mapa }} 90
+
+      - name: Diagnóstico si falla
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: simulador-${{ matrix.mapa }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: entrega/build/verificacion/**
