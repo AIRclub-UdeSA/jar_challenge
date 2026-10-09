@@ -98,10 +98,10 @@ jobs:
           docker stop equipo
 
   simulador:
-    # Corrida completa con el juez simulado en mundos de práctica (§9.2:
+    # Corrida completa con el juez con puntaje en mundos de práctica (§9.2:
     # "que el software funcione en el simulador con distintos mapas").
-    # Es el control más lento y el más propenso a fallar por motivos ajenos al
-    # equipo. Conviene medir cuán estable es antes de exigirlo como requisito.
+    # Es el control más lento. Se midió estable (10 de 10 en verde) y es
+    # requisito del ✓, sin reintento automático.
     name: Simulador (${{ matrix.mapa }})
     runs-on: ubuntu-22.04
     timeout-minutes: 25
@@ -136,7 +136,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ignition-fortress libgl1-mesa-dri mesa-utils xauth xvfb \
-            python3-colcon-common-extensions python3-rosdep python3-yaml \
+            python3-colcon-common-extensions python3-rosdep python3-yaml python3-matplotlib \
             ros-humble-gz-ros2-control ros-humble-ros-gz
           rosdep update --rosdistro humble
           rosdep install --from-paths simulador entrega/src --ignore-src -y --rosdistro humble
@@ -164,8 +164,15 @@ jobs:
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24 -nolisten tcp" \
             bash tools/correr_simulador.sh ${{ matrix.mapa }} 90
 
-      - name: Diagnóstico si falla
-        if: failure()
+      - name: Puntaje en el resumen
+        if: always()
+        shell: bash
+        run: |
+          f="entrega/build/verificacion/${{ matrix.mapa }}/resumen.md"
+          if [ -f "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Artefactos de la corrida
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: simulador-${{ matrix.mapa }}-${{ github.run_id }}-${{ github.run_attempt }}
