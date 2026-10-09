@@ -6,7 +6,7 @@
 # <mapa> es el nombre de un mapa de práctica del simulador, por ejemplo
 # maze_1_6x5 (usa worlds/<mapa>_victimas.world y maps/<mapa>.yaml).
 #
-# Levanta Gazebo sin ventana, el juez simulado y el launch del equipo; y al final
+# Levanta Gazebo sin ventana, el juez con puntaje y el launch del equipo; y al final
 # audita qué interfaces usó el software (§7.1). Requiere el workspace con
 # yahboom_rosmaster compilado y "sourceado", más `colcon build` de este repo.
 set -o pipefail  # sin -u: el setup.bash de ROS usa variables sin definir
@@ -44,12 +44,12 @@ limpiar() {
 }
 trap limpiar EXIT
 
-echo "[1/5] Simulador: $MAPA (sin ventana)"
+echo "[1/6] Simulador: $MAPA (sin ventana)"
 setsid ros2 launch yahboom_rosmaster_gazebo rosmaster_gazebo_fortress.launch.py \
   world:="$MUNDO" headless:=true gui:=false rviz:=false > "$SALIDA/simulador.log" 2>&1 &
 PIDS+=("$!")
 
-echo "[2/5] Juez con puntaje (publica /map 40 s después del primer /scan)"
+echo "[2/6] Juez con puntaje (publica /map 40 s después del primer /scan)"
 setsid python3 tools/juez.py --mundo "$MAPA" --mapa "$YAML" --esperar-topic /scan --retardo 40 \
   --duracion "$DURACION" --ground-truth --salida "$SALIDA/resultado.json" --registro "$SALIDA/eventos.jsonl" \
   > "$SALIDA/juez.log" 2>&1 &
@@ -82,10 +82,10 @@ done
 [[ "$listos" -ge 4 ]] ||
   { echo "::error::el simulador no terminó de arrancar"; tail -30 "$SALIDA/simulador.log"; exit 1; }
 
-echo "[3/5] Línea base del grafo (simulador + juez + grabador de trayectoria)"
+echo "[3/6] Línea base del grafo (simulador + juez + grabador de trayectoria)"
 python3 tools/auditor_interfaces.py --capturar "$SALIDA/base.txt" || exit 1
 
-echo "[4/5] Software del equipo (use_sim_time:=true, victimas:=$N)"
+echo "[4/6] Software del equipo (use_sim_time:=true, victimas:=$N)"
 setsid ros2 launch equipo_jar competencia.launch.py use_sim_time:=true victimas:="$N" \
   > "$SALIDA/equipo.log" 2>&1 &
 EQUIPO=$!; PIDS+=("$EQUIPO")
@@ -93,7 +93,7 @@ sleep 12
 RC=0
 python3 tools/auditor_interfaces.py --auditar "$SALIDA/base.txt" || RC=1
 
-echo "[5/5] Esperando el fin de la corrida (hasta ${DURACION}s tras el mapa)"
+echo "[5/6] Esperando el fin de la corrida (hasta ${DURACION}s tras el mapa)"
 wait "$JUEZ" || RC=1
 cat "$SALIDA/juez.log"
 kill -0 "$EQUIPO" 2>/dev/null || { echo "::error::el launch del equipo terminó antes de tiempo"; tail -20 "$SALIDA/equipo.log"; RC=1; }

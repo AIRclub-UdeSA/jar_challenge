@@ -98,10 +98,10 @@ jobs:
           docker stop equipo
 
   simulador:
-    # Corrida completa con el juez simulado en mundos de práctica (§9.2:
+    # Corrida completa con el juez con puntaje en mundos de práctica (§9.2:
     # "que el software funcione en el simulador con distintos mapas").
-    # Es el control más lento y el más propenso a fallar por motivos ajenos al
-    # equipo. Conviene medir cuán estable es antes de exigirlo como requisito.
+    # Es el control más lento. Se midió estable (10 de 10 en verde) y es
+    # requisito del ✓, sin reintento automático.
     name: Simulador (${{ matrix.mapa }})
     runs-on: ubuntu-22.04
     timeout-minutes: 25
