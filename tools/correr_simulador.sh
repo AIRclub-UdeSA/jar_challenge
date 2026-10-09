@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Una corrida corta del software del equipo en el simulador, con el juez simulado.
+# Una corrida corta del software del equipo en el simulador, con el juez con puntaje.
 #
 #   tools/correr_simulador.sh <mapa> [segundos_de_corrida]
 #
@@ -30,6 +30,9 @@ SIM="$(ros2 pkg prefix --share yahboom_rosmaster_gazebo 2>/dev/null)" ||
 MUNDO="$SIM/worlds/${MAPA}_victimas.world"
 YAML="$SIM/maps/${MAPA}.yaml"
 [[ -f "$MUNDO" && -f "$YAML" ]] || { echo "::error::no existe el mapa de práctica '$MAPA'"; exit 1; }
+N="$(python3 tools/mundos.py "$MUNDO")" ||
+  { echo "::error::no pude contar las víctimas de $MUNDO"; exit 1; }
+echo "Este mundo tiene N = $N víctimas: el equipo corre con victimas:=$N"
 
 SALIDA="$RAIZ/build/verificacion/$MAPA"
 mkdir -p "$SALIDA"
@@ -46,10 +49,16 @@ setsid ros2 launch yahboom_rosmaster_gazebo rosmaster_gazebo_fortress.launch.py 
   world:="$MUNDO" headless:=true gui:=false rviz:=false > "$SALIDA/simulador.log" 2>&1 &
 PIDS+=("$!")
 
-echo "[2/5] Juez simulado (publica /map 40 s después del primer /scan)"
-setsid python3 tools/juez_mock.py --mapa "$YAML" --esperar-topic /scan --retardo 40 \
-  --duracion "$DURACION" --salida "$SALIDA/juez.json" > "$SALIDA/juez.log" 2>&1 &
+echo "[2/5] Juez con puntaje (publica /map 40 s después del primer /scan)"
+setsid python3 tools/juez.py --mundo "$MAPA" --mapa "$YAML" --esperar-topic /scan --retardo 40 \
+  --duracion "$DURACION" --ground-truth --salida "$SALIDA/resultado.json" --registro "$SALIDA/eventos.jsonl" \
+  > "$SALIDA/juez.log" 2>&1 &
 JUEZ=$!; PIDS+=("$JUEZ")
+
+# Antes de la línea base: si arrancara después, el auditor lo contaría como nodo del equipo.
+setsid python3 tools/grabar_trayectoria.py --salida "$SALIDA/trayectoria.jsonl" \
+  > "$SALIDA/trayectoria.log" 2>&1 &
+PIDS+=("$!")
 
 # Esperar a que el simulador esté completo: los topics del robot presentes y
 # el grafo de nodos estable. Si la línea base se toma antes, nodos del simulador
@@ -73,11 +82,11 @@ done
 [[ "$listos" -ge 4 ]] ||
   { echo "::error::el simulador no terminó de arrancar"; tail -30 "$SALIDA/simulador.log"; exit 1; }
 
-echo "[3/5] Línea base del grafo (simulador + juez)"
+echo "[3/5] Línea base del grafo (simulador + juez + grabador de trayectoria)"
 python3 tools/auditor_interfaces.py --capturar "$SALIDA/base.txt" || exit 1
 
-echo "[4/5] Software del equipo (use_sim_time:=true)"
-setsid ros2 launch equipo_jar competencia.launch.py use_sim_time:=true \
+echo "[4/5] Software del equipo (use_sim_time:=true, victimas:=$N)"
+setsid ros2 launch equipo_jar competencia.launch.py use_sim_time:=true victimas:="$N" \
   > "$SALIDA/equipo.log" 2>&1 &
 EQUIPO=$!; PIDS+=("$EQUIPO")
 sleep 12
@@ -88,4 +97,18 @@ echo "[5/5] Esperando el fin de la corrida (hasta ${DURACION}s tras el mapa)"
 wait "$JUEZ" || RC=1
 cat "$SALIDA/juez.log"
 kill -0 "$EQUIPO" 2>/dev/null || { echo "::error::el launch del equipo terminó antes de tiempo"; tail -20 "$SALIDA/equipo.log"; RC=1; }
+
+echo "[6/6] Gráfico y resumen"
+if [[ -f "$SALIDA/resultado.json" ]]; then
+  python3 tools/validar_resultado.py "$SALIDA/resultado.json" || RC=1
+  TRAZA=""
+  [[ -f "$SALIDA/trayectoria.jsonl" ]] && TRAZA="--trayectoria $SALIDA/trayectoria.jsonl"
+  # shellcheck disable=SC2086
+  python3 tools/graficar_corrida.py --mapa "$YAML" --resultado "$SALIDA/resultado.json" \
+    $TRAZA --salida "$SALIDA/grafico.png" || echo "::warning::no se pudo graficar la corrida"
+  python3 tools/resumen_corrida.py --resultado "$SALIDA/resultado.json" \
+    --salida "$SALIDA/resumen.md" && cat "$SALIDA/resumen.md"
+else
+  echo "::warning::sin resultado.json, no hay gráfico ni resumen"
+fi
 exit $RC

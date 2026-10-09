@@ -261,6 +261,38 @@ def caso_auditor():
     return ok
 
 
+def reporte_no_finito_sale_null():
+    """Un reporte con NaN gasta un reporte, sale como null y el JSON sigue válido (#27)."""
+    nombre = 'reporte no finito sale como null y el JSON sigue válido'
+    salida = Path(tempfile.mkdtemp()) / 'juez.json'
+    juez = correr_juez(['--retardo', '1', '--espera-veredicto', '0'], salida)
+    equipo = Equipo()
+    time.sleep(1.0)
+    assert equipo.esperar_mapa()
+    equipo.reportar(float('nan'), 0.0)
+    equipo.reportar(1.0, 1.0)
+    equipo.done.publish(Empty())
+    juez.wait(timeout=60)
+    crudo = salida.read_text()
+
+    def estricto(s):
+        raise ValueError(f'constante no JSON: {s}')
+
+    ok = True
+    try:
+        json.loads(crudo, parse_constant=estricto)   # como JSON.parse de Pages
+    except ValueError:
+        ok = False
+    res = json.loads(crudo)
+    ok = ok and res['reportes'][0]['x'] is None and res['puntaje']['total'] == 100
+    val = subprocess.run([sys.executable, str(RAIZ / 'tools' / 'validar_resultado.py'), str(salida)],
+                         capture_output=True, text=True)
+    ok = ok and val.returncode == 0
+    equipo.destroy_node()
+    print(f"{'OK   ' if ok else 'FALLA'} {nombre}: {res['resumen']}  (fin: {res['termino_por']})")
+    return ok
+
+
 def main():
     os.environ.setdefault('ROS_DOMAIN_ID', '95')
     os.environ.setdefault('ROS_LOCALHOST_ONLY', '1')
@@ -302,6 +334,7 @@ def main():
         caso_auditor(),
         caso('largada manual por servicio', ['--manual'], manual,
              {'total': 100, 'puntos_victimas': 100, 'termino_por': 'done'}),
+        reporte_no_finito_sale_null(),
     ]
     rclpy.shutdown()
     print(f"\n{sum(r)}/{len(r)} casos en verde")
