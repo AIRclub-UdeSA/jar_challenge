@@ -15,16 +15,15 @@ def es_numero(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
-def main():
+def validar(ruta):
+    """Devuelve la lista de errores del contrato (vacía si es válido)."""
     errores = []
     try:
-        d = json.loads(Path(sys.argv[1]).read_text())
-    except (IndexError, json.JSONDecodeError, OSError) as e:
-        print(f'::error::resultado inválido: {e}')
-        return 1
+        d = json.loads(Path(ruta).read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        return [f'resultado inválido: {e}']
     if not isinstance(d, dict):
-        print('::error::el resultado tiene que ser un objeto')
-        return 1
+        return ['el resultado tiene que ser un objeto']
 
     for clave in ('equipo', 'termino_por', 'mapa_publicado', 'reportes',
                   'violaciones', 'puntaje', 'victimas',
@@ -53,6 +52,14 @@ def main():
                 if v is not None and not es_numero(v):
                     errores.append(f'reporte con {k} no numérico ni null: {v!r}')
                     break
+    return errores
+
+
+def main():
+    if len(sys.argv) != 2:
+        print('uso: validar_resultado.py resultado.json')
+        return 2
+    errores = validar(sys.argv[1])
     for e in errores:
         print(f'::error::resultado: {e}')
     print('resultado: OK' if not errores else f'resultado: {len(errores)} error(es)')
