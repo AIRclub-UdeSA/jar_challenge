@@ -1,0 +1,87 @@
+name: Publicar ranking
+
+# Leaderboard de práctica (§4.1, §8.4) e imagen visible en el PR (#28).
+# Corre en contexto main (nunca código de un fork): los artefactos de los PR
+# se tratan como datos, se validan contra el schema y solo entonces publican.
+# Los forks no pueden escribir acá: su token es de solo lectura.
+
+on:
+  workflow_run:
+    workflows: [Validar entrega]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: publicar-ranking
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    name: Publicar en Pages y comentar el PR
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    # Solo corridas de PRs (las de push a main son del template, no de equipos).
+    if: github.event.workflow_run.event == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bajar artefactos de la corrida
+        uses: actions/download-artifact@3793b99d488fc334d91bb36cfa3f5c7b4e830a5543 # v7.0.1
+        with:
+          path: artefactos
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generar el sitio
+        shell: bash
+        env:
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          python3 tools/publicar_ranking.py --artefactos artefactos --sitio sitio \
+            --run-id "$RUN_ID" --pr "$PR" --repo "${{ github.repository }}" \
+            --base-url "https://airclub-udesa.github.io/jar_challenge" \
+            --comentario comentario.md
+          cat comentario.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publicar en gh-pages (con reintento)
+        shell: bash
+        env:
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          generar() {
+            python3 tools/publicar_ranking.py --artefactos artefactos --sitio sitio \
+              --run-id "$RUN_ID" --pr "$PR" --repo "${{ github.repository }}" \
+              --base-url "https://airclub-udesa.github.io/jar_challenge" \
+              --comentario comentario.md
+          }
+          git config --global user.name "jar-publicador"
+          git config --global user.email "jar-publicador@users.noreply.github.com"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/sitio"
+          rm -rf sitio && mkdir sitio && cd sitio
+          git init -q -b gh-pages
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          for i in 1 2 3; do
+            git fetch origin gh-pages 2>/dev/null && git reset -q --hard origin/gh-pages || true
+            cd ..
+            generar
+            cd sitio
+            git add -A
+            git -c user.name=jar-publicador -c user.email=jar-publicador@users.noreply.github.com \
+              commit -qm "ranking: run $RUN_ID (PR #$PR)" || true
+            git push origin gh-pages && break
+            sleep 10
+          done
+          git push origin gh-pages
+
+      - name: Comentar el PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: gh pr comment "$PR" --body-file comentario.md
