@@ -61,8 +61,6 @@ class NodoEquipo(Node):
         self.mapa = mapa
 
     def ciclo_de_control(self):
-        t = Twist(); t.linear.x = 0.2
-        self.pub_cmd_vel.publish(t)  # PRUEBA #14: se mueve antes del mapa
         if self.mapa is None:
             return  # esperar el mapa: no mover el robot ni reportar antes
 
