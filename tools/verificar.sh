@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PRUEBA #14: cambio en tools/
 # Corre los mismos controles que el CI (reglamento §9.2), en tu máquina.
 #
 #   tools/verificar.sh                  controles rápidos, sin simulador
