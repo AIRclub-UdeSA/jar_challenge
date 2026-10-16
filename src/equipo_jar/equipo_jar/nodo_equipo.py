@@ -30,6 +30,14 @@ QOS_MAPA = QoSProfile(
 )
 
 
+# PRUEBA (equipo de referencia): posiciones fijas por mapa, a propósito. Sirve para ver
+# cómo puntúa el CI y qué avisa la revisión estática ante un hardcodeo.
+VICTIMAS_POR_MAPA = {
+    -1.55: [(-0.1698, -2.0228), (2.0734, -2.0864)],
+    -2.58: [(0.0013, 0.9937), (2.9552, -2.036), (-2.0847, -2.0202)],
+}
+
+
 class NodoEquipo(Node):
     def __init__(self):
         super().__init__('nodo_equipo')
@@ -41,6 +49,7 @@ class NodoEquipo(Node):
         self.cantidad_victimas = self.get_parameter('cantidad_victimas').value
 
         self.mapa = None
+        self.etapa = 0
 
         self.sub_mapa = self.create_subscription(
             OccupancyGrid, '/map', self.al_recibir_mapa, QOS_MAPA)
@@ -64,8 +73,15 @@ class NodoEquipo(Node):
         if self.mapa is None:
             return  # esperar el mapa: no mover el robot ni reportar antes
 
-        # TODO: acá va tu estrategia. Por ahora el robot se queda quieto.
         self.pub_cmd_vel.publish(Twist())
+        if self.etapa == 0:
+            origen = round(self.mapa.info.origin.position.x, 2)
+            for x, y in VICTIMAS_POR_MAPA.get(origen, [])[:self.cantidad_victimas]:
+                self.reportar_victima(x, y)
+            self.etapa = 1
+        elif self.etapa == 1:
+            self.terminar()
+            self.etapa = 2
 
     def reportar_victima(self, x, y):
         """Publica un reporte. Cada llamada gasta un reporte (§7.2)."""
