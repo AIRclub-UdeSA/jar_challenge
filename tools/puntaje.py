@@ -25,7 +25,7 @@ from typing import List, Optional, Tuple
 
 RADIO_EXACTO = 0.25          # m: hasta acá, PUNTOS_EXACTO
 RADIO_MAXIMO = 0.50          # m: hasta acá, PUNTOS_APROXIMADO; más allá no puntúa
-PUNTOS_EXACTO = 100
+PUNTOS_EXACTO = 10000
 PUNTOS_APROXIMADO = 50
 BONO_RAPIDO = 200
 LIMITE_BONO_S = 300.0        # 5 minutos desde /map
