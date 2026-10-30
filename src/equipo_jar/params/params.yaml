@@ -10,3 +10,27 @@ nodo_equipo:
     frecuencia_control_hz: 10.0
     velocidad_lineal_max: 0.30      # m/s
     velocidad_angular_max: 1.00     # rad/s
+
+localizer:
+  ros__parameters:
+    base_frame: base_footprint
+    rays: 90                  # rayos que usa el filtro (de los 1080)
+    min_range: 0.15           # m: más cerca son rayos que pegan en el propio robot
+    max_range: 8.0            # m
+    deskew: -1                # orden temporal de los rayos al enderezar el scan (verificado con el bag); 0 lo desactiva
+    sigma: 0.06               # m: error que se le perdona a un rayo (0.08 dejaba que las cajas tiraran más de la pose)
+    z_rand: 0.2               # piso para rayos que el mapa no explica (cajas, señuelos)
+    temperature: 0.3          # < 1: los rayos no son independientes
+    trans_noise: 0.15         # error de la odometría, proporcional a lo recorrido
+    rot_noise: 0.15           # proporcional a lo girado
+    forward_scale: 1.0        # escala del avance de /odom: calibrar en pista
+    turn_scale: 1.0           # escala del giro
+    imu_turn: true            # false: el giro sale de /odom (para comparar)
+    search_radius: 0.4        # m alrededor del origen para la búsqueda inicial
+    min_forward: 0.02         # m: con menos movimiento no corrige
+    min_turn: 0.03            # rad
+    tf_lead: 0.3              # s: map->odom fechada hacia adelante, como AMCL
+    rescue_confidence: 0.6    # por debajo, el scan no calza (con 16 cajas el mínimo fue 0.71; rescue_margin evita falsos rescates)
+    rescue_scans: 15          # scans seguidos sin calzar antes de relocalizar
+    rescue_margin: 0.15       # cuánto mejor tiene que calzar la pose nueva para reemplazar al filtro
+    particles: 500
