@@ -192,18 +192,11 @@ def test_precision(nombre, max_error, semilla):
     assert evaluar(nombre, semilla)[0] < max_error
 
 
-PARALAJE = pytest.mark.xfail(
-    reason='Rayos de la pared que pasan justo al lado de la caja caen sobre píxeles rojos (la cámara está 2.5 cm al '
-           'costado y 7 cm más abajo que el lidar, y los bordes son difusos), y cada rayo rojo es una detección. '
-           'Separar los rayos por saltos de distancia con core.segments (detector.py, problemas 5 y 6)', strict=False)
-
-
-@pytest.mark.parametrize('nombre', ['frontal', 'girada', 'dos cajas rojas',
-                                    pytest.param('pared detrás', marks=PARALAJE),
-                                    pytest.param('borde de la foto', marks=PARALAJE),
-                                    pytest.param('caja y señuelo', marks=PARALAJE)])
+@pytest.mark.parametrize('nombre', ['frontal', 'girada', 'pared detrás', 'borde de la foto', 'caja y señuelo',
+                                    'dos cajas rojas'])
 @pytest.mark.parametrize('semilla', SEMILLAS)
 def test_sin_grupos_falsos(nombre, semilla):
+    """Sin la erosión y los tramos del detector, los rayos de la pared que rozan la caja daban falsos (58 % con pared detrás)."""
     assert evaluar(nombre, semilla)[1] == 0
 
 
