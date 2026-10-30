@@ -1,9 +1,7 @@
-import math
 import cv2
 import numpy as np
 
-def mascara_rojo(imagen_hsv, hue_bajo_1, hue_alto_1, hue_bajo_2, hue_alto_2,
-                  saturacion_min, valor_min):
+def mascara_rojo(imagen_hsv, hue_bajo_1, hue_alto_1, hue_bajo_2, hue_alto_2, saturacion_min, valor_min):
     """Máscara binaria (255 = rojo). """
     bajo1 = np.array([hue_bajo_1, saturacion_min, valor_min])
     alto1 = np.array([hue_alto_1, 255, 255])
@@ -13,34 +11,13 @@ def mascara_rojo(imagen_hsv, hue_bajo_1, hue_alto_1, hue_bajo_2, hue_alto_2,
     mascara2 = cv2.inRange(imagen_hsv, bajo2, alto2)
     return cv2.bitwise_or(mascara1, mascara2)
 
-
-def cuaternion_a_rotacion(x, y, z, w):
-    """Matriz de rotación 3x3 equivalente a un quaternion (x, y, z, w)."""
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w)],
-        [2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y)],
-    ])
-
-def puntos_laser_a_pixeles(rangos, angulos, rotacion, traslacion, fx, fy, cx, cy):
+def puntos_laser_a_pixeles(xyz, rotacion, traslacion, fx, fy, cx, cy):
     """
-    Convertir cada punto del lidar (dado como range/angulo) en el pixel (u, v) donde caería si la
-    cámara lo estuviera mirando.
+    Convertir cada punto del lidar en el pixel (u, v) donde caería si la cámara lo estuviera mirando.
 
-    Parámetros: rangos y angulos son arrays de igual largo (uno por rayo
-    del lidar); rotacion es una matriz 3x3 y traslacion un vector de 3
-    (la tf real que ubica la cámara respecto del lidar); fx, fy, cx, cy son
-    los intrínsecos de la cámara (de camera_info).
-
+    Parámetros: xyz son los puntos del lidar (N, 3) en su frame. Rotacion es una matriz 3x3 y traslacion un vector de 3 (la tf laser_link -> cam_1_color_optical_frame. 
+    La matriz sale de su cuaternión con scipy: Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()); fx, fy, cx, cy son los intrínsecos de la cámara (de camera_info).
     """
-    #paso de polares a cartesianas
-    x = rangos*np.sin(angulos)
-    y = rangos*np.cos(angulos)
-    z = np.zeros_like(rangos)
-    #junto en r3
-    xyz = np.stack((x,y,z),axis= 1)
-
-    #2. transformo r3 --> r3 para que los puntos sean desde el punto de vista del lente en vez del lidar
     punto_camara = xyz @ rotacion.T + traslacion
     x_cam = punto_camara[:, 0]
     y_cam = punto_camara[:, 1]
@@ -50,7 +27,7 @@ def puntos_laser_a_pixeles(rangos, angulos, rotacion, traslacion, fx, fy, cx, cy
 
     #proyeccion pinhole
     with np.errstate(divide='ignore', invalid='ignore'):
-        u = fx * (x_cam/z_cam) + cx, 
+        u = fx * (x_cam/z_cam) + cx
         v = fy * (y_cam / z_cam) + cy
     
     return u,v,adelante
@@ -67,9 +44,11 @@ class ProcesadorVision:
 
     def extraer_coordenadas_cajas(self, imagen_bgr, rangos, angulos, rotacion, traslacion, fx, fy, cx, cy):
         """
-        Toma la imagen y el láser, y devuelve una lista de puntos (x_local, y_local)
-        indicando dónde hay cajas rojas respecto al robot.
+        Toma la imagen y el láser, devuelve una lista de puntos (x_local, y_local) indicando dónde hay cajas rojas.
+        Quedan en el frame del lidar (laser_link), que está girado 180° respecto del robot: falta llevarlos a map con TF.
         """
+        xyz = np.column_stack([rangos * np.cos(angulos), rangos * np.sin(angulos), np.zeros_like(rangos)]) # Polares -> Cartesianas
+
         # 1. Armar máscara roja
         img_hsv = cv2.cvtColor(imagen_bgr, cv2.COLOR_BGR2HSV)
         red_mask = mascara_rojo(
@@ -79,9 +58,7 @@ class ProcesadorVision:
         )
 
         # 2. Proyectar el láser en la imagen
-        u, v, adelante = puntos_laser_a_pixeles(
-            rangos, angulos, rotacion, traslacion, fx, fy, cx, cy
-        )
+        u, v, adelante = puntos_laser_a_pixeles(xyz, rotacion, traslacion, fx, fy, cx, cy)
 
         # 3. Filtrar los rayos válidos que caen dentro de la foto
         alto, ancho = imagen_bgr.shape[:2]
@@ -98,19 +75,9 @@ class ProcesadorVision:
         idx_rojos = idx_img[es_rojo_mask] # Índices finales de los rayos del láser que tocaron la caja
 
         # 5. CONVERSIÓN GEOMÉTRICA
-        puntos_locales = []
-        for i in idx_rojos:
-            rango_cara = rangos[i]
-            angulo = angulos[i]
-            
-            # El láser rebota en la cara de la caja. 
-            # El juez mide desde el centro. Le sumamos 12.5 cm hacia adentro.
-            rango_centro = rango_cara + 0.125
-            
-            # Pasar de polares a cartesianas (respecto al chasis del robot)
-            x_local = rango_centro * math.cos(angulo)
-            y_local = rango_centro * math.sin(angulo)
-            
-            puntos_locales.append((x_local, y_local))
-            
-        return puntos_locales
+        # El láser rebota en la cara de la caja y el juez mide desde el centro: se estira cada punto
+        # 12.5 cm más a lo largo de su rayo, (r + 0.125) / r.
+        r = rangos[idx_rojos]
+        centros = xyz[idx_rojos, :2] * ((r + 0.125) / r)[:, None]
+
+        return [tuple(p) for p in centros.tolist()]

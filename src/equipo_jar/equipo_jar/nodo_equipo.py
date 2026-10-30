@@ -91,7 +91,7 @@ class NodoEquipo(Node):
             self.get_logger().info(
                 f'Mapa recibido: {mapa.info.width}x{mapa.info.height} celdas, '
                 f'resolución {mapa.info.resolution:.3f} m')
-        self.mapa = Board.from_msg(mapa_msg)
+        self.mapa = Board.from_msg(mapa)
         self.filtro = ParticleFilter(self.mapa)
         self.filtro.initialize(pose=[0.0, 0.0, 0.0])
 
