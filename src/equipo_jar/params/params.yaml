@@ -10,3 +10,14 @@ nodo_equipo:
     frecuencia_control_hz: 10.0
     velocidad_lineal_max: 0.30      # m/s
     velocidad_angular_max: 1.00     # rad/s
+    # Recorrer el laberinto siguiendo la pared (workshop de la semana 03).
+    angulo_frente_deg: 180.0        # el frente del robot en el /scan (el lidar simulado está al revés)
+    ancho_frontal_deg: 40.0         # ancho del sector frontal que mira el lidar
+    ancho_lateral_deg: 20.0         # ancho del sector que mira justo a la derecha, para seguir la pared
+    distancia_choque_m: 0.45        # algo de frente a menos de esto (m): hay que girar
+    despeje_extra_m: 0.15           # lugar extra (m) que hace falta para dejar de girar
+    distancia_pared_m: 0.45         # a qué distancia (m) se sigue la pared de la derecha
+    pared_perdida_m: 1.20           # más lejos que esto (m) se considera que la pared se terminó
+    memoria_pared_s: 2.0            # cuánto se recuerda (s) que la pared de la derecha se terminó
+    ganancia_pared: 2.0             # cuánto corrige el giro por cada metro de error
+    amortiguacion_pared: 4.0        # cuánto frena la corrección según qué tan rápido cambia el error
