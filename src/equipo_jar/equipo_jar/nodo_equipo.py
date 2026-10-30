@@ -18,10 +18,19 @@ import rclpy
 from geometry_msgs.msg import PointStamped, Twist
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from std_msgs.msg import Empty
+from sensor_msgs.msg import CameraInfo, Image, LaserScan
 
+
+import tf2_ros
+from cv_bridge import CvBridge
+
+
+from equipo_jar.core import Board, DetectionClusterer, ParticleFilter
+from equipo_jar.detector import ProcesadorVision
 from equipo_jar.reportes import armar_reporte
+
 
 QOS_MAPA = QoSProfile(
     depth=1,
@@ -42,8 +51,32 @@ class NodoEquipo(Node):
 
         self.mapa = None
 
+        # --- INSTANCIAS DE LÓGICA PURA ---
+        self.procesador_vision = ProcesadorVision()
+        self.clusterer = DetectionClusterer()
+        self.filtro = None  # Se instancia al recibir el mapa
+
+        # --- HERRAMIENTAS DE ROS Y TF2 ---
+        self.puente_cv = CvBridge()
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        # --- MEMORIA A CORTO PLAZO DE SENSORES ---
+        self.ultima_imagen = None
+        self.info_camara = None
+        self.ultimo_scan = None
+
+        # --- SUSCRIPCIONES ---
         self.sub_mapa = self.create_subscription(
             OccupancyGrid, '/map', self.al_recibir_mapa, QOS_MAPA)
+        self.sub_cam_info = self.create_subscription(
+            CameraInfo, '/cam_1/color/camera_info', self.al_recibir_info_camara, qos_profile_sensor_data)
+        self.sub_cam_img = self.create_subscription(
+            Image, '/cam_1/color/image_raw', self.al_recibir_imagen, qos_profile_sensor_data)
+        self.sub_scan = self.create_subscription(
+            LaserScan, '/scan', self.al_recibir_scan, qos_profile_sensor_data)
+
+        # --- PUBLICADORES ---
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_victimas = self.create_publisher(PointStamped, '/victimas', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
@@ -58,13 +91,32 @@ class NodoEquipo(Node):
             self.get_logger().info(
                 f'Mapa recibido: {mapa.info.width}x{mapa.info.height} celdas, '
                 f'resolución {mapa.info.resolution:.3f} m')
-        self.mapa = mapa
+        self.mapa = Board.from_msg(mapa_msg)
+        self.filtro = ParticleFilter(self.mapa)
+        self.filtro.initialize(pose=[0.0, 0.0, 0.0])
+
+    def al_recibir_info_camara(self, msg):
+        self.info_camara = {
+            'fx': msg.k[0], 'fy': msg.k[4],
+            'cx': msg.k[2], 'cy': msg.k[5],
+            'frame_id': msg.header.frame_id,
+            'width': msg.width, 'height': msg.height,
+        }
+
+    def al_recibir_imagen(self, msg):
+        self.ultima_imagen = self.puente_cv.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+    def al_recibir_scan(self, msg):
+        self.ultimo_scan = msg
 
     def ciclo_de_control(self):
         if self.mapa is None:
             return  # esperar el mapa: no mover el robot ni reportar antes
 
         # TODO: acá va tu estrategia. Por ahora el robot se queda quieto.
+        # TODO 1: Actualizar pose del filtro con odometría y láser (predict / correct)
+        # TODO 2: Procesamiento de visión y actualización del clusterer
+        # TODO 3: Control de navegación (publicación en /cmd_vel)
         self.pub_cmd_vel.publish(Twist())
 
     def reportar_victima(self, x, y):
