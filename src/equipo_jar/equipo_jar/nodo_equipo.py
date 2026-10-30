@@ -1,44 +1,52 @@
-"""Ejemplo 1: recorrer el laberinto siguiendo la pared y esquivando lo que aparece de frente.
+"""Ejemplo 2: recorrer el laberinto, detectar cajas rojas y reportarlas.
 
-Ejemplo de qué se puede entregar: es lo más simple que anda. El robot espera el mapa y después
-avanza con la pared de su derecha a una distancia fija. Si aparece algo adelante, gira en el lugar
-hasta tener el frente libre (a la derecha si por ahí hay lugar, a la izquierda si hay pared); si la
-pared de la derecha se termina, curva hacia ella. No busca víctimas ni reporta nada (puntaje 0 a
-propósito: el siguiente ejemplo suma la detección).
+Parte del ejemplo 1 (el robot sigue la pared con el lidar) y le suma lo que da puntos: mirar con
+la cámara, ubicar cada caja roja en el plano y reportarla una sola vez.
 
-Por qué seguir una pared: un robot que solo esquiva lo de adelante se queda dando vueltas en la
-zona de largada. Seguir siempre la misma pared obliga a recorrer el laberinto.
+Cómo se reporta una víctima, paso a paso:
+1. La cámara ve una mancha roja: su columna en la imagen da un ángulo respecto del frente.
+2. El lidar, en esa misma dirección, da la distancia a la cara de la caja.
+3. Con la pose del robot (/odom) se pasa a coordenadas del plano y se suma medio lado de caja para
+   llegar al centro, que es lo que puntúa (§6.1).
+4. Se espera a ver lo mismo varias veces seguidas antes de reportar: cada reporte gasta uno (§7.2),
+   puntúe o no. Una caja ya reportada no se vuelve a reportar.
+5. Al reportar las N víctimas se publica /done y el robot se detiene para siempre (§5).
 
-Límites que conviene conocer: no tiene idea de dónde está ni de qué ya recorrió. En un lugar abierto
-da vueltas, y en un recoveco angosto o con algo en la salida (una caja, por ejemplo) puede quedar
-yendo y viniendo. Mejorar eso es lo que enseñan los workshops de localización (semana 06) y de
-exploración del mapa (semana 08).
+Qué cambia respecto del ejemplo 1:
+- `deteccion.py`: filtro de rojo, ángulo de la caja y posición, sin ROS, con sus tests en
+  test/test_deteccion.py.
+- Este nodo: `buscar_victima` (detecta, confirma y reporta) y el estado TERMINADO.
+- `params/params.yaml`: los umbrales de color, de tamaño y de confirmación.
+- `package.xml`: dependencias nuevas (cv_bridge y OpenCV). La imagen Docker las instala sola con
+  rosdep: no hace falta tocar el Dockerfile.
 
-Qué cambia respecto del template:
-- Este nodo: dos estados (AVANZAR y GIRAR) en vez de quedarse quieto.
-- `evasion.py`: las cuentas con el lidar (qué ve en un sector, cuánto girar para seguir la pared),
-  sin ROS, con sus tests en test/test_evasion.py.
-- `params/params.yaml`: las distancias y las velocidades.
-
-Lo que NO cambia y no hay que tocar: la espera del mapa, el canal de /victimas, /done y /cmd_vel
-(que ya vienen armados) y el launch.
+Límites que conviene conocer (es lo que mejora el equipo que sigue con los workshops):
+- Usa la odometría como si fuera el marco `map`. Anda cuando el robot arranca en el origen, pero la
+  odometría deriva y en la competencia el robot arranca cerca del origen, no exactamente en él:
+  localizarse en el mapa (workshop de la semana 06) es lo que corrige eso.
+- Sigue una pared: no recorre el laberinto de forma sistemática y puede dar vueltas en lugares
+  abiertos o quedar yendo y viniendo en un recoveco (workshop de la semana 08).
+- Solo busca mientras avanza: al girar, la imagen y la odometría dejan de ser del mismo instante.
 
 De dónde sale cada idea (workshops del Challenge, https://airclub-udesa.github.io/jar_site/workshops/):
-- semana 01, timers y callbacks: el timer que corre `ciclo_de_control`;
-- semana 02, `Twist` y /cmd_vel: cómo se manda una velocidad al robot;
-- semana 03, evasión de obstáculos: la máquina de estados y el sector frontal del lidar.
+semanas 01 a 03, el timer, /cmd_vel y la máquina de estados; semana 04, detección de color con
+cámara y lidar.
 """
 import math
 
 import rclpy
+from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, Twist
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import CameraInfo, Image, LaserScan
 from std_msgs.msg import Empty
 
+from equipo_jar.deteccion import (
+    angulo_de_columna, buscar_caja_roja, cerca_de_alguno, coinciden, distancia_a_la_caja,
+    distancia_por_altura, promedio, punto_en_el_plano, yaw_de_cuaternion)
 from equipo_jar.evasion import distancia_en_sector, giro_para_seguir_pared, sentido_de_giro
 from equipo_jar.reportes import armar_reporte
 
@@ -49,9 +57,10 @@ QOS_MAPA = QoSProfile(
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
 
-# Los dos estados de la máquina. En cada instante el robot está en uno solo.
-AVANZAR = 'avanzar'  # sigue la pared de la derecha
-GIRAR = 'girar'      # frente bloqueado: gira en el lugar hasta despejarlo
+# Los estados de la máquina. En cada instante el robot está en uno solo.
+AVANZAR = 'avanzar'      # sigue la pared de la derecha (y busca cajas rojas)
+GIRAR = 'girar'          # frente bloqueado: gira en el lugar hasta despejarlo
+TERMINADO = 'terminado'  # ya reportó las N víctimas y publicó /done: quieto
 
 
 class NodoEquipo(Node):
@@ -72,23 +81,48 @@ class NodoEquipo(Node):
         self.declare_parameter('memoria_pared_s', 2.0)
         self.declare_parameter('ganancia_pared', 2.0)
         self.declare_parameter('amortiguacion_pared', 4.0)
+        self.declare_parameter('saturacion_min', 120)
+        self.declare_parameter('valor_min', 80)
+        self.declare_parameter('area_minima_px', 400.0)
+        self.declare_parameter('margen_borde_px', 5)
+        self.declare_parameter('fraccion_central', 0.6)
+        self.declare_parameter('distancia_min_deteccion_m', 0.35)
+        self.declare_parameter('distancia_max_deteccion_m', 3.0)
+        self.declare_parameter('semilado_caja_m', 0.125)
+        self.declare_parameter('alto_caja_m', 0.30)
+        self.declare_parameter('tolerancia_distancia', 0.25)
+        self.declare_parameter('confirmaciones', 5)
+        self.declare_parameter('dispersion_max_m', 0.25)
+        self.declare_parameter('radio_duplicado_m', 0.60)
         # Cantidad de víctimas a buscar (N), que llega como argumento del launch (victimas:=N).
-        # Este ejemplo no busca, pero el parámetro tiene que seguir declarado.
         self.declare_parameter('cantidad_victimas', 5)
         self.cantidad_victimas = self.get_parameter('cantidad_victimas').value
 
+        self.puente = CvBridge()
         self.mapa = None
         self.scan = None
+        self.imagen = None
+        self.info_camara = None
+        self.pose = None  # (x, y, yaw) según la odometría
         self.estado = AVANZAR
-        self.sentido_giro = 1  # +1 izquierda, -1 derecha
+        self.sentido_giro = 1         # +1 izquierda, -1 derecha
         self.derecha_anterior = None  # distancia a la pared en el ciclo anterior
         self.t_pared_perdida = None   # última vez (s) que la pared de la derecha se terminó
+        self.observaciones = []       # posiciones seguidas de la caja que se está viendo
+        self.reportadas = []          # posiciones de las víctimas ya reportadas
 
         self.sub_mapa = self.create_subscription(
             OccupancyGrid, '/map', self.al_recibir_mapa, QOS_MAPA)
-        # /scan es de un sensor: best effort. Con la QoS por defecto no llegaría ni un mensaje.
+        # Sensores (lidar y cámara): best effort. Con la QoS por defecto no llegaría nada.
         self.sub_scan = self.create_subscription(
             LaserScan, '/scan', self.al_recibir_scan, qos_profile_sensor_data)
+        self.sub_imagen = self.create_subscription(
+            Image, '/cam_1/color/image_raw', self.al_recibir_imagen, qos_profile_sensor_data)
+        self.sub_info = self.create_subscription(
+            CameraInfo, '/cam_1/color/camera_info', self.al_recibir_info,
+            qos_profile_sensor_data)
+        # /odom es reliable: sirve la QoS por defecto.
+        self.sub_odom = self.create_subscription(Odometry, '/odom', self.al_recibir_odom, 10)
 
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_victimas = self.create_publisher(PointStamped, '/victimas', 10)
@@ -111,13 +145,23 @@ class NodoEquipo(Node):
     def al_recibir_scan(self, scan):
         self.scan = scan
 
+    def al_recibir_imagen(self, msg):
+        self.imagen = self.puente.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+    def al_recibir_info(self, info):
+        self.info_camara = info
+
+    def al_recibir_odom(self, odom):
+        p, q = odom.pose.pose.position, odom.pose.pose.orientation
+        self.pose = (p.x, p.y, yaw_de_cuaternion(q.x, q.y, q.z, q.w))
+
     # --- Control: se ejecuta a frecuencia_control_hz ----------------------------------------
 
     def ciclo_de_control(self):
         if self.mapa is None:
             return  # esperar el mapa: no mover el robot ni reportar antes (§5)
-        if self.scan is None:
-            self.pub_cmd_vel.publish(Twist())  # todavía sin lidar: quieto
+        if self.estado == TERMINADO or self.scan is None or self.pose is None:
+            self.pub_cmd_vel.publish(Twist())  # después de /done el robot no se vuelve a mover
             return
 
         frente = self.distancia(0.0, self.get_parameter('ancho_frontal_deg').value)
@@ -125,7 +169,12 @@ class NodoEquipo(Node):
         if derecha > self.get_parameter('pared_perdida_m').value:
             self.t_pared_perdida = self.get_clock().now().nanoseconds * 1e-9
         self.actualizar_estado(frente, derecha)
-        self.pub_cmd_vel.publish(self.comando(derecha))
+        if self.estado == AVANZAR:
+            self.buscar_victima()
+        else:
+            self.observaciones.clear()  # al girar la imagen y la odometría no coinciden
+        self.pub_cmd_vel.publish(
+            Twist() if self.estado == TERMINADO else self.comando(derecha))
         self.derecha_anterior = derecha
 
     def distancia(self, centro_deg, ancho_deg):
@@ -137,7 +186,7 @@ class NodoEquipo(Node):
             rango_min=self.scan.range_min, rango_max=self.scan.range_max)
 
     def actualizar_estado(self, frente, derecha):
-        """Transiciones: ¿hay que cambiar de estado?"""
+        """Transiciones entre AVANZAR y GIRAR."""
         choque = self.get_parameter('distancia_choque_m').value
         if self.estado == AVANZAR and frente < choque:
             self.estado = GIRAR
@@ -182,7 +231,76 @@ class NodoEquipo(Node):
             return 0.0
         return (derecha - self.derecha_anterior) * self.get_parameter('frecuencia_control_hz').value
 
-    # --- Listos para usar en los próximos pasos (el ejemplo 2 los usa) -----------------------
+    # --- Víctimas ---------------------------------------------------------------------------
+
+    def buscar_victima(self):
+        """Mira la cámara; si hay una caja roja nueva y se la ve estable, la reporta."""
+        punto = self.ubicar_caja_roja()
+        if punto is None or cerca_de_alguno(
+                punto, self.reportadas, self.get_parameter('radio_duplicado_m').value):
+            self.observaciones.clear()
+            return
+
+        # Una sola vista puede estar equivocada (ruido, una pared detrás de la caja): se
+        # confirma con varias seguidas que coincidan.
+        if self.observaciones and not cerca_de_alguno(
+                punto, self.observaciones, self.get_parameter('dispersion_max_m').value):
+            self.observaciones.clear()
+        self.observaciones.append(punto)
+        if len(self.observaciones) < self.get_parameter('confirmaciones').value:
+            return
+
+        x, y = promedio(self.observaciones)
+        self.observaciones.clear()
+        self.reportadas.append((x, y))
+        self.reportar_victima(x, y)
+        self.get_logger().info(
+            f'Víctima {len(self.reportadas)}/{self.cantidad_victimas} reportada en '
+            f'({x:.2f}, {y:.2f})')
+        if len(self.reportadas) >= self.cantidad_victimas:
+            self.estado = TERMINADO
+            self.terminar()
+
+    def ubicar_caja_roja(self):
+        """Posición (x, y) de la caja roja que se ve ahora, o None si no hay una confiable."""
+        if self.imagen is None or self.info_camara is None:
+            return None
+        caja = buscar_caja_roja(
+            self.imagen, self.get_parameter('saturacion_min').value,
+            self.get_parameter('valor_min').value, self.get_parameter('area_minima_px').value,
+            self.get_parameter('margen_borde_px').value)
+        if caja is None:
+            return None
+        columna, ancho_px, alto_px = caja
+
+        # 1. Ángulo de la caja respecto del frente (la cámara mira al frente del robot).
+        fx, cx = self.info_camara.k[0], self.info_camara.k[2]
+        angulo = angulo_de_columna(columna, fx, cx)
+
+        # 2. Distancia que ve el lidar en esa dirección: la mediana de los rayos del tramo
+        #    central de la caja (el tamaño del tramo sale de cuántos píxeles ocupa en la imagen).
+        ancho_deg = max(3.0, math.degrees(ancho_px / fx)
+                        * self.get_parameter('fraccion_central').value)
+        distancia = distancia_a_la_caja(
+            self.scan.ranges, self.scan.angle_min, self.scan.angle_increment,
+            self.get_parameter('angulo_frente_deg').value, math.degrees(angulo), ancho_deg,
+            self.scan.range_min, self.scan.range_max)
+        if distancia is None or not (
+                self.get_parameter('distancia_min_deteccion_m').value <= distancia
+                <= self.get_parameter('distancia_max_deteccion_m').value):
+            return None
+
+        # 3. Contraste: el tamaño de la caja en la imagen da otra estimación de la distancia. Si el
+        #    lidar mide otra cosa (por ejemplo, el borde de una pared que tapa la caja), se descarta.
+        por_altura = distancia_por_altura(
+            alto_px, self.info_camara.k[4], self.get_parameter('alto_caja_m').value)
+        if not coinciden(distancia, por_altura, self.get_parameter('tolerancia_distancia').value):
+            return None
+
+        # 4. El lidar ve la cara de la caja; el punto que puntúa es su centro (§6.1).
+        distancia += self.get_parameter('semilado_caja_m').value
+        x, y, yaw = self.pose
+        return punto_en_el_plano(x, y, yaw, angulo, distancia)
 
     def reportar_victima(self, x, y):
         """Publica un reporte. Cada llamada gasta un reporte (§7.2)."""

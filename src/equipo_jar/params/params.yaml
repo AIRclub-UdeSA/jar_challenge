@@ -21,3 +21,17 @@ nodo_equipo:
     memoria_pared_s: 2.0            # cuánto se recuerda (s) que la pared de la derecha se terminó
     ganancia_pared: 2.0             # cuánto corrige el giro por cada metro de error
     amortiguacion_pared: 4.0        # cuánto frena la corrección según qué tan rápido cambia el error
+    # Detectar las cajas rojas (workshop de la semana 04).
+    saturacion_min: 120             # S mínima (0-255) para contar un píxel como rojo
+    valor_min: 80                   # V mínimo (0-255)
+    area_minima_px: 400.0           # una mancha roja más chica que esto (px) se descarta
+    margen_borde_px: 5              # una mancha a menos de esto (px) del borde está cortada: se descarta
+    fraccion_central: 0.6           # qué parte del ancho de la caja mira el lidar (el centro)
+    distancia_min_deteccion_m: 0.35 # rango de distancias donde la medición sirve
+    distancia_max_deteccion_m: 3.0
+    semilado_caja_m: 0.125          # medio lado de la caja: del frente al centro (medilo)
+    alto_caja_m: 0.30               # alto de la caja (medilo): da una segunda estimación de la distancia
+    tolerancia_distancia: 0.25      # cuánto pueden diferir (fracción) la distancia del lidar y la de la imagen
+    confirmaciones: 5               # vistas seguidas que tienen que coincidir para reportar
+    dispersion_max_m: 0.25          # cuánto pueden diferir esas vistas entre sí (m)
+    radio_duplicado_m: 0.60         # a menos de esto de una víctima ya reportada, es la misma
