@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-colcon-common-extensions python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /jar_challenge
+WORKDIR /jar_challenge_polibots
 
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt

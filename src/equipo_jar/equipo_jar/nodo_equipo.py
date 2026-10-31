@@ -23,6 +23,8 @@ from std_msgs.msg import Empty
 
 from equipo_jar.reportes import armar_reporte
 
+from equipo_jar.cobertura_mapa import CoberturaMapa
+
 QOS_MAPA = QoSProfile(
     depth=1,
     reliability=ReliabilityPolicy.RELIABLE,
@@ -52,6 +54,9 @@ class NodoEquipo(Node):
         self.create_timer(periodo, self.ciclo_de_control)
         self.get_logger().info(
             f'Hay que encontrar {self.cantidad_victimas} víctimas. Esperando el mapa en /map...')
+        
+        self.cobertura_mapa = None
+        self.dont_call_next_goal = False
 
     def al_recibir_mapa(self, mapa):
         if self.mapa is None:
@@ -59,13 +64,17 @@ class NodoEquipo(Node):
                 f'Mapa recibido: {mapa.info.width}x{mapa.info.height} celdas, '
                 f'resolución {mapa.info.resolution:.3f} m')
         self.mapa = mapa
+        self.cobertura_mapa = CoberturaMapa(mapa)
 
     def ciclo_de_control(self):
         if self.mapa is None:
             return  # esperar el mapa: no mover el robot ni reportar antes
-
         # TODO: acá va tu estrategia. Por ahora el robot se queda quieto.
-        self.pub_cmd_vel.publish(Twist())
+        # self.pub_cmd_vel.publish(Twist())
+        self.get_logger().info('Ciclo de control: siguiente objetivo')
+        self.cobertura_mapa.next_goal()
+
+
 
     def reportar_victima(self, x, y):
         """Publica un reporte. Cada llamada gasta un reporte (§7.2)."""
