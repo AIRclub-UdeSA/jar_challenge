@@ -175,6 +175,12 @@ def test_mascara_no_toma_otros_colores(bgr):
     assert not _es_rojo(bgr)
 
 
+@pytest.mark.parametrize('luz', [0.3, 0.6, 1.0, 1.3])
+def test_mascara_no_toma_la_madera_del_simulador(luz):
+    # Paredes de los .world: diffuse 0.55 0.35 0.2, hue ~13 y S ~162: solo el hue la separa del rojo
+    assert not _es_rojo(np.clip([255 * luz * k for k in (0.2, 0.35, 0.55)], 0, 255))
+
+
 # ---------- escenas completas ----------
 
 TAPADA = pytest.mark.xfail(
