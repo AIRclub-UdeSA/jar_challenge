@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'nodo_equipo = equipo_jar.nodo_equipo:main',
             'localizer = equipo_jar.localizer:main',
+            'navigator = equipo_jar.navigator:main',
         ],
     },
 )

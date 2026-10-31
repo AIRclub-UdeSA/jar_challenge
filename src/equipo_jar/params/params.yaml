@@ -7,9 +7,19 @@
 #
 nodo_equipo:
   ros__parameters:
-    frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.30      # m/s
-    velocidad_angular_max: 1.00     # rad/s
+    # Rojo de las víctimas en HSV de OpenCV (hue 0-180): hue en [bajo_1, alto_1] o [bajo_2, alto_2], S >= saturacion_min, V >= valor_min.
+    # Elegidos con test_color_lighting.py sobre el bag real con luz alterada; si en el evento se pierden cajas, bajar S y V antes que tocar el hue.
+    hue_rojo_bajo_1: 0.0
+    hue_rojo_alto_1: 8.0            # paredes de MDF y piso empiezan en 12-15: no subir
+    hue_rojo_bajo_2: 155.0          # luz fría corre el rojo hacia el magenta
+    hue_rojo_alto_2: 180.0
+    saturacion_min: 100.0           # cajas 140-180, paredes < 60 (luz original); 90 ya da falsos
+    valor_min: 30.0                 # caras oscuras de las cajas: V ~ 90 con luz normal
+    mitad_caja: 0.125               # m: de la cara que ve el láser al centro (cajas de 0.25 m)
+    deskew: -1                      # orden temporal de los rayos, igual que en localizer; 0 lo desactiva
+    pared_min: 0.0                  # m: un rayo rojo que pegó a esto o menos de una pared del mapa es la pared; 0: solo en celdas de pared
+                                    # (con 0.10 se perdían rayos de una caja apoyada en la pared: test_perception_bag.py)
+    observaciones_min: 10           # scans con la caja para reportarla (el doble si el robot no se movió); en el bag, con 10 o 15 los reportes quedan a < 4 cm
 
 localizer:
   ros__parameters:
@@ -23,7 +33,7 @@ localizer:
     temperature: 0.3          # < 1: los rayos no son independientes
     trans_noise: 0.15         # error de la odometría, proporcional a lo recorrido
     rot_noise: 0.15           # proporcional a lo girado
-    forward_scale: 1.0        # escala del avance de /odom: calibrar en pista
+    forward_scale: 1.0        # escala del avance de /odom. En el bag el robot avanza ~0.78 de lo que dice /odom, pero con 0.8 el filtro calza igual: el lidar corrige
     turn_scale: 1.0           # escala del giro
     imu_turn: true            # false: el giro sale de /odom (para comparar)
     search_radius: 0.4        # m alrededor del origen para la búsqueda inicial
@@ -34,3 +44,26 @@ localizer:
     rescue_scans: 15          # scans seguidos sin calzar antes de relocalizar
     rescue_margin: 0.15       # cuánto mejor tiene que calzar la pose nueva para reemplazar al filtro
     particles: 500
+
+navigator:
+  ros__parameters:
+    base_frame: base_footprint
+    rate_hz: 10.0
+    max_speed: 0.5           # m/s: a 0.6 el chasis pasa a 11 cm de una pared (radio 15)
+    max_turn: 1.0             # rad/s
+    turn_lead: 0.3            # s: girando mientras avanza, se pide la velocidad para el rumbo que va a tener (los motores tardan); calibrar en pista
+    robot_radius: 0.20        # m: el centro del robot no se acerca más que esto a una pared
+    body_radius: 0.15         # m: el chasis; lo que entre acá adelante es un choque
+    lookahead: 0.35           # m: punto del camino al que apunta (pure pursuit)
+    wall_margin: 0.45         # m: hasta acá de una pared, el camino cuesta más (va por el medio del pasillo)
+    goal_tolerance: 0.4       # m: pasó por un punto de paso (el lidar ve 360°: no hace falta llegar justo)
+    start_tolerance: 0.05     # m: llegó a la largada (bono: cuatro ruedas en un círculo de 0.25 m)
+    start_radius: 0.10        # m: trabado más cerca que esto (zona muerta de los motores), termina igual; la rueda más lejana está a 0.15 m del centro
+    lidar_range: 4.0          # m: hasta dónde el lidar cubre el laberinto y busca candidatos (más lejos, girando, una pared corrida parece un objeto)
+    camera_range: 3.0         # m: hasta dónde la cámara reconoce una caja
+    camera_fov: 1.06          # rad: 61° de la cámara
+    approach: 0.6             # m: hasta acá se acerca a un candidato; después solo lo mira
+    clear_time: 1.0           # s en cuadro sin que la percepción vea rojo cerca (/jar/rojo) para descartar un candidato
+    watch_time: 3.5           # s en cuadro, moviéndose, para dejar un candidato con rojo que no llega a reportarse (la percepción decide en ~1.5 s)
+    time_limit: 560.0         # s desde /map para estar de vuelta (la corrida se corta a los 600)
+    max_blocked: 6.0          # s tapado en total yendo a un punto antes de saltearlo

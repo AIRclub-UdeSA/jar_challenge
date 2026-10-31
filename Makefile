@@ -96,6 +96,9 @@ limpiar:
 	@docker exec $(CONT) pkill -KILL -f 'ros2 launch|ros2 run|ign gazebo|tools/juez.py|_bridge|robot_state_pub' || true
 
 # Permiso para abrir ventanas en tu pantalla (lo mismo que hace container.sh).
+# Sin cookie (Xwayland sin -auth) no hace falta: el contenedor entra por el socket.
 x11:
-	@mkdir -p $(X11) && xauth nlist $$DISPLAY | sed -e 's/^..../ffff/' | \
-		xauth -f $(X11)/Xauthority nmerge - 2>/dev/null; chmod 644 $(X11)/Xauthority
+	@xauth nlist $$DISPLAY | grep -q . || exit 0; \
+	mkdir -p $(X11) && xauth nlist $$DISPLAY | sed -e 's/^..../ffff/' | \
+		xauth -f $(X11)/Xauthority nmerge - && chmod 644 $(X11)/Xauthority || \
+		{ echo "No puedo escribir $(X11) (la creó Docker como root): sudo chown $$USER $(X11)"; exit 1; }

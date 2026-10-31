@@ -51,6 +51,14 @@ def generate_launch_description():
             output='screen',
             parameters=[params, {'use_sim_time': use_sim_time}],
         ),
-        # Acá se agregan el resto de los nodos del equipo (navegación,
-        # percepción...). Todos con el mismo `parameters=[params, ...]`.
+        Node(
+            package='equipo_jar',
+            executable='navigator',
+            name='navigator',
+            output='screen',
+            parameters=[params, {
+                'use_sim_time': use_sim_time,
+                'victims': ParameterValue(victimas, value_type=int),
+            }],
+        ),
     ])

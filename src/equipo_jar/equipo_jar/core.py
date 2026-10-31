@@ -339,7 +339,7 @@ def viewpoint_tour(grid, start, robot_radius=0.20, max_range=3.0, step=0.5, cove
         3. Selección golosa (set cover): agrega el candidato que ve más celdas nuevas, hasta cubrir "coverage" de lo que hay que ver. Con 1.0, hasta que ninguno vea nada nuevo.
         4. Orden: vecino más cercano + 2-opt con distancias por los pasillos, como circuito cerrado (al final hay que volver a la largada).
 
-    Los puntos no traen orientación: visibility supone 360°, así que la misión tiene que girar en cada uno (la cámara ve 61°). La vuelta a la largada y el /done también son de la misión.
+    Los puntos no traen orientación: visibility supone 360°, como el lidar (la misión pasa por cada punto sin girar; la cámara solo apunta a candidatos). La vuelta a la largada y el /done también son de la misión.
 
     Returns:
         (points, visibilities, drivable): los puntos en orden, lo que ve cada uno y la máscara de dónde puede ir el robot.

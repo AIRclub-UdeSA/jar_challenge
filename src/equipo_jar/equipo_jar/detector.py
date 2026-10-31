@@ -35,14 +35,16 @@ def puntos_laser_a_pixeles(xyz, rotacion, traslacion, fx, fy, cx, cy):
     return u,v,adelante
 
 class ProcesadorVision:
-    def __init__(self):
-        # Guardamos los umbrales HSV directamente acá
-        self.hue_rojo_bajo_1 = 0.0
-        self.hue_rojo_alto_1 = 10.0
-        self.hue_rojo_bajo_2 = 170.0
-        self.hue_rojo_alto_2 = 180.0
-        self.saturacion_min = 120.0
-        self.valor_min = 80.0
+    def __init__(self, hue_rojo_bajo_1=0.0, hue_rojo_alto_1=8.0, hue_rojo_bajo_2=155.0, hue_rojo_alto_2=180.0, saturacion_min=100.0, valor_min=30.0, mitad_caja=0.125):
+        # Umbrales HSV: el nodo los lee de params.yaml (se pueden retocar después del cierre de entregas); los valores por defecto son los mismos.
+        # Elegidos con test_color_lighting.py (fotos reales del bag con luz alterada): hue alto 8 porque paredes y piso empiezan en 12-15
+        self.hue_rojo_bajo_1 = hue_rojo_bajo_1
+        self.hue_rojo_alto_1 = hue_rojo_alto_1
+        self.hue_rojo_bajo_2 = hue_rojo_bajo_2
+        self.hue_rojo_alto_2 = hue_rojo_alto_2
+        self.saturacion_min = saturacion_min
+        self.valor_min = valor_min
+        self.mitad_caja = mitad_caja # m: de la cara que ve el láser al centro, que es lo que mide el juez
 
         # Contra el paralaje en los bordes de la caja
         self.erosion_px = 2 # píxeles que se le sacan a la silueta roja de cada lado
@@ -94,13 +96,14 @@ class ProcesadorVision:
         # Tramos de rayos rojos con distancia continua: los no rojos y los saltos cortan, los tramos cortos se descartan
         r = np.full(len(rangos), np.nan)
         r[idx_rojos] = rangos[idx_rojos]
-        tramos = segments(r, self.salto_max, self.rayos_min)
-        idx_rojos = np.concatenate(tramos).astype(int) if tramos else np.array([], int)
+        corte = int(np.argmax(np.isnan(r))) # el scan arranca en un rayo no rojo: una caja justo en la costura no queda partida en dos
+        tramos = segments(np.roll(r, -corte), self.salto_max, self.rayos_min)
+        idx_rojos = (np.concatenate(tramos).astype(int) + corte) % len(r) if tramos else np.array([], int)
 
         # 5. CONVERSIÓN GEOMÉTRICA
         # El láser rebota en la cara de la caja y el juez mide desde el centro: se estira cada punto
-        # 12.5 cm más a lo largo de su rayo, (r + 0.125) / r.
+        # media caja más a lo largo de su rayo, (r + mitad_caja) / r.
         r = rangos[idx_rojos]
-        centros = xyz[idx_rojos, :2] * ((r + 0.125) / r)[:, None]
+        centros = xyz[idx_rojos, :2] * ((r + self.mitad_caja) / r)[:, None]
 
         return [tuple(p) for p in centros.tolist()]
