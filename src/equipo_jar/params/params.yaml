@@ -14,6 +14,23 @@ nodo_equipo:
     tolerancia_largada: 0.15        # m; el bono de vuelta exige <= 0.25 m (§8)
     intentos_vuelta: 3
     tiempo_sin_avance_s: 20.0       # el juez corta la corrida a los 60 s quieto
+    # Pose inicial: dispersión de amcl alrededor del origen y cuándo convergió.
+    dispersion_inicial_xy: 0.3      # m
+    dispersion_inicial_yaw: 0.6     # rad
+    sigma_localizado_xy: 0.05       # m
+    sigma_localizado_yaw: 0.1       # rad
+    tiempo_localizacion_s: 5.0
+    # Destrabe cuando un objetivo falla con el robot pegado a una pared.
+    radio_destrabe: 0.4             # m: puntos del lidar que empujan
+    velocidad_destrabe: 0.15        # m/s
+    tiempo_destrabe_s: 1.0
+    # Exploración: puntos de vista desde donde el lidar ve todo el laberinto.
+    alcance_cobertura: 3.5          # m de lidar que cuentan como "visto"
+    despeje_punto_vista: 0.25       # m mínimos de un punto de vista a la pared
+    despeje_transito: 0.12          # m mínimos a la pared por donde pasa el robot
+    despeje_caja: 0.10              # m: donde puede estar el centro de una caja
+    fraccion_cobertura: 0.98
+    reintentos_punto_vista: 1
 
 # Semana 10, paso 5: una posición por caja a partir de /objetos_rojos.
 juntar_victimas:

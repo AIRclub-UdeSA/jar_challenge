@@ -28,6 +28,7 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PointStamped, PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry
+from sensor_msgs.msg import LaserScan
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -36,7 +37,7 @@ from std_msgs.msg import Empty
 from std_srvs.srv import Empty as ServicioVacio
 from tf2_ros import Buffer, TransformListener
 
-from equipo_jar.exploracion import Exploracion
+from equipo_jar.exploracion import PARAMETROS_POR_DEFECTO, Exploracion
 
 QOS_MAPA = QoSProfile(
     depth=1,
@@ -80,6 +81,16 @@ class NodoEquipo(Node):
         self.declare_parameter('sigma_localizado_xy', 0.05)
         self.declare_parameter('sigma_localizado_yaw', 0.1)
         self.declare_parameter('tiempo_localizacion_s', 5.0)
+        # Destrabe: si un objetivo falla (típicamente porque el footprint quedó
+        # tocando una pared y Nav2 ya no encuentra trayectorias válidas), se
+        # aleja de lo que tiene cerca a esta velocidad durante este tiempo.
+        self.declare_parameter('radio_destrabe', 0.4)
+        self.declare_parameter('velocidad_destrabe', 0.15)
+        self.declare_parameter('tiempo_destrabe_s', 1.0)
+        # Parámetros del planificador de exploración (ver exploracion.py).
+        for nombre in ('alcance_cobertura', 'despeje_punto_vista', 'despeje_transito',
+                       'despeje_caja', 'fraccion_cobertura', 'reintentos_punto_vista'):
+            self.declare_parameter(nombre, PARAMETROS_POR_DEFECTO[nombre])
 
         self.cantidad_victimas = self.get_parameter('cantidad_victimas').value
         self.tiempo_corrida = self.get_parameter('tiempo_corrida_s').value
@@ -93,6 +104,9 @@ class NodoEquipo(Node):
         self.sigma_localizado_xy = self.get_parameter('sigma_localizado_xy').value
         self.sigma_localizado_yaw = self.get_parameter('sigma_localizado_yaw').value
         self.tiempo_localizacion = self.get_parameter('tiempo_localizacion_s').value
+        self.radio_destrabe = self.get_parameter('radio_destrabe').value
+        self.velocidad_destrabe = self.get_parameter('velocidad_destrabe').value
+        self.tiempo_destrabe = self.get_parameter('tiempo_destrabe_s').value
 
         self.estado = ESPERANDO_MAPA
         self.mapa = None
@@ -112,6 +126,8 @@ class NodoEquipo(Node):
         self.navegando = False
         self.objetivo = None
         self.vueltas_fallidas = 0
+        self.ultimo_scan = None
+        self.destrabe = None        # (vx, vy, hasta) mientras se destraba
         # Para detectar que el robot quedó quieto con un objetivo activo.
         self.ultimo_avance = None
         self.pose_avance = None
@@ -123,6 +139,8 @@ class NodoEquipo(Node):
         # Solo para contar los reportes que publica juntar_victimas.
         self.create_subscription(PointStamped, '/victimas', self.al_reporte, 10)
         self.create_subscription(Odometry, '/odom', self.al_odom, qos_profile_sensor_data)
+        self.create_subscription(
+            LaserScan, '/scan', lambda m: setattr(self, 'ultimo_scan', m), qos_profile_sensor_data)
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
         self.pub_pose_inicial = self.create_publisher(
@@ -233,6 +251,8 @@ class NodoEquipo(Node):
         self.navegando = False
 
     def al_terminar_objetivo(self, exito):
+        if not exito:
+            self.empezar_destrabe()
         if self.estado == EXPLORANDO:
             if not exito:
                 self.get_logger().info(f'No se llegó a {self.objetivo}: se sigue con el próximo')
@@ -246,6 +266,42 @@ class NodoEquipo(Node):
                     self.get_logger().warn('No se pudo volver a la largada; se termina igual')
                     self.terminar()
 
+    def empezar_destrabe(self):
+        """Calcula hacia dónde alejarse de lo que el lidar ve cerca del robot.
+
+        Suma, para cada punto a menos de radio_destrabe, un empuje en sentido
+        contrario (más fuerte cuanto más cerca). El robot es mecanum: se mueve
+        en esa dirección sin girar, así que sirve aunque la pared esté al costado
+        (el BackUp de Nav2 solo retrocede y con el footprint ya tocando falla).
+        """
+        scan = self.ultimo_scan
+        if scan is None:
+            return
+        try:
+            tf = self.tf_buffer.lookup_transform('base_footprint', scan.header.frame_id, Time())
+        except Exception:
+            return
+        yaw_laser = yaw_de_quaternion(tf.transform.rotation)
+        tx, ty = tf.transform.translation.x, tf.transform.translation.y
+        ex = ey = 0.0
+        for i, r in enumerate(scan.ranges):
+            if not (scan.range_min < r < scan.range_max):
+                continue
+            a = scan.angle_min + i * scan.angle_increment + yaw_laser
+            px, py = tx + r * math.cos(a), ty + r * math.sin(a)
+            d = math.hypot(px, py)
+            if 0.05 < d < self.radio_destrabe:
+                peso = (self.radio_destrabe - d) / d
+                ex -= px * peso
+                ey -= py * peso
+        norma = math.hypot(ex, ey)
+        if norma < 1e-6:
+            return
+        v = self.velocidad_destrabe
+        self.destrabe = (v * ex / norma, v * ey / norma, self.ahora() + self.tiempo_destrabe)
+        self.get_logger().info(
+            f'Destrabe: alejándose de la pared hacia ({ex / norma:.2f}, {ey / norma:.2f})')
+
     def distancia_a_largada(self):
         pose = self.pose_robot()
         if pose is None or self.largada is None:
@@ -257,6 +313,16 @@ class NodoEquipo(Node):
     def ciclo_de_control(self):
         if self.estado in (ESPERANDO_MAPA, TERMINADO):
             return  # sin mapa no se mueve ni reporta (§5); al terminar, quieto
+        if self.destrabe is not None:
+            vx, vy, hasta = self.destrabe
+            cmd = Twist()
+            if self.ahora() < hasta:
+                cmd.linear.x, cmd.linear.y = vx, vy
+            else:
+                self.destrabe = None
+            self.pub_cmd_vel.publish(cmd)
+            if self.destrabe is not None:
+                return
         pose = self.pose_robot()
         if self.estado == LOCALIZANDO:
             if not self.localizado:
@@ -268,7 +334,11 @@ class NodoEquipo(Node):
                     throttle_duration_sec=5.0)
                 return
             self.largada = pose
-            self.exploracion = Exploracion(self.mapa, self.get_logger())
+            parametros = {nombre: self.get_parameter(nombre).value
+                          for nombre in ('alcance_cobertura', 'despeje_punto_vista',
+                                         'despeje_transito', 'despeje_caja',
+                                         'fraccion_cobertura', 'reintentos_punto_vista')}
+            self.exploracion = Exploracion(self.mapa, self.get_logger(), parametros)
             self.exploracion.planificar(pose)
             self.cambiar_estado(EXPLORANDO)
 
