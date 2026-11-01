@@ -524,12 +524,14 @@ controller_server:
       # esta distancia delante del robot. Con 0.1 la orientación casi no
       # pesaba y DWB cruzaba los huecos angostos de costado (0.30 m de ancho
       # en vez de 0.20) y quedaba con una esquina del footprint tocando la
-      # pared. Con 0.4 prefiere ir de frente siguiendo el camino; en espacio
-      # abierto igual puede deslizarse para corregir.
+      # pared. Con 0.4 se alineaba tanto que casi nunca iba en reversa y se
+      # trababa cuando el camino arrancaba hacia atrás. 0.25 es el punto
+      # medio: ida a V1 en 27 s (2 de 2), contra 93 s con 0.1 y timeouts
+      # con 0.4.
       PathAlign.scale: 32.0
-      PathAlign.forward_point_distance: 0.4
+      PathAlign.forward_point_distance: 0.25
       GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.4
+      GoalAlign.forward_point_distance: 0.25
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
       # Más bajo que antes (10) para que se anime a girar y alinearse.
@@ -639,27 +641,34 @@ planner_server:
     # direcciones. Con `use_astar: false` el `GridBased` de acá corre
     # Dijkstra puro sobre el costmap global del Checkpoint 2 — lo mismo
     # que hacía tu implementación pero sin heurística.
+    # Smac 2D (A* sobre la grilla del costmap) en vez de NavFn. NavFn
+    # fallaba en los caminos largos con vueltas: "Failed to create a plan
+    # from potential when a legal potential was found" (calcula que el
+    # objetivo es alcanzable pero se pierde al reconstruir el camino), y sin
+    # plan el robot solo giraba en las recuperaciones. Se mantiene el nombre
+    # GridBased porque es el que pide el behavior tree.
     GridBased:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
-      # Si el punto pedido cae en una celda ocupada/desconocida y no hay
-      # camino exacto, qué tan lejos (m) puede quedar el punto alcanzable
-      # más cercano antes de rechazar el goal directamente. Distinto de
-      # cómo lo resolvías en semana 08: ahí, si el objetivo caía en una
-      # celda ocupada, tu a_estrella() directamente descartaba ese punto
-      # (volvía None) y probabas con otro — acá Nav2 no descarta, busca un
-      # sustituto cerca.
-      tolerance: 0.5
-      # false: Dijkstra (ver comentario de arriba). true correría A* con
-      # heurística — probalo si querés comparar tiempos de planificación
-      # contra tu propia implementación de semana 08.
-      use_astar: false
-      # true: permite planificar cruzando celdas "desconocidas" del
-      # costmap global (las que quedan fuera de rango de todo sensor,
-      # `track_unknown_space` del Checkpoint 2) en vez de tratarlas como
-      # ocupadas. Necesario porque el mapa de semana 06 no cubre el mundo
-      # entero — sin esto, cualquier goal en zona no mapeada sería
-      # directamente rechazado.
+      plugin: "nav2_smac_planner/SmacPlanner2D"
+      # Si el objetivo cae en una celda ocupada, hasta qué distancia (m)
+      # acepta un punto alcanzable cerca (la misión ya corre los objetivos
+      # que caen sobre cajas, ver nodo_equipo).
+      tolerance: 0.25
+      downsample_costmap: false
+      downsampling_factor: 1
+      # Planificar cruzando celdas desconocidas del costmap global.
       allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      # Cuánto pesa el costo de las celdas frente a la distancia: con más,
+      # el camino va por el centro de los pasillos y no pegado a las paredes.
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
 
 # map_saver: parte del template default de nav2_bringup, pero ningún nodo
 # lo lee acá — ni localization_launch.py ni navigation_launch.py levantan
