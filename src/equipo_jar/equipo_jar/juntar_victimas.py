@@ -16,7 +16,9 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PointStamped, PoseArray
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
+from std_msgs.msg import Empty
 from tf2_ros import Buffer, TransformListener
 
 from equipo_jar.reportes import armar_reporte
@@ -42,10 +44,22 @@ class JuntarVictimas(Node):
         self.grupos = []
         self.publicados = 0
 
+        # Hasta que nodo_equipo avisa que amcl convergió, la tf map -> robot
+        # puede estar muy corrida y una detección caería en cualquier lado:
+        # se ignora (cada reporte gastado es irrecuperable).
+        self.localizado = False
+        qos_latch = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(Empty, 'equipo/localizado', self.al_localizar, qos_latch)
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(PoseArray, 'objetos_rojos', self.recibir_objetos, 10)
         self.pub = self.create_publisher(PointStamped, '/victimas', 10)
+
+    def al_localizar(self, _msg):
+        self.localizado = True
+        self.get_logger().info('Robot localizado: se empiezan a juntar detecciones')
 
     def posicion_robot(self):
         """Devuelve (x, y) del robot en `map`, o None si todavía no hay tf."""
@@ -61,6 +75,8 @@ class JuntarVictimas(Node):
         El lidar ve la cara que mira al robot: el centro está media caja más
         lejos, en la misma dirección en que el robot ve la caja.
         """
+        if not self.localizado:
+            return
         pos_robot = self.posicion_robot()
         if pos_robot is None:
             return

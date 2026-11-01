@@ -218,7 +218,10 @@ def generate_launch_description():
         parameters=[
             nav2_params,
             {'use_sim_time': use_sim_time},
-        ]
+        ],
+        # La pose inicial con dispersión la publica nodo_equipo en un tópico
+        # propio, para no cruzarse con un /initialpose de RViz o de afuera.
+        remappings=[('initialpose', 'equipo/pose_inicial')],
     )
     # amcl va primero: los costmaps no terminan de activarse hasta que
     # exista map -> odom, y esa transformada la publica amcl.

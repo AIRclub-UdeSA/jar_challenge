@@ -5,8 +5,11 @@ Máquina de estados:
     ESPERANDO_MAPA -> LOCALIZANDO -> EXPLORANDO -> VOLVIENDO -> TERMINADO
 
 - ESPERANDO_MAPA: no mueve el robot ni reporta nada hasta recibir /map (§5).
-- LOCALIZANDO: espera a que exista map -> base_footprint y a que Nav2 acepte
-  objetivos. Guarda la largada (pose del robot en `map` al arrancar).
+- LOCALIZANDO: reinicializa amcl alrededor del origen con dispersión (los
+  jueces ponen el robot *cerca* del origen, §1) y le pide actualizaciones sin
+  moverse hasta que la nube converge. Recién ahí guarda la largada (pose del
+  robot en `map`), avisa por equipo/localizado (juntar_victimas no reporta
+  antes) y espera a que Nav2 acepte objetivos.
 - EXPLORANDO: le pide a `Exploracion` el siguiente objetivo y lo manda a Nav2
   (NavigateToPose), de a uno, esperando el resultado. Pasa a VOLVIENDO cuando
   ya se publicaron N reportes en /victimas, cuando no quedan objetivos o
@@ -22,7 +25,7 @@ import math
 
 import rclpy
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PointStamped, PoseStamped, Twist
+from geometry_msgs.msg import PointStamped, PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
@@ -30,6 +33,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from std_msgs.msg import Empty
+from std_srvs.srv import Empty as ServicioVacio
 from tf2_ros import Buffer, TransformListener
 
 from equipo_jar.exploracion import Exploracion
@@ -69,6 +73,13 @@ class NodoEquipo(Node):
         # Si el robot no se mueve en este tiempo con un objetivo activo, se
         # abandona ese objetivo (el juez corta la corrida a los 60 s quieto).
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
+        # Pose inicial: dispersión (desvío estándar) de la nube de amcl alrededor
+        # del origen, y cuándo se la considera convergida.
+        self.declare_parameter('dispersion_inicial_xy', 0.3)
+        self.declare_parameter('dispersion_inicial_yaw', 0.6)
+        self.declare_parameter('sigma_localizado_xy', 0.05)
+        self.declare_parameter('sigma_localizado_yaw', 0.1)
+        self.declare_parameter('tiempo_localizacion_s', 5.0)
 
         self.cantidad_victimas = self.get_parameter('cantidad_victimas').value
         self.tiempo_corrida = self.get_parameter('tiempo_corrida_s').value
@@ -77,6 +88,11 @@ class NodoEquipo(Node):
         self.tolerancia_largada = self.get_parameter('tolerancia_largada').value
         self.intentos_vuelta = self.get_parameter('intentos_vuelta').value
         self.tiempo_sin_avance = self.get_parameter('tiempo_sin_avance_s').value
+        self.dispersion_xy = self.get_parameter('dispersion_inicial_xy').value
+        self.dispersion_yaw = self.get_parameter('dispersion_inicial_yaw').value
+        self.sigma_localizado_xy = self.get_parameter('sigma_localizado_xy').value
+        self.sigma_localizado_yaw = self.get_parameter('sigma_localizado_yaw').value
+        self.tiempo_localizacion = self.get_parameter('tiempo_localizacion_s').value
 
         self.estado = ESPERANDO_MAPA
         self.mapa = None
@@ -84,6 +100,11 @@ class NodoEquipo(Node):
         self.largada = None
         self.exploracion = None
         self.reportes = 0
+        # Localización inicial.
+        self.t_pose_inicial = None
+        self.pose_inicial_aceptada = False
+        self.localizado = False
+        self.cov_amcl = None
 
         # Navegación: un solo objetivo de Nav2 a la vez.
         self.nav = ActionClient(self, NavigateToPose, 'navigate_to_pose')
@@ -104,6 +125,12 @@ class NodoEquipo(Node):
         self.create_subscription(Odometry, '/odom', self.al_odom, qos_profile_sensor_data)
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
+        self.pub_pose_inicial = self.create_publisher(
+            PoseWithCovarianceStamped, 'equipo/pose_inicial', 10)
+        self.pub_localizado = self.create_publisher(Empty, 'equipo/localizado', QOS_MAPA)
+        self.create_subscription(
+            PoseWithCovarianceStamped, 'amcl_pose', self.al_amcl_pose, QOS_MAPA)
+        self.nomotion = self.create_client(ServicioVacio, 'request_nomotion_update')
 
         periodo = 1.0 / self.get_parameter('frecuencia_control_hz').value
         self.create_timer(periodo, self.ciclo_de_control)
@@ -125,6 +152,14 @@ class NodoEquipo(Node):
     def al_reporte(self, _msg):
         self.reportes += 1
         self.get_logger().info(f'Reportes publicados: {self.reportes}/{self.cantidad_victimas}')
+
+    def al_amcl_pose(self, msg):
+        c = msg.pose.covariance
+        self.cov_amcl = (c[0], c[7], c[35])
+        # La primera pose con la dispersión que se le mandó confirma que amcl
+        # tomó la pose inicial (antes tenía covarianza cero).
+        if self.t_pose_inicial is not None and c[0] > 0.25 * self.dispersion_xy ** 2:
+            self.pose_inicial_aceptada = True
 
     def al_odom(self, msg):
         # Cualquier movimiento (traslación o giro) cuenta como avance.
@@ -224,6 +259,9 @@ class NodoEquipo(Node):
             return  # sin mapa no se mueve ni reporta (§5); al terminar, quieto
         pose = self.pose_robot()
         if self.estado == LOCALIZANDO:
+            if not self.localizado:
+                self.localizar()
+                return
             if pose is None or not self.nav.server_is_ready():
                 self.get_logger().info(
                     'Esperando ' + ('la tf map -> base_footprint' if pose is None else 'a Nav2'),
@@ -259,6 +297,45 @@ class NodoEquipo(Node):
                 self.terminar()
             else:
                 self.ir_a(self.largada[0], self.largada[1], self.largada[2])
+
+    def localizar(self):
+        """Pose inicial con dispersión y actualizaciones de amcl sin moverse."""
+        ahora = self.ahora()
+        if self.t_pose_inicial is None or (
+                not self.pose_inicial_aceptada and ahora - self.t_pose_inicial > 1.0):
+            if self.pub_pose_inicial.get_subscription_count() == 0:
+                self.get_logger().info('Esperando a amcl', throttle_duration_sec=5.0)
+                return
+            self.publicar_pose_inicial()
+            if self.t_pose_inicial is None:
+                self.t_pose_inicial = ahora
+            return
+        if self.nomotion.service_is_ready():
+            self.nomotion.call_async(ServicioVacio.Request())
+        convergio = (self.pose_inicial_aceptada and self.cov_amcl is not None
+                     and max(self.cov_amcl[0], self.cov_amcl[1]) < self.sigma_localizado_xy ** 2
+                     and self.cov_amcl[2] < self.sigma_localizado_yaw ** 2)
+        vencido = ahora - self.t_pose_inicial > self.tiempo_localizacion
+        if convergio or vencido:
+            cov = self.cov_amcl or (math.nan,) * 3
+            self.get_logger().info(
+                f'Localizado ({"convergió" if convergio else "se venció el tiempo"}): '
+                f'sigma xy {math.sqrt(max(cov[0], cov[1])):.3f} m, '
+                f'sigma yaw {math.sqrt(cov[2]):.3f} rad')
+            self.localizado = True
+            self.pub_localizado.publish(Empty())
+
+    def publicar_pose_inicial(self):
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.pose.orientation.w = 1.0
+        msg.pose.covariance[0] = self.dispersion_xy ** 2
+        msg.pose.covariance[7] = self.dispersion_xy ** 2
+        msg.pose.covariance[35] = self.dispersion_yaw ** 2
+        self.pub_pose_inicial.publish(msg)
+        self.get_logger().info(
+            f'Pose inicial (0, 0, 0) con sigma {self.dispersion_xy} m / {self.dispersion_yaw} rad')
 
     def limite_exploracion(self, pose):
         """Segundo de corrida en el que hay que empezar a volver."""

@@ -174,9 +174,12 @@ amcl:
     # Tópico del lidar — igual que en todas las semanas anteriores.
     scan_topic: scan
 
-    # Sin pose inicial AMCL no publica map -> odom y nav2 no arranca. El
-    # robot larga cerca del origen mirando a +x (§1 del reglamento); la
-    # dispersión por defecto de las partículas cubre el error de ubicación.
+    # Sin pose inicial AMCL no publica map -> odom y nav2 no arranca. Ojo:
+    # esta pose entra con covarianza cero (todas las partículas exactamente
+    # en el origen), y los jueces ponen el robot *cerca* del origen (§1).
+    # Por eso, al recibir /map, nodo_equipo vuelve a inicializar el filtro
+    # con dispersión (dispersion_inicial_* en params.yaml) por el tópico
+    # equipo/pose_inicial (remapeado en el launch).
     set_initial_pose: true
     initial_pose:
       x: 0.0
