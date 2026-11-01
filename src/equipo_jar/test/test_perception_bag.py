@@ -21,6 +21,7 @@ import yaml
 BAG = Path(os.environ.get('JAR_BAG', Path.home() / 'rosmaster_ws/bags/laberinto_victimas/laberinto_victimas_0.db3'))
 ARENA = Path(os.environ.get('JAR_ARENA', Path.home() / 'rosmaster_ws/bags/semana10'))
 PARAMS = Path(__file__).parents[1] / 'params' / 'params.yaml'
+NODO = yaml.safe_load(PARAMS.read_text())['nodo_equipo']['ros__parameters']
 TOPICS = ('/tf_static', '/tf', '/odom', '/imu/data', '/scan', '/cam_1/color/camera_info', '/cam_1/color/image_raw')
 
 def load_map(path):
@@ -59,8 +60,8 @@ def first_motion(path):
         p0 = p0 or (p.x, p.y)
         if math.hypot(p.x - p0[0], p.y - p0[1]) > 0.01: return t
 
-def replay():
-    """(víctimas, distractores, reportes, clusterer) de una pasada del bag por Localizer y NodoEquipo."""
+def replay(imu=lambda m: m):
+    """(víctimas, distractores, reportes, clusterer) de una pasada del bag por Localizer y NodoEquipo. imu: cambia cada /imu/data (None: no llega)."""
     import rclpy
     from geometry_msgs.msg import TransformStamped
     from rclpy.duration import Duration
@@ -90,7 +91,7 @@ def replay():
                 for tr in msg.transforms:
                     for b in (localizer.tf, node.tf_buffer): b.set_transform_static(tr, 'bag') if topic == '/tf_static' else b.set_transform(tr, 'bag')
             elif topic == '/odom': localizer.on_odom(msg)
-            elif topic == '/imu/data': localizer.on_imu(msg)
+            elif topic == '/imu/data' and imu(msg) is not None: localizer.on_imu(msg)
             elif topic == '/cam_1/color/camera_info': node.al_recibir_info_camara(msg)
             elif topic == '/cam_1/color/image_raw': node.al_recibir_imagen(msg)
             elif topic == '/scan':
@@ -109,11 +110,18 @@ def replay():
     finally:
         rclpy.shutdown()
 
-@pytest.fixture(scope='module')
-def run():
+def flip(m):
+    m.angular_velocity.z *= -1
+    return m
+
+# La IMU como en el bag, sin IMU y montada al revés de lo que dice su TF: en los dos últimos el giro sale de /odom (localizer.turn_source)
+IMU = {'imu': lambda m: m, 'sin imu': lambda m: None, 'imu al revés': flip}
+
+@pytest.fixture(scope='module', params=IMU)
+def run(request):
     if not (BAG.exists() and (ARENA / 'cajas.yaml').exists()): pytest.skip(f'sin el bag {BAG} o la arena {ARENA}')
 
-    return replay()
+    return replay(IMU[request.param])
 
 def test_reports_every_victim_within_25_cm(run):
     victims, _, reports, _ = run
@@ -133,6 +141,6 @@ if __name__ == '__main__':
         c = clusterer.center(g)
         o = np.asarray(g['obs'])
         print(f'grupo ({c[0]:+.3f}, {c[1]:+.3f}): {len(o)} obs, a {min(math.dist(c, v) for v in victims):.3f} m de una víctima, '
-              f'listo {clusterer.ready(g)}, reportado {g["reported"]}')
+              f'listo {clusterer.ready(g, NODO["observaciones_min"], NODO["dispersion_max"], NODO["base_min"])}, reportado {g["reported"]}')
     for r in reports:
         print(f'reporte ({r[0]:+.3f}, {r[1]:+.3f}): a {min(math.dist(r, v) for v in victims):.3f} m de una víctima')

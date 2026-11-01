@@ -3,12 +3,18 @@
 ESTO LO ESTOY HACIENDO CON CLAUDE PARA IR PROBANDO COSAS
 """
 import math
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import yaml
 
 from equipo_jar.core import (DetectionClusterer, ParticleFilter, Board, initial_search, match_fraction, line_of_sight, normalize, viewpoint_tour, segments)
 
 RES = 0.05
+# Los valores del robot (params.yaml del repo): core no tiene valores por defecto
+PARAMS = {k: SimpleNamespace(**v['ros__parameters']) for k, v in yaml.safe_load((Path(__file__).parents[1] / 'params' / 'params.yaml').read_text()).items()}
+LOC, NAV, NODO = PARAMS['localizer'], PARAMS['navigator'], PARAMS['nodo_equipo']
 
 
 def maze():
@@ -38,17 +44,17 @@ def scan(grid, pose, n=90, max_range=8.0, noise=0.005, rng=None):
 def test_initial_search_finds_start():
     grid = maze()
     real = np.array([0.15, -0.12, 0.25])
-    est = initial_search(grid, scan(grid, real))
+    est = initial_search(grid, scan(grid, real), (0.0, 0.0, 0.0), LOC.search_radius, LOC.search_sigma, LOC.search_z_rand, LOC.search_yaw_sigma)
     assert math.hypot(*(est[:2] - real[:2])) < 0.05
     assert abs(normalize(est[2] - real[2])) < 0.05
-    assert match_fraction(grid, est, scan(grid, real)) > 0.9
+    assert match_fraction(grid, est, scan(grid, real), LOC.match_tolerance) > 0.9
 
 
 def test_filter_tracks_robot_with_miscaled_odometry():
     grid, rng = maze(), np.random.default_rng(1)
     real = np.array([0.0, 0.0, 0.0])
     pf = ParticleFilter(grid, 300, seed=2)
-    pf.initialize(real)
+    pf.initialize(real, LOC.init_sigma_xy, LOC.init_sigma_yaw)
     # Avanza 2 m hacia +x y gira 90° en el lugar. La odometría informa el avance
     # un 10% largo (escala sin calibrar); el giro llega de la IMU con ruido.
     steps = [(0.05, 0.0)] * 40 + [(0.0, math.radians(5))] * 18 + [(0.05, 0.0)] * 20
@@ -56,8 +62,8 @@ def test_filter_tracks_robot_with_miscaled_odometry():
         real[0] += forward * math.cos(real[2])
         real[1] += forward * math.sin(real[2])
         real[2] = normalize(real[2] + turn)
-        pf.predict(1.10 * forward, 0.0, turn + rng.normal(0, 0.005))
-        pf.correct(scan(grid, real, rng=rng))
+        pf.predict(1.10 * forward, 0.0, turn + rng.normal(0, 0.005), LOC.trans_noise, LOC.rot_noise)
+        pf.correct(scan(grid, real, rng=rng), LOC.sigma, LOC.z_rand, LOC.temperature)
     est, _ = pf.estimate()
     assert math.hypot(*(est[:2] - real[:2])) < 0.06
     assert abs(normalize(est[2] - real[2])) < 0.05
@@ -65,7 +71,7 @@ def test_filter_tracks_robot_with_miscaled_odometry():
 
 def test_tour_covers_maze():
     grid = maze()
-    points, vis, drivable = viewpoint_tour(grid, (0.0, 0.0))
+    points, vis, drivable = viewpoint_tour(grid, (0.0, 0.0), NAV.robot_radius, NAV.lidar_range, NAV.tour_step, NAV.tour_coverage)
     assert 3 <= len(points) <= 25
     for x, y in points:
         i, j = grid.to_cell(x, y)
@@ -77,7 +83,7 @@ def test_tour_covers_maze():
 
 def test_clusterer_uses_median():
     rng = np.random.default_rng(3)
-    a = DetectionClusterer()
+    a = DetectionClusterer(NODO.radio_grupo)
     for k in range(30):
         x, y = 1.0 + rng.normal(0, 0.03), 2.0 + rng.normal(0, 0.03)
         if k % 10 == 0:
@@ -86,9 +92,9 @@ def test_clusterer_uses_median():
     assert len(a.groups) == 1
     cx, cy = a.center(g)
     assert math.hypot(cx - 1.0, cy - 2.0) < 0.03
-    assert a.ready(g)
+    assert a.ready(g, NODO.observaciones_min, NODO.dispersion_max, NODO.base_min)
     a.add(3.0, 3.0, 0.0, 0.0)
-    assert len(a.groups) == 2 and not a.ready(a.groups[1])
+    assert len(a.groups) == 2 and not a.ready(a.groups[1], NODO.observaciones_min, NODO.dispersion_max, NODO.base_min)
 
 
 def test_segments_split_on_jumps_and_gaps():

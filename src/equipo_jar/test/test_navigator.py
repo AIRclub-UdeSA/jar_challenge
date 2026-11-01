@@ -16,7 +16,8 @@ from equipo_jar.core import Board, line_of_sight, normalize
 from equipo_jar.navigator import Mission
 from test_core import RES, maze
 
-NAVIGATOR = yaml.safe_load((Path(__file__).parents[1] / 'params' / 'params.yaml').read_text())['navigator']['ros__parameters']
+PARAMS = Path(__file__).parents[1] / 'params' / 'params.yaml'
+NAVIGATOR = yaml.safe_load(PARAMS.read_text())['navigator']['ros__parameters']
 P = SimpleNamespace(**NAVIGATOR) # los parámetros del robot (params.yaml del repo), como los atributos del nodo
 START = (0.0, -0.25, 0.0)
 ANG = np.linspace(-math.pi, math.pi, 360, endpoint=False)
@@ -63,8 +64,8 @@ def real_motors(dt=0.2, tau=0.45, tau_turn=0.67, deadband=0.1):
 
 
 def in_camera(grid, x, y, yaw, bx, by, p):
-    """La caja (bx, by) en la foto: a menos de camera_range, en el 80 % central y con al menos 2 de 5 puntos (centro y esquinas) a la vista."""
-    if math.hypot(bx - x, by - y) > p.camera_range or abs(normalize(math.atan2(by - y, bx - x) - yaw)) > 0.4 * p.camera_fov: return False
+    """La caja (bx, by) en la foto: a menos de camera_range, en la parte central (view_fraction) y con al menos 2 de 5 puntos (centro y esquinas) a la vista."""
+    if math.hypot(bx - x, by - y) > p.camera_range or abs(normalize(math.atan2(by - y, bx - x) - yaw)) > 0.5 * p.view_fraction * p.camera_fov: return False
     corners = ((0, 0), (.12, .12), (.12, -.12), (-.12, .12), (-.12, -.12))
     return sum(line_of_sight(grid, (x, y), (bx + dx, by + dy)) for dx, dy in corners) >= 2
 
@@ -74,7 +75,7 @@ def simulate(world, grid, p=None, red=(), reports=(), victims=3, t_max=600.0, dt
     Corre la misión hasta /done. red: cajas rojas del mundo, que la percepción reporta. motors: comando -> velocidad real (None: exacta).
 
     Returns:
-        (misión, trayectoria (T, 2), terminó, t final, reportes, grados girados).
+        (misión, trayectoria (T, 3) con x, y, yaw, terminó, t final, reportes, grados girados).
     """
     m = Mission(grid, START[:2], p or P)
     x, y, yaw = START
@@ -86,7 +87,7 @@ def simulate(world, grid, p=None, red=(), reports=(), victims=3, t_max=600.0, dt
         if motors: vx, vy, w = motors(vx, vy, w)
         c, s = math.cos(yaw), math.sin(yaw)
         x, y, yaw = x + (c * vx - s * vy) * dt, y + (s * vx + c * vy) * dt, normalize(yaw + w * dt)
-        traj.append((x, y))
+        traj.append((x, y, yaw))
         turned += abs(w) * dt
         t += dt
         for box, v in views.items(): # percepción: ~1.4 s en cuadro con 0.2 m de base, o ~2.8 s
@@ -98,14 +99,17 @@ def simulate(world, grid, p=None, red=(), reports=(), victims=3, t_max=600.0, dt
 
 
 def home(traj):
-    return math.hypot(traj[-1, 0] - START[0], traj[-1, 1] - START[1])
+    """Distancia de la rueda más lejana a la largada al terminar (bono: las cuatro en un círculo de 0.25 m)."""
+    x, y, yaw = traj[-1]
+    c, s = math.cos(yaw), math.sin(yaw)
+    return max(math.hypot(x + c * a - s * b - START[0], y + s * a + c * b - START[1]) for a in (-P.wheel_x, P.wheel_x) for b in (-P.wheel_y, P.wheel_y))
 
 
 def test_covers_maze_with_lidar_and_returns():
     grid = maze()
     m, traj, done, t, _, _ = simulate(grid, grid)
     assert done and t < m.p.time_limit
-    assert home(traj) < 0.05  # bono de regreso
+    assert home(traj) < P.start_tolerance  # bono de regreso
     to_see = np.logical_or.reduce(m.vis)
     assert m.seen[to_see].mean() > 0.95
     assert grid.distance(traj[:, 0], traj[:, 1]).min() >= 0.15  # el centro nunca a menos de 15 cm de una pared
@@ -124,7 +128,7 @@ def test_finds_red_box_among_decoy_and_returns():
     red, blue = (3.0, 1.5), (-1.0, -1.8)
     world = with_box(with_box(grid, *red), *blue)
     m, traj, done, t, reports, turned = simulate(world, grid, red=[red], victims=1)
-    assert reports == [red] and done and home(traj) < 0.05
+    assert reports == [red] and done and home(traj) < P.start_tolerance
     assert any(math.hypot(cd['xy'][0] - red[0], cd['xy'][1] - red[1]) < 0.35 for cd in m.candidates)
     assert world.distance(traj[:, 0], traj[:, 1]).min() >= 0.15  # ni paredes ni cajas
     assert turned < 360
@@ -153,18 +157,18 @@ def test_returns_before_time_limit():
     p = SimpleNamespace(**{**NAVIGATOR, 'time_limit': 60.0})
     _, traj, done, t, _, _ = simulate(grid, grid, p)
     assert done and t <= 60.0
-    assert home(traj) < 0.05
+    assert home(traj) < P.start_tolerance
 
 
 def test_returns_with_real_motors():
-    """Con retardo, zona muerta y giro desparejo igual encuentra la víctima, no choca y termina con el centro a menos de 10 cm de la largada: el bono
-    pide las cuatro ruedas en un círculo de 0.25 m y la rueda más lejana está a 0.15 m del centro."""
+    """Con retardo, zona muerta y giro desparejo igual encuentra la víctima, no choca y termina con las cuatro ruedas en el círculo de 0.25 m (lo que
+    frena después del /done, también)."""
     grid = maze()
     red = (3.0, 1.5)
     world = with_box(grid, *red)
     m, traj, done, t, reports, _ = simulate(world, grid, red=[red], victims=1, dt=0.1, motors=real_motors(dt=0.1, deadband=0.2))
     assert reports == [red] and done and t < m.p.time_limit
-    assert home(traj) < 0.10  # antes de start_radius y la rampa, con 0.15 m/s se quedaba a 9 cm para siempre
+    assert home(traj) < 0.25  # antes de start_radius y la rampa, con 0.15 m/s se quedaba a 9 cm para siempre
     assert world.distance(traj[:, 0], traj[:, 1]).min() >= 0.15
 
 
@@ -184,7 +188,7 @@ def test_returns_when_noted_obstacles_close_the_way():
         c, s = math.cos(yaw), math.sin(yaw)
         x, y, yaw = x + (c * vx - s * vy) * 0.2, y + (s * vx + c * vy) * 0.2, normalize(yaw + w * 0.2)
         t += 0.2
-    assert done and math.hypot(x - START[0], y - START[1]) < 0.05
+    assert done and home(np.array([(x, y, yaw)])) < P.start_tolerance
 
 
 def test_no_phantom_candidates_when_scan_lags_while_turning():
@@ -268,3 +272,39 @@ def test_box_seen_from_another_side_is_not_a_phantom():
         m.candidates.append({'xy': xy, 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None})
         for k in range(10): m.step(0.0, -0.25, spin * 0.1 * k, 0.1 * k, lidar(world, 0.0, -0.25))
         assert m.candidates[0]['misses'] <= 1 and m.candidates[0]['why'] != 'fantasma'
+
+
+def test_node_stops_without_pose_or_scan():
+    """
+    El nodo frena si deja de llegar /jar/pose o el lidar: la TF seguiría con la odometría sola y el lidar quedaría congelado. Al arrancar espera el
+    primer scan; al volver, el rato sin datos no cuenta para la misión (dt = 0).
+    """
+    import rclpy
+    from geometry_msgs.msg import PoseStamped
+    from rclpy.duration import Duration
+
+    from equipo_jar.navigator import Navigator
+
+    rclpy.init(args=['--ros-args', '--params-file', str(PARAMS), '-p', 'victims:=3'])
+    try:
+        node = Navigator()
+        sent = []
+        node.cmd_pub = SimpleNamespace(publish=sent.append)
+        node.board, node.t0, node.pose = maze(), node.get_clock().now(), lambda: START
+        pose = PoseStamped()
+        pose.pose.position.x, pose.pose.position.y = START[:2]
+        node.on_pose(pose)
+        speed = lambda: math.hypot(sent[-1].linear.x, sent[-1].linear.y)
+
+        node.control() # arma la misión; sin scan todavía
+        assert node.mission is not None and speed() == 0.0
+
+        node.lidar, node.lidar_at = lidar(maze(), *START[:2]), node.get_clock().now()
+        node.control()
+        assert speed() > 0.0
+
+        node.pose_at = node.get_clock().now() - Duration(seconds=2.0) # se cayó el localizer
+        node.control()
+        assert speed() == 0.0 and node.mission.t_prev is None
+    finally:
+        rclpy.shutdown()

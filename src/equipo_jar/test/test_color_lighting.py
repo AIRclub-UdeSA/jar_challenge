@@ -66,7 +66,7 @@ def red(hsv, u):
 
 def label(img):
     """(caja, lejos de toda caja): envolvente convexa de cada mancha roja de más de 60 px, con un criterio holgado y fijo."""
-    m = cv2.morphologyEx(red(cv2.cvtColor(img, cv2.COLOR_BGR2HSV), ProcesadorVision(0, 12, 150, 180, 90, 40, 0.125)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    m = cv2.morphologyEx(mascara_rojo(cv2.cvtColor(img, cv2.COLOR_BGR2HSV), 0, 12, 150, 180, 90, 40), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     n, lab, st, _ = cv2.connectedComponentsWithStats(m)
     box = np.zeros(m.shape, np.uint8)
     for k in range(1, n):

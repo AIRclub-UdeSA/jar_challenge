@@ -43,7 +43,7 @@ T_OL = (COLOR_R @ OPTICO_R).T @ (LASER_T - COLOR_T)
 LADO, ALTO = 0.25, 0.30
 ROJO, AZUL = (0.8, 0.05, 0.05), (0.05, 0.05, 0.8)  # diffuse RGB de cuadrado_rojo y cuadrado_azul
 ANGULOS = np.linspace(-math.pi, math.pi, 1080)
-RADIO_GRUPO = DetectionClusterer().radius  # más lejos que esto de una caja roja, el grupo es otra "caja"
+RADIO_GRUPO = NODO['radio_grupo']  # más lejos que esto de una caja roja, el grupo es otra "caja"
 SEMILLAS = range(10)
 
 
@@ -120,7 +120,7 @@ def escena(rng, cajas, pared=None, desfase=0.0, ruido=0.01):
 def grupos(img, rangos):
     """Lo que hace el nodo con una escena: detecciones -> base_footprint -> DetectionClusterer. [(centro, n)]."""
     det = ProcesadorVision(**VISION).extraer_coordenadas_cajas(img, rangos, ANGULOS, R_OL, T_OL, FX, FY, CX, CY)
-    cl = DetectionClusterer()
+    cl = DetectionClusterer(RADIO_GRUPO)
     for x, y in np.asarray(det).reshape(-1, 2) @ LASER_R[:2, :2].T + LASER_T[:2]:  # laser_link -> base_footprint
         cl.add(x, y, 0.0, 0.0)
     return [(np.array(cl.center(g)), len(g['obs'])) for g in cl.groups]
