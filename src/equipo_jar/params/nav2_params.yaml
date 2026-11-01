@@ -160,6 +160,16 @@ amcl:
     # Tópico del lidar — igual que en todas las semanas anteriores.
     scan_topic: scan
 
+    # Sin pose inicial AMCL no publica map -> odom y nav2 no arranca. El
+    # robot larga cerca del origen mirando a +x (§1 del reglamento); la
+    # dispersión por defecto de las partículas cubre el error de ubicación.
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
+
 # map_server:
 #   ros__parameters:
 #     use_sim_time: True

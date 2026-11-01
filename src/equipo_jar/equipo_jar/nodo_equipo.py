@@ -6,7 +6,8 @@ el mapa y pase el CI. Reemplazalo (o agregá nodos) con tu estrategia.
 Lo que ya resuelve:
 - Se suscribe a /map con el QoS que usa el juez (reliable + transient local).
 - No publica nada en /cmd_vel ni en /victimas hasta recibir el mapa (§5).
-- Deja armado el canal de /victimas, /done y /cmd_vel.
+- Deja armado el canal de /done y /cmd_vel. Los reportes en /victimas los
+  publica juntar_victimas.
 
 Lo que tenés que hacer vos, en este orden:
 1. Localizarte en el mapa. Arrancás cerca del origen (0, 0), pero no exactamente ahí (§1).
@@ -15,13 +16,11 @@ Lo que tenés que hacer vos, en este orden:
 4. Opcional: volver a la largada y publicar en /done.
 """
 import rclpy
-from geometry_msgs.msg import PointStamped, Twist
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Empty
-
-from equipo_jar.reportes import armar_reporte
 
 from equipo_jar.cobertura_mapa import CoberturaMapa
 
@@ -47,7 +46,6 @@ class NodoEquipo(Node):
         self.sub_mapa = self.create_subscription(
             OccupancyGrid, '/map', self.al_recibir_mapa, QOS_MAPA)
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.pub_victimas = self.create_publisher(PointStamped, '/victimas', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
 
         periodo = 1.0 / self.get_parameter('frecuencia_control_hz').value
@@ -64,7 +62,8 @@ class NodoEquipo(Node):
                 f'Mapa recibido: {mapa.info.width}x{mapa.info.height} celdas, '
                 f'resolución {mapa.info.resolution:.3f} m')
         self.mapa = mapa
-        self.cobertura_mapa = CoberturaMapa(mapa)
+        if self.cobertura_mapa is None:
+            self.cobertura_mapa = CoberturaMapa(mapa)
 
     def ciclo_de_control(self):
         if self.mapa is None:
@@ -73,12 +72,6 @@ class NodoEquipo(Node):
         # self.pub_cmd_vel.publish(Twist())
         self.get_logger().info('Ciclo de control: siguiente objetivo')
         self.cobertura_mapa.next_goal()
-
-
-
-    def reportar_victima(self, x, y):
-        """Publica un reporte. Cada llamada gasta un reporte (§7.2)."""
-        self.pub_victimas.publish(armar_reporte(x, y, self.get_clock().now().to_msg()))
 
     def terminar(self):
         """Publica en /done: termina la corrida (§5)."""

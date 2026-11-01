@@ -75,10 +75,12 @@ def agrupar_en_rachas(booleanos: np.ndarray):
 
 class DetectorObstaculos(Node):
     """
-    Compara cada punto del /scan contra /likelihood_map (el campo de
-    verosimilitud de semana 06) para encontrar puntos que el mapa no
-    esperaba ahí, los agrupa en objetos (rachas contiguas del scan) y
-    publica la coordenada en `map` de cada uno.
+    Toma los puntos rojos de /scan_rojo, los agrupa en objetos (rachas
+    contiguas del scan) y publica la coordenada en `map` de cada uno.
+
+    Como en la semana 10, corre con `umbral_probabilidad` en 101: pasan
+    todas las detecciones rojas y el mapa solo sirve para descartar los
+    puntos que caen fuera de sus límites.
     """
 
     def __init__(self):
@@ -101,16 +103,15 @@ class DetectorObstaculos(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.aviso_tf_mostrado = False
 
-        # /likelihood_map se publica una sola vez, retenido (mismo QoS que
-        # /map en semana 06): transient local, para que igual llegue aunque
-        # este nodo arranque después que campo_verosimilitud.
+        # El juez publica /map una sola vez, retenido: transient local, para
+        # que igual llegue aunque este nodo arranque después.
         qos_mapa = QoSProfile(
             depth=1,
             reliability=QoSReliabilityPolicy.RELIABLE,
             history=QoSHistoryPolicy.KEEP_LAST,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         )
-        self.create_subscription(OccupancyGrid, 'likelihood_map', self.recibir_campo, qos_mapa)
+        self.create_subscription(OccupancyGrid, '/map', self.recibir_mapa, qos_mapa)
         # El lidar publica en Best Effort (qos_profile_sensor_data), como en
         # las semanas 03, 04 y 06.
         self.create_subscription(
@@ -122,11 +123,14 @@ class DetectorObstaculos(Node):
 
     # ---------- callbacks ----------
 
-    def recibir_campo(self, msg: OccupancyGrid):
+    def recibir_mapa(self, msg: OccupancyGrid):
+        # /map en vez de /likelihood_map: sus valores (-1 a 100) quedan
+        # todos por debajo del umbral 101, así que, igual que con el campo
+        # de verosimilitud, solo importan los límites de la grilla.
         alto, ancho = msg.info.height, msg.info.width
         self.campo = np.array(msg.data, dtype=np.float64).reshape((alto, ancho))
         self.info_mapa = msg.info
-        self.get_logger().info('Campo de verosimilitud recibido.')
+        self.get_logger().info('Mapa recibido.')
 
     def obtener_transform_a_map(self, frame_id_scan):
         """Busca en tf2 la transformada del frame del lidar a `map`. None si
@@ -144,10 +148,10 @@ class DetectorObstaculos(Node):
     def recibir_scan(self, msg: LaserScan):
         """
         TODO: el corazón del workshop — corre una vez por cada scan que
-        llega. Comparar cada punto contra /likelihood_map y, con los que no
+        llega. Comparar cada punto contra /map y, con los que no
         calzan, armar los objetos "no mapeados".
 
-          1. Si `self.campo` es `None` (todavía no llegó /likelihood_map),
+          1. Si `self.campo` es `None` (todavía no llegó /map),
              `return`.
           2. Pedir la transformada con
              `self.obtener_transform_a_map(msg.header.frame_id)`. Si da

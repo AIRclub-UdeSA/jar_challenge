@@ -19,6 +19,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -59,8 +60,8 @@ def generate_launch_description():
     #         'escala_giro', default_value='1.0',
     #         description='Escala de correccion sobre el giro de la odometria.')
     declarar_umbral = DeclareLaunchArgument(
-            'umbral_probabilidad', default_value='25.0',
-            description='Probabilidad (0-100) por debajo de la cual un punto es "no mapeado".')
+            'umbral_probabilidad', default_value='101.0',
+            description='101 deja pasar todas las detecciones rojas (semana 10, paso 5).')
     declarar_racha = DeclareLaunchArgument(
         'racha_minima', default_value='3',
         description='Puntos contiguos mínimos para que una racha cuente como objeto.')
@@ -68,6 +69,11 @@ def generate_launch_description():
         'distancia_minima_valida', default_value='0.25',
         description='Rango mínimo (m) válido, para filtrar el rebote contra el propio robot.')
     declarar_autostart = DeclareLaunchArgument('autostart', default_value='true')
+    # Apagado por defecto: en la corrida oficial el launch corre en un
+    # contenedor sin pantalla y RViz no puede abrir ventana.
+    declarar_rviz = DeclareLaunchArgument(
+        'rviz', default_value='false',
+        description='true para abrir RViz con params/realrobot.rviz')
 
 
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -138,6 +144,19 @@ def generate_launch_description():
         }],
     )
 
+    # Semana 10, paso 5: junta /objetos_rojos en una posición por caja y
+    # publica cada una en /victimas, como mucho `victimas` reportes.
+    juntar_victimas = Node(
+        package='equipo_jar',
+        executable='juntar_victimas',
+        name='juntar_victimas',
+        output='screen',
+        parameters=[params, {
+            'use_sim_time': use_sim_time,
+            'cantidad_victimas': ParameterValue(victimas, value_type=int),
+        }],
+    )
+
     lifecycle_nodes = []
 
     # Controller
@@ -160,7 +179,7 @@ def generate_launch_description():
         name='planner_server',
         output='log',
         parameters=[
-            {'use_sim_time': True},
+            {'use_sim_time': use_sim_time},
             nav2_params,
         ]
     )
@@ -173,7 +192,7 @@ def generate_launch_description():
         name='behavior_server',
         output='screen',
         parameters=[
-            {'use_sim_time': True},
+            {'use_sim_time': use_sim_time},
             nav2_params,
         ]
     )
@@ -185,22 +204,25 @@ def generate_launch_description():
         name='bt_navigator',
         output='screen',
         parameters=[
-            {'use_sim_time': True},
+            {'use_sim_time': use_sim_time},
             nav2_params,
         ]
     )
     lifecycle_nodes.append('bt_navigator')
 
     amcl = Node(
-        package='nav2_amcl', 
-        executable='amcl', 
+        package='nav2_amcl',
+        executable='amcl',
+        name='amcl',
         output='screen',
-        parameters=[{
-            'params_file': nav2_params, 
-            'use_sim_time': use_sim_time
-        }]
+        parameters=[
+            nav2_params,
+            {'use_sim_time': use_sim_time},
+        ]
     )
-    lifecycle_nodes.append('amcl')
+    # amcl va primero: los costmaps no terminan de activarse hasta que
+    # exista map -> odom, y esa transformada la publica amcl.
+    lifecycle_nodes.insert(0, 'amcl')
 
     lifecycle = Node(
         package='nav2_lifecycle_manager', 
@@ -212,6 +234,16 @@ def generate_launch_description():
         }]
     )
 
+    rviz = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='log',
+        arguments=['-d', config_rviz],
+        parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(LaunchConfiguration('rviz')),
+    )
+
     return LaunchDescription([
         declarar_sim,
         declarar_victimas,
@@ -219,16 +251,19 @@ def generate_launch_description():
         declarar_racha,
         declarar_distancia,
         declarar_autostart,
+        declarar_rviz,
         equipo,
         # Acá se agregan el resto de los nodos del equipo (localización,
         # navegación, percepción...). Todos con el mismo `parameters=[params, ...]`.
         detector,
         detector_scan,
         detector_obstaculos,
+        juntar_victimas,
         controller,
         planner,
         behavior,
         navigator,
         amcl,
         lifecycle,
+        rviz,
     ])

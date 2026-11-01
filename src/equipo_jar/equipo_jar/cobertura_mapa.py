@@ -17,14 +17,10 @@ class CoberturaMapa(Node):
     def __init__(self, mapa):
         super().__init__(node_name='new_basic_navigator')
         self.mapa = mapa
-        self.initial_pose = None
         self.last_goal = None
         self.feedback = None
 
         self.nav_to_pose_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-        self.initial_pose_pub = self.create_publisher(PoseStamped,
-                                                      'initialpose',
-                                                      10)
 
         self.possible_goals = []
         self.done = False
@@ -36,7 +32,6 @@ class CoberturaMapa(Node):
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose = self.create_pose_stamped(goal_pose)
 
-        self.nav_to_pose_client.send_goal_async(goal_msg, self._feedbackCallback)
         send_goal_future = self.nav_to_pose_client.send_goal_async(goal_msg,
                                                                    self._feedbackCallback)
         # rclpy.spin_until_future_complete(self, send_goal_future)
@@ -80,19 +75,9 @@ class CoberturaMapa(Node):
             ]
             self.get_logger().info(f"Possible goals calculated: {corners}")
             self.possible_goals = corners
-            if self.initial_pose is None:
-                self.setInitialPose(corners[-1])
-
-    def setInitialPose(self, initial_pose):
-        self.initial_pose = initial_pose
-        self._setInitialPose()
-
-    def _setInitialPose(self):
-        msg = self.create_pose_stamped(self.initial_pose)
-        # self.info('Publishing Initial Pose')
-        self.get_logger().info(f"Initial Pose: {self.initial_pose}")
-        self.initial_pose_pub.publish(msg)
-        return
+            # La pose inicial la fija amcl (set_initial_pose en
+            # nav2_params.yaml): el robot larga cerca del origen, no en una
+            # esquina del mapa.
 
     def create_pose(self, x, y):
         pose = Pose()

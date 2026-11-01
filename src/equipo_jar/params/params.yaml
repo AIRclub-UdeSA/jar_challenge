@@ -11,3 +11,12 @@ nodo_equipo:
     # frecuencia_control_hz: 10.0
     velocidad_lineal_max: 0.30      # m/s
     velocidad_angular_max: 1.00     # rad/s
+
+# Semana 10, paso 5: una posición por caja a partir de /objetos_rojos.
+juntar_victimas:
+  ros__parameters:
+    detecciones_minimas: 30         # detecciones antes de reportar un grupo
+    radio_grupo: 0.30               # m, distancia máxima a la mediana del grupo
+    # Media caja (m): corre cada detección de la cara al centro. Las cajas del
+    # simulador miden 0.25 m; las del robot real del workshop, ~0.18 (0.09).
+    mitad_caja: 0.125
