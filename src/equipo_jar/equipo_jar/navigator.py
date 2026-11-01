@@ -24,12 +24,13 @@ def costs(grid, obstacles, p):
     """
     (drivable, penalty, dist): por dónde entra el chasis, cuánto cuesta cada celda y los metros hasta la pared u obstáculo más cercano.
 
-    drivable: a más de body_radius (+2 cm) de todo. Cada paso cuesta 1 en el medio de un pasillo ancho, hasta 3 a wall_margin, y 10 veces más a menos de
-    robot_radius: el camino va por el medio cuando hay lugar, pero un paso angosto (una caja cerca de una pared) sigue abierto si es el único.
+    drivable: a más de body_radius + drivable_margin de todo. Cada paso cuesta 1 en el medio de un pasillo ancho, hasta 1 + wall_penalty pegado a la pared
+    (desde wall_margin), y close_penalty más a menos de robot_radius: el camino va por el medio cuando hay lugar, pero un paso angosto (una caja cerca de una
+    pared) sigue abierto si es el único.
     """
     dist = ndimage.distance_transform_edt(~(grid.occupied | obstacles)) * grid.res
-    drivable = grid.free & (dist >= p.body_radius + 0.02)
-    penalty = 1 + 2 * np.clip((p.wall_margin - dist) / p.wall_margin, 0, 1) + 10 * (dist < p.robot_radius)
+    drivable = grid.free & (dist >= p.body_radius + p.drivable_margin)
+    penalty = 1 + p.wall_penalty * np.clip((p.wall_margin - dist) / p.wall_margin, 0, 1) + p.close_penalty * (dist < p.robot_radius)
 
     return drivable, penalty, dist
 
@@ -132,13 +133,13 @@ class Mission:
     def __init__(self, grid, start, p=None):
         self.grid, self.p = grid, p
         self.start = (float(start[0]), float(start[1]))
-        self.points, self.vis, self.reachable = viewpoint_tour(grid, self.start, self.p.robot_radius, self.p.lidar_range)
-        self.hits = np.zeros(grid.free.shape, np.int16) # veces que el lidar vio algo fuera del mapa en cada celda, hasta 1.5 m (obstáculos)
+        self.points, self.vis, self.reachable = viewpoint_tour(grid, self.start, self.p.robot_radius, self.p.lidar_range, self.p.tour_step, self.p.tour_coverage)
+        self.hits = np.zeros(grid.free.shape, np.int16) # veces que el lidar vio algo fuera del mapa en cada celda, hasta obstacle_range (obstáculos)
         self.found = np.zeros(grid.free.shape, np.int16) # lo mismo hasta lidar_range (candidatos)
         self.obstacles = np.zeros(grid.free.shape, bool)
         self.drivable, self.penalty, self.clear = costs(grid, self.obstacles, self.p)
         self.seen = np.zeros(grid.free.shape, bool) # lo que ya vio el lidar
-        self.near_route = ndimage.binary_dilation(self.reachable, iterations=int(0.3 / grid.res)) # el centro de una caja está a menos de 0.3 m de donde anda el robot
+        self.near_route = ndimage.binary_dilation(self.reachable, iterations=int(self.p.route_distance / grid.res)) # el centro de una caja está cerca de donde anda el robot
         self.candidates = [] # {'xy', 'time' (s en cuadro), 'views' [(x, y) del robot], 'done'}
         self.start_dist = path_dist(grid, self.reachable, [self.start])[0]
         self.k, self.state, self.blocked_since = 0, 'going', None
@@ -164,9 +165,9 @@ class Mission:
         lidar = np.asarray(lidar, float).reshape(-1, 2)
         c, s = math.cos(yaw), math.sin(yaw)
         self.near = (lidar - (x, y)) @ np.array([[c, -s], [s, c]])
-        self.is_wall = self.grid.distance(lidar[:, 0], lidar[:, 1]) < 0.15
+        self.is_wall = self.grid.distance(lidar[:, 0], lidar[:, 1]) < self.p.wall_tolerance
         dt, self.t_prev = (0.0 if self.t_prev is None else t - self.t_prev), t
-        turning = dt > 0 and abs(normalize(yaw - self.yaw_prev)) / dt > 0.3
+        turning = dt > 0 and abs(normalize(yaw - self.yaw_prev)) / dt > self.p.turning_rate
         self.yaw_prev = yaw
         self._mark_obstacles(x, y, lidar[~self.is_wall])
         # Girando, un desfase chico entre scan y pose (50 ms a 1 rad/s son 3°) corre 20 cm una pared a 4 m: parece un objeto. Hasta 1.5 m (obstáculos) no
@@ -194,10 +195,13 @@ class Mission:
                     if math.hypot(goal[0] - x, goal[1] - y) < self.p.goal_tolerance: self.k += 1
 
         if self.state == 'returning':
-            # Termina en la largada, o trabado cerca (motores con zona muerta: a velocidad baja no se mueven) y sin acercarse 1 cm en 3 s
+            # Termina con las cuatro ruedas cerca de la largada, o trabado cerca (motores con zona muerta: a velocidad baja no se mueven) y sin acercarse
+            # 1 cm en start_stall s
             dist = math.hypot(self.start[0] - x, self.start[1] - y)
             if dist < self.closest[0] - 0.01: self.closest = (dist, t)
-            if dist < self.p.start_tolerance or (dist < self.p.start_radius and t - self.closest[1] > 3.0):
+            wheels = max(math.hypot(x + c * a - s * b - self.start[0], y + s * a + c * b - self.start[1])
+                         for a in (-self.p.wheel_x, self.p.wheel_x) for b in (-self.p.wheel_y, self.p.wheel_y))
+            if wheels < self.p.start_tolerance or (dist < self.p.start_radius and t - self.closest[1] > self.p.start_stall):
                 self.state = 'done'
                 return (0.0, 0.0, 0.0), True
 
@@ -206,7 +210,7 @@ class Mission:
         w = 0.0
         if target is not None:
             tx, ty = target['xy']
-            w = float(np.clip(1.5 * normalize(math.atan2(ty - y, tx - x) - yaw), -self.p.max_turn, self.p.max_turn))
+            w = float(np.clip(self.p.turn_gain * normalize(math.atan2(ty - y, tx - x) - yaw), -self.p.max_turn, self.p.max_turn))
             if math.hypot(tx - x, ty - y) < self.p.approach and line_of_sight(self.grid, (x, y), (tx, ty)): return (0.0, 0.0, w), False # ya está cerca: solo lo mira
 
         cmd = self._go(x, y, yaw, goal, t, dt, final=self.state == 'returning')
@@ -228,26 +232,27 @@ class Mission:
 
     # ---------- piezas ----------
     def _min_pending(self):
-        """Celdas sin ver que se toleran en un punto de paso: el 5 % de lo que le toca, y al menos 8."""
-        return max(8, 0.05 * self.vis[self.k].sum())
+        """Celdas sin ver que se toleran en un punto de paso: pending_fraction de lo que le toca, y al menos pending_min."""
+        return max(self.p.pending_min, self.p.pending_fraction * self.vis[self.k].sum())
 
     def _return_time(self, x, y):
-        """Segundos para volver a la largada desde (x, y): el camino a media velocidad, más 15 s de margen."""
+        """Segundos para volver a la largada desde (x, y): el camino a return_pace de max_speed, más return_margin."""
         i, j = nearest_drivable(self.grid, self.reachable, x, y)
 
-        return self.start_dist[i, j] / (0.5 * self.p.max_speed) + 15.0
+        return self.start_dist[i, j] / (self.p.return_pace * self.p.max_speed) + self.p.return_margin
 
     def _mark_obstacles(self, x, y, lidar):
         """
-        Lo que el lidar ve lejos de toda pared del mapa es un obstáculo (cajas, señuelos). Visto en 3 scans, entra en los costos como una pared más y se replanea.
+        Lo que el lidar ve lejos de toda pared del mapa es un obstáculo (cajas, señuelos). Visto en obstacle_scans scans, entra en los costos como una pared más y
+        se replanea.
 
-        Solo hasta 1.5 m: más lejos, un error chico de ángulo (scan y pose desfasados al girar) corre las paredes lo suficiente para inventar obstáculos.
+        Solo hasta obstacle_range: más lejos, un error chico de ángulo (scan y pose desfasados al girar) corre las paredes lo suficiente para inventar obstáculos.
         """
-        new = lidar[np.hypot(lidar[:, 0] - x, lidar[:, 1] - y) < 1.5]
+        new = lidar[np.hypot(lidar[:, 0] - x, lidar[:, 1] - y) < self.p.obstacle_range]
         i, j = self.grid.to_cell(new[:, 0], new[:, 1])
         ok = self.grid.inside(i, j)
         np.add.at(self.hits, (i[ok], j[ok]), 1)
-        obstacles = self.hits >= 3
+        obstacles = self.hits >= self.p.obstacle_scans
 
         if (obstacles & ~self.obstacles).any(): self._set_obstacles(obstacles)
 
@@ -259,11 +264,11 @@ class Mission:
 
     def _mark_candidates(self, lidar):
         """
-        Candidatos: lo que el lidar ve lejos de las paredes del mapa (hasta lidar_range), en 3 scans, en manchas del tamaño de una caja. Cada celda suma
-        uno por scan, no por rayo: de cerca, decenas de rayos de un mismo scan caen en la misma celda y un solo scan malo inventaba candidatos.
+        Candidatos: lo que el lidar ve lejos de las paredes del mapa (hasta lidar_range), en candidate_scans scans, en manchas del tamaño de una caja. Cada
+        celda suma uno por scan, no por rayo: de cerca, decenas de rayos de un mismo scan caen en la misma celda y un solo scan malo inventaba candidatos.
 
-        Una mancha de más de 0.6 m es una pared corrida u otro objeto; una en el borde del mapa o a más de 0.3 m de donde anda el robot, algo afuera del
-        laberinto (visto por una abertura). Una mancha a menos de 0.35 m de un candidato es el mismo: le actualiza la posición (el centro de lo que vio el
+        Una mancha de más de candidate_size es una pared corrida u otro objeto; una en el borde del mapa o a más de route_distance de donde anda el robot,
+        algo afuera del laberinto (visto por una abertura). Una mancha a menos de candidate_merge de un candidato es el mismo: le actualiza la posición (el centro de lo que vio el
         lidar, sobre las caras que mira: no es el centro de la caja).
         """
         i, j = self.grid.to_cell(lidar[:, 0], lidar[:, 1])
@@ -271,16 +276,16 @@ class Mission:
         hit = np.zeros(self.found.shape, bool)
         hit[i[ok], j[ok]] = True
         self.found += hit
-        labels, n = ndimage.label(ndimage.binary_dilation(self.found >= 3), structure=np.ones((3, 3)))
+        labels, n = ndimage.label(ndimage.binary_dilation(self.found >= self.p.candidate_scans), structure=np.ones((3, 3)))
         for k in range(1, n + 1):
-            cx, cy = self.grid.to_world(*np.nonzero((labels == k) & (self.found >= 3)))
-            if max(np.ptp(cx), np.ptp(cy)) > 0.6: continue
+            cx, cy = self.grid.to_world(*np.nonzero((labels == k) & (self.found >= self.p.candidate_scans)))
+            if max(np.ptp(cx), np.ptp(cy)) > self.p.candidate_size: continue
 
             xy = (float(np.mean(cx)), float(np.mean(cy)))
             ci, cj = self.grid.to_cell(*xy)
             if not (2 <= ci < self.found.shape[0] - 2 and 2 <= cj < self.found.shape[1] - 2 and self.near_route[ci, cj]): continue
 
-            same = [cd for cd in self.candidates if math.hypot(cd['xy'][0] - xy[0], cd['xy'][1] - xy[1]) < 0.35]
+            same = [cd for cd in self.candidates if math.hypot(cd['xy'][0] - xy[0], cd['xy'][1] - xy[1]) < self.p.candidate_merge]
             if same: same[0]['xy'] = xy
             else:
                 self.candidates.append({'xy': xy, 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None})
@@ -288,44 +293,47 @@ class Mission:
 
     def _confirm(self, x, y, lidar):
         """
-        Descarta candidatos fantasma sin gastar cámara: con línea de vista a menos de 2.5 m, si en 5 ciclos seguidos el lidar no ve nada a menos de 0.25 m,
-        era una pared corrida por un error de pose de unos scans (el localizer corrige y la TF tarda tf_lead en reflejarlo). lidar: los puntos que no son
-        paredes del mapa. Si uno más cercano lo tapa (otro objeto delante), ese ciclo no cuenta. No se llama girando (ver step).
+        Descarta candidatos fantasma sin gastar cámara: con línea de vista a menos de confirm_range, si en confirm_misses ciclos seguidos el lidar no ve nada
+        a menos de confirm_radius, era una pared corrida por un error de pose de unos scans (el localizer corrige y la TF tarda tf_lead en reflejarlo). lidar: los puntos que no son
+        paredes del mapa. Si uno más cercano lo tapa (otro objeto delante, a occlusion_margin de la línea), ese ciclo no cuenta. No se llama girando (ver step).
         """
         r = np.hypot(lidar[:, 0] - x, lidar[:, 1] - y)
         bearing = np.arctan2(lidar[:, 1] - y, lidar[:, 0] - x)
         for cd in self.candidates:
             cx, cy = cd['xy']
             d = math.hypot(cx - x, cy - y)
-            if cd['done'] or d > 2.5 or not line_of_sight(self.grid, (x, y), (cx, cy)): continue
+            if cd['done'] or d > self.p.confirm_range or not line_of_sight(self.grid, (x, y), (cx, cy)): continue
 
-            if (np.hypot(lidar[:, 0] - cx, lidar[:, 1] - cy) < 0.25).any():
+            if (np.hypot(lidar[:, 0] - cx, lidar[:, 1] - cy) < self.p.confirm_radius).any():
                 cd['misses'] = 0
                 continue
-            if ((r < d - 0.3) & (np.abs(normalize(bearing - math.atan2(cy - y, cx - x))) < math.atan2(0.3, d))).any(): continue
+            m = self.p.occlusion_margin
+            if ((r < d - m) & (np.abs(normalize(bearing - math.atan2(cy - y, cx - x))) < math.atan2(m, d))).any(): continue
 
             cd['misses'] += 1
-            if cd['misses'] >= 5:
+            if cd['misses'] >= self.p.confirm_misses:
                 cd['done'], cd['why'] = True, 'fantasma'
                 self.log.append(f'candidato en ({cx:.2f}, {cy:.2f}): fantasma, el lidar no ve nada ahí')
 
     def _watch(self, x, y, yaw, dt, reports, red):
         """
-        Decide qué es cada candidato con lo que dice la percepción mientras lo mira: a menos de camera_range, en el 80 % central de la foto y con línea de vista.
+        Decide qué es cada candidato con lo que dice la percepción mientras lo mira: a menos de camera_range, en la fracción view_fraction central de la foto
+        y con línea de vista.
 
-        - Un reporte a menos de 0.4 m: era una víctima.
+        - Un reporte a menos de match_radius: era una víctima.
         - clear_time en cuadro sin rojo cerca (red: grupos rojos que la percepción todavía no reportó): no lo es. Si después aparece rojo cerca de uno
           descartado así o como fantasma (lo vio desde otro lado), se vuelve a abrir.
-        - Con rojo cerca se lo sigue mirando hasta el reporte; sin reporte tras watch_time en cuadro con 0.2 m de base, o 1.6 veces eso quieto, se deja.
+        - Con rojo cerca se lo sigue mirando hasta el reporte; sin reporte tras watch_time en cuadro con watch_baseline de base, o watch_still veces eso
+          quieto, se deja.
         """
         for cd in self.candidates:
             cx, cy = cd['xy']
-            if cd['why'] != 'reportado' and any(math.hypot(cx - rx, cy - ry) < 0.4 for rx, ry in reports):
+            if cd['why'] != 'reportado' and any(math.hypot(cx - rx, cy - ry) < self.p.match_radius for rx, ry in reports):
                 cd['done'], cd['why'] = True, 'reportado'
                 self.log.append(f'candidato en ({cx:.2f}, {cy:.2f}): reportado')
                 continue
 
-            red_near = any(math.hypot(cx - rx, cy - ry) < 0.4 for rx, ry in red)
+            red_near = any(math.hypot(cx - rx, cy - ry) < self.p.match_radius for rx, ry in red)
             if cd['done']:
                 if red_near and cd['why'] in ('sin rojo', 'fantasma'):
                     cd.update(done=False, why=None, time=0.0, views=[])
@@ -333,7 +341,7 @@ class Mission:
                 continue
 
             bearing = abs(normalize(math.atan2(cy - y, cx - x) - yaw))
-            if math.hypot(cx - x, cy - y) > self.p.camera_range or bearing > 0.4 * self.p.camera_fov or not line_of_sight(self.grid, (x, y), (cx, cy)): continue
+            if math.hypot(cx - x, cy - y) > self.p.camera_range or bearing > 0.5 * self.p.view_fraction * self.p.camera_fov or not line_of_sight(self.grid, (x, y), (cx, cy)): continue
 
             cd['time'] += dt
             cd['views'].append((x, y))
@@ -341,7 +349,7 @@ class Mission:
             if not red_near and cd['time'] > self.p.clear_time:
                 cd['done'], cd['why'] = True, 'sin rojo'
                 self.log.append(f'candidato en ({cx:.2f}, {cy:.2f}): sin rojo, no es una víctima')
-            elif cd['time'] > 1.6 * self.p.watch_time or (cd['time'] > self.p.watch_time and np.ptp(v[:, 0]) + np.ptp(v[:, 1]) > 0.2):
+            elif cd['time'] > self.p.watch_still * self.p.watch_time or (cd['time'] > self.p.watch_time and np.ptp(v[:, 0]) + np.ptp(v[:, 1]) > self.p.watch_baseline):
                 cd['done'], cd['why'] = True, 'rojo sin reporte'
                 self.log.append(f'candidato en ({cx:.2f}, {cy:.2f}): rojo pero sin reporte, lo dejo')
 
@@ -354,18 +362,18 @@ class Mission:
 
     def _clear_ahead(self, vx, vy):
         """
-        False si el lidar ve algo en la franja que el chasis va a barrer en el próximo medio segundo.
+        False si el lidar ve algo en la franja que el chasis va a barrer en los próximos stop_time segundos (más stop_margin).
 
-        Las paredes del mapa ya las evita el camino: esas solo frenan si están por tocar el chasis.
+        Las paredes del mapa ya las evita el camino: esas solo frenan si están a wall_stop del chasis.
         """
         v = math.hypot(vx, vy)
         if v < 1e-3 or not len(self.near): return True
 
         u = np.array([vx, vy]) / v
-        far = np.hypot(*self.near.T) > 0.12 # lo más cerca es el propio robot
+        far = np.hypot(*self.near.T) > self.p.self_radius # lo más cerca es el propio robot
         a = self.near[far] @ u
         side = np.abs(self.near[far] @ np.array([-u[1], u[0]]))
-        reach = np.where(self.is_wall[far], self.p.body_radius + 0.03, self.p.body_radius + 0.04 + 0.5 * v)
+        reach = np.where(self.is_wall[far], self.p.body_radius + self.p.wall_stop, self.p.body_radius + self.p.stop_margin + self.p.stop_time * v)
         blocking = (a > 0) & (a < reach) & (side < self.p.body_radius)
         if blocking.any(): self.blocker = self.near[far][blocking][np.argmin(a[blocking])] # para el log: qué lo frenó
 
@@ -384,9 +392,9 @@ class Mission:
             self.D = cost_to(self.grid, self.drivable, self.penalty, goal)
 
         route = path(self.grid, self.D, x, y)
-        if route is None and self.obstacles.any() and t - self.cleared_at > 5.0:
+        if route is None and self.obstacles.any() and t - self.cleared_at > self.p.clear_cooldown:
             # Sin camino por los obstáculos anotados: el ruido de pose los engorda y pueden cerrar un pasillo que tiene lugar (un palo en el medio).
-            # Se olvidan y se replanea: el lidar vuelve a anotar en 3 scans lo que de verdad está, ya sin engordar. Si sigue sin camino, no lo hay
+            # Se olvidan y se replanea: el lidar vuelve a anotar en obstacle_scans scans lo que de verdad está, ya sin engordar. Si sigue sin camino, no lo hay
             self.cleared_at, self.hits[:] = t, 0
             self._set_obstacles(np.zeros_like(self.obstacles))
 
@@ -395,16 +403,17 @@ class Mission:
 
         route.append(goal)
         dist = math.hypot(goal[0] - x, goal[1] - y)
-        # Volviendo, si no se acerca (zona muerta de los motores) pide cada vez más velocidad: +0.05 m/s por segundo sin acercarse 1 cm
-        v = min(self.p.max_speed, 0.8 * dist + (0.03 + 0.05 * (t - self.closest[1]) if final else 0.08))
+        # Frena al llegar (speed_gain por metro que falta). Volviendo, si no se acerca (zona muerta de los motores) pide cada vez más: return_ramp m/s por
+        # segundo sin acercarse 1 cm
+        v = min(self.p.max_speed, self.p.speed_gain * dist + (self.p.return_min_speed + self.p.return_ramp * (t - self.closest[1]) if final else self.p.min_speed))
 
         # Apunta adelante sobre el camino; si la recta hasta ahí pasa pegada a una pared o a un obstáculo (una esquina, una caja), prueba más cerca:
         # el camino va lejos de las paredes, así que su próximo tramo suele estar libre.
         margin = min(self.p.robot_radius, float(self._clear_at(x, y))) - 0.01
-        for distance in (self.p.lookahead, 0.2, 0.08):
+        for distance in (self.p.lookahead, self.p.lookahead_short, self.p.lookahead_min):
             ax, ay = lookahead_point(route, x, y, distance)
             s = np.linspace(0.2, 1.0, 5)
-            if distance > 0.08 and self._clear_at(x + s * (ax - x), y + s * (ay - y)).min() < margin: continue
+            if distance > self.p.lookahead_min and self._clear_at(x + s * (ax - x), y + s * (ay - y)).min() < margin: continue
 
             err = normalize(math.atan2(ay - y, ax - x) - yaw)
             vx, vy = v * math.cos(err), v * math.sin(err)
@@ -417,20 +426,21 @@ class Mission:
         self.blocked_time += dt
         if not final and self.blocked_time > self.p.max_blocked: return None
 
-        if final and self.blocked_time > 3 * self.p.max_blocked and self.obstacles.any():
+        if final and self.blocked_time > self.p.return_max_blocked and self.obstacles.any():
             # Volviendo no hay punto que saltear: se olvidan los obstáculos anotados (pueden ser fantasmas) y se replanea
             self.hits[:] = 0
             self._set_obstacles(np.zeros_like(self.obstacles))
             self.blocked_time = 0.0
 
-        # Trabado: se aleja de todo lo que tiene a menos de 35 cm (no solo de lo más cercano, así no se mete en un rincón) a 0.1 m/s: menos no vence la zona
-        # muerta de los motores. Sin girar, y vuelve a probar
-        far = self.near[np.hypot(*self.near.T) > 0.12]
+        # Trabado: se aleja de todo lo que tiene a menos de retreat_radius (no solo de lo más cercano, así no se mete en un rincón) a retreat_speed: menos no
+        # vence la zona muerta de los motores. Sin girar, y vuelve a probar
+        far = self.near[np.hypot(*self.near.T) > self.p.self_radius]
         d = np.hypot(*far.T)
-        q = (far[d < 0.35] / d[d < 0.35, None] ** 2).sum(axis=0) if (d < 0.35).any() else far[np.argmin(d)]
+        close = d < self.p.retreat_radius
+        q = (far[close] / d[close, None] ** 2).sum(axis=0) if close.any() else far[np.argmin(d)]
         n = math.hypot(*q)
 
-        return (-0.1 * q[0] / n, -0.1 * q[1] / n) if n > 1e-9 else (0.0, 0.0)
+        return (-self.p.retreat_speed * q[0] / n, -self.p.retreat_speed * q[1] / n) if n > 1e-9 else (0.0, 0.0)
 
 # --- Nodo de ROS ----------------------------------------------------------
 
@@ -438,7 +448,8 @@ class Navigator(Node):
     """
     Le pasa a Mission la pose (TF map -> base_footprint del localizer), el lidar y las posiciones de los reportes, y publica /cmd_vel y /done.
 
-    No se mueve antes de /map ni antes de que el localizer publique la largada (/jar/pose). Después de /done no vuelve a publicar.
+    No se mueve antes de /map ni antes de que el localizer publique la largada (/jar/pose). Frena mientras falte /jar/pose o un scan nuevo (sensor_timeout).
+    Después de /done no vuelve a publicar.
     """
     def __init__(self):
         super().__init__('navigator', automatically_declare_parameters_from_overrides=True)  # Registra el nodo en ROS con los parámetros de params.yaml
@@ -448,31 +459,82 @@ class Navigator(Node):
         self.max_speed = p['max_speed']
         self.max_turn = p['max_turn']
         self.turn_lead = p['turn_lead']
+        self.turn_gain = p['turn_gain']
+        self.speed_gain = p['speed_gain']
+        self.min_speed = p['min_speed']
 
         # Cuerpo y camino
         self.body_radius = p['body_radius']
         self.robot_radius = p['robot_radius']
+        self.wheel_x = p['wheel_x']
+        self.wheel_y = p['wheel_y']
+        self.self_radius = p['self_radius']
+        self.drivable_margin = p['drivable_margin']
         self.wall_margin = p['wall_margin']
+        self.wall_penalty = p['wall_penalty']
+        self.close_penalty = p['close_penalty']
         self.lookahead = p['lookahead']
-        self.max_blocked = p['max_blocked']
+        self.lookahead_short = p['lookahead_short']
+        self.lookahead_min = p['lookahead_min']
 
-        # Recorrido y candidatos
+        # Frenado, obstáculos y destrabe
+        self.wall_tolerance = p['wall_tolerance']
+        self.stop_time = p['stop_time']
+        self.stop_margin = p['stop_margin']
+        self.wall_stop = p['wall_stop']
+        self.obstacle_range = p['obstacle_range']
+        self.obstacle_scans = int(p['obstacle_scans'])
+        self.clear_cooldown = p['clear_cooldown']
+        self.max_blocked = p['max_blocked']
+        self.retreat_radius = p['retreat_radius']
+        self.retreat_speed = p['retreat_speed']
+
+        # Recorrido
         self.lidar_range = p['lidar_range']
+        self.tour_step = p['tour_step']
+        self.tour_coverage = p['tour_coverage']
         self.goal_tolerance = p['goal_tolerance']
+        self.pending_fraction = p['pending_fraction']
+        self.pending_min = int(p['pending_min'])
+
+        # Candidatos
+        self.candidate_scans = int(p['candidate_scans'])
+        self.candidate_size = p['candidate_size']
+        self.candidate_merge = p['candidate_merge']
+        self.route_distance = p['route_distance']
+        self.turning_rate = p['turning_rate']
+        self.confirm_range = p['confirm_range']
+        self.confirm_radius = p['confirm_radius']
+        self.confirm_misses = int(p['confirm_misses'])
+        self.occlusion_margin = p['occlusion_margin']
+
+        # Cámara y percepción
         self.camera_range = p['camera_range']
         self.camera_fov = p['camera_fov']
+        self.view_fraction = p['view_fraction']
         self.approach = p['approach']
+        self.match_radius = p['match_radius']
         self.clear_time = p['clear_time']
         self.watch_time = p['watch_time']
+        self.watch_baseline = p['watch_baseline']
+        self.watch_still = p['watch_still']
 
         # Regreso
         self.time_limit = p['time_limit']
+        self.return_pace = p['return_pace']
+        self.return_margin = p['return_margin']
         self.start_tolerance = p['start_tolerance']
         self.start_radius = p['start_radius']
+        self.start_stall = p['start_stall']
+        self.return_min_speed = p['return_min_speed']
+        self.return_ramp = p['return_ramp']
+        self.return_max_blocked = p['return_max_blocked']
 
         # Nodo
         self.base_frame = p['base_frame']
         self.rate_hz = p['rate_hz']
+        self.sensor_timeout = p['sensor_timeout']
+        self.start_match = p['start_match']
         self.victims = int(p['victims'])  # N: llega del launch (victimas:=N)
 
         self.tf = Buffer()
@@ -493,6 +555,8 @@ class Navigator(Node):
         self.board = self.mission = self.t0 = self.start = self.ready_at = None
         self.finished, self.reports = False, [] # posiciones de lo publicado en /victimas (por nodo_equipo)
         self.lidar = np.zeros((0, 2))
+        self.scan_t = 0 # ns, hora de los sensores del último scan: la nuestra puede ser otra (el software en otra compu)
+        self.pose_at = self.lidar_at = None # cuándo llegó la última /jar/pose y el último scan pasado a map (nuestra hora)
         self.red = [] # dónde ve rojo la percepción sin haberlo reportado (/jar/rojo)
 
     # ---------- entradas ----------
@@ -504,8 +568,11 @@ class Navigator(Node):
         """
         La primera pose del localizer es la largada (adonde vuelve). No sale de la TF: map -> odom va adelantada tf_lead (0.3 s) y en ese lapso
         la TF todavía da la pose de antes de localizarse (con el robot corrido 18 cm del origen, volvía al origen).
+
+        El localizer publica una con cada scan: si dejan de llegar, control frena.
         """
         if self.start is None: self.start = (msg.pose.position.x, msg.pose.position.y)
+        self.pose_at = self.get_clock().now()
 
     def on_red(self, msg):
         self.red = [(p.position.x, p.position.y) for p in msg.poses]
@@ -520,7 +587,8 @@ class Navigator(Node):
         Con la TF del instante del scan, no con la última: girando, la diferencia corre las paredes e inventa obstáculos. Si todavía no está, se descarta.
         """
         t = Time.from_msg(msg.header.stamp) + Duration(seconds=msg.time_increment * (len(msg.ranges) - 1) / 2)
-        if self.ready_at is None or t < self.ready_at: return # antes, la TF todavía no tenía la largada: las paredes salían corridas y parecían objetos
+        self.scan_t = t.nanoseconds
+        if self.ready_at is None or self.scan_t <= self.ready_at: return # antes, la TF todavía no tenía la largada: las paredes salían corridas y parecían objetos
 
         try:
             tf = self.tf.lookup_transform('map', msg.header.frame_id, t).transform
@@ -529,11 +597,12 @@ class Navigator(Node):
 
         r = np.asarray(msg.ranges)
         a = msg.angle_min + np.arange(len(r)) * msg.angle_increment
-        ok = np.isfinite(r) & (r > 0.12) & (r < self.lidar_range)
+        ok = np.isfinite(r) & (r > self.self_radius) & (r < self.lidar_range)
         th = yaw_of(tf.rotation)
         c, s = math.cos(th), math.sin(th)
         x, y = r[ok] * np.cos(a[ok]), r[ok] * np.sin(a[ok])
         self.lidar = np.column_stack([tf.translation.x + c * x - s * y, tf.translation.y + s * x + c * y])
+        self.lidar_at = self.get_clock().now()
 
     # ---------- control ----------
     def pose(self):
@@ -558,11 +627,21 @@ class Navigator(Node):
             if pose is None or self.start is None: return
 
             if self.mission is None:
-                if math.hypot(pose[0] - self.start[0], pose[1] - self.start[1]) > 0.05: return # la TF todavía no tiene la largada del localizer
-                self.mission, self.ready_at = Mission(self.board, self.start, self), self.get_clock().now()
+                if math.hypot(pose[0] - self.start[0], pose[1] - self.start[1]) > self.start_match: return # la TF todavía no tiene la largada del localizer
+                self.mission, self.ready_at = Mission(self.board, self.start, self), self.scan_t # los scans que siguen ya tienen la largada en la TF
                 self.get_logger().info(f'recorrido: {len(self.mission.points)} puntos de paso desde ({pose[0]:.2f}, {pose[1]:.2f})')
 
-            t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
+            # Sin /jar/pose o sin scan nuevo, frena: se cayó el localizer o el lidar, y la TF sigue con la odometría sola (y el lidar, congelado)
+            now = self.get_clock().now()
+            lost = [name for name, at in (('/jar/pose', self.pose_at), ('scan', self.lidar_at)) if at is None or (now - at).nanoseconds * 1e-9 > self.sensor_timeout]
+            if lost:
+                self.cmd_pub.publish(Twist())
+                self.mission.t_prev = None # al volver, ese rato no cuenta (dt = 0): ni como tiempo mirando un candidato ni como tapado
+                if self.lidar_at is not None: # al arrancar, hasta el primer scan después de la largada, frena sin avisar
+                    self.get_logger().warn(f'freno: hace más de {self.sensor_timeout:.1f} s que no llega {" ni ".join(lost)}', throttle_duration_sec=2.0)
+                return
+
+            t = (now - self.t0).nanoseconds * 1e-9
             state = self.mission.state
             (vx, vy, w), done = self.mission.step(*pose, t, self.lidar, self.reports, self.victims, self.red)
 

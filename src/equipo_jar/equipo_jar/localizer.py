@@ -6,7 +6,6 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -59,6 +58,18 @@ def z_row(q):
     x, y, z, w = q.x, q.y, q.z, q.w
     return np.array([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)])
 
+def turn_source(d_odom, d_imu, imu_check):
+    """
+    De dónde sale el giro entre dos scans: 'imu', o 'odom' si la IMU no está (d_imu None: no llega, sin TF o desactivada) o gira al revés que las ruedas.
+
+    La IMU es mejor (las ruedas patinan), pero no es indispensable: sin ella el filtro igual calza con el giro de /odom. Al revés significa montada distinto
+    de lo que dice su TF; las ruedas patinan pero no giran para el otro lado. Giros de menos de imu_check (rad) no cuentan: con el robot derecho los dos
+    son ruido.
+    """
+    if d_imu is None or (d_imu * d_odom < 0 and min(abs(d_imu), abs(d_odom)) > imu_check): return 'odom'
+
+    return 'imu'
+
 def seconds(stamp):
     """
     Stamp de ROS (sec y nanosec, dos enteros). Lo convertimos en un solo float de segundos para poder restar e interpolar instantes.
@@ -78,6 +89,7 @@ class Localizer(Node):
         self.rays = int(p['rays'])
         self.min_range = p['min_range']
         self.max_range = p['max_range']
+        self.min_points = int(p['min_points'])  # Scans con menos puntos se descartan
         self.deskew = p['deskew']  # Orden temporal de los rayos para enderezar el scan; 0 lo desactiva
 
         # Corrección
@@ -86,6 +98,7 @@ class Localizer(Node):
         self.temperature = p['temperature']
         self.min_forward = p['min_forward']
         self.min_turn = p['min_turn']
+        self.match_tolerance = p['match_tolerance']  # Confianza: rayos a menos de esto de una pared
 
         # Predicción
         self.trans_noise = p['trans_noise']
@@ -93,17 +106,28 @@ class Localizer(Node):
         self.forward_scale = p['forward_scale']    # se calibra en pista
         self.turn_scale = p['turn_scale']
         self.imu_turn = p['imu_turn']              # False: el giro sale de /odom
+        self.imu_check = p['imu_check']
+        self.imu_gap = p['imu_gap']
+        self.bias_samples = int(p['bias_samples'])
+        self.max_age = p['max_age']                # Dato de /odom o IMU más viejo que esto al llegar el scan: sensor caído
 
         # Relocalización
         self.rescue_confidence = p['rescue_confidence']
         self.rescue_scans = int(p['rescue_scans'])
         self.rescue_margin = p['rescue_margin']
+        self.rescue_radius = p['rescue_radius']
 
         # Largada
         self.search_radius = p['search_radius']
+        self.search_sigma = p['search_sigma']
+        self.search_z_rand = p['search_z_rand']
+        self.search_yaw_sigma = p['search_yaw_sigma']
+        self.init_sigma_xy = p['init_sigma_xy']
+        self.init_sigma_yaw = p['init_sigma_yaw']
 
         # Salida
         self.tf_lead = p['tf_lead']
+        self.tf_rate = p['tf_rate']
 
         # Tamaño
         self.particles = int(p['particles'])
@@ -120,9 +144,9 @@ class Localizer(Node):
         self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
         self.create_subscription(Odometry, '/odom', self.on_odom, 50)
         self.create_subscription(Imu, '/imu/data', self.on_imu, 50)
-        # Refrescamos 20 veces por segundo para asegurar que Nav2 tenga map->odom. Grupo propio: sigue publicando mientras
+        # Refrescamos tf_rate veces por segundo para asegurar que Nav2 tenga map->odom. Grupo propio: sigue publicando mientras
         # process_scan relocaliza (~0.35 s bloqueado, más que tf_lead)
-        self.create_timer(0.05, self.publish_tf, callback_group=MutuallyExclusiveCallbackGroup())
+        self.create_timer(1.0 / self.tf_rate, self.publish_tf, callback_group=MutuallyExclusiveCallbackGroup())
 
         # Estado inicial
         self.board = self.pf = self.last = None
@@ -134,6 +158,8 @@ class Localizer(Node):
         self.still = deque(maxlen=500)  # Lo que mide el giróscopio mientras el robot espera quieto (mide sesgo)
         self.bias = 0.0  # Sesgo del giróscopio, se calcula cuando llega el /map
         self.bad = 0  # Contador de scans mal calzados (relocalización)
+        self.offsets = deque(maxlen=50)  # Hora de los sensores - la nuestra, de cada /odom (s): el software puede correr en otra compu, con otra hora
+        self.clock_offset = None  # La mayor de offsets (la del /odom que llegó más rápido): la demora de la red no la corre
 
     # ---------- entradas ----------
     def on_map(self, msg):
@@ -144,12 +170,12 @@ class Localizer(Node):
         Hace dos cosas, una sola vez por corrida:
             - Convierte el OccupancyGrid en un Board, con la tabla de distancias a la pared más cercana que el filtro consulta en cada scan.
             - Estima el sesgo del giróscopo. Mientras el robot esperaba quieto el mapa, el giróscopo debería haber medido 0: lo que midió es el sesgo.
-              Se toma la mediana de las últimas 100 muestras: son las más cercanas a la largada y la mediana no se mueve si alguien toca el robot.
+              Se toma la mediana de las últimas bias_samples muestras: son las más cercanas a la largada y la mediana no se mueve si alguien toca el robot.
         """
         if self.board is not None: return
 
         self.board = Board.from_msg(msg)
-        if self.still: self.bias = float(np.median(list(self.still)[-100:]))
+        if self.still: self.bias = float(np.median(list(self.still)[-self.bias_samples:]))
         self.get_logger().info(f'¡Mapa recibido! Sesgo del giróscopo: {self.bias:+.4f} rad/s')
 
     def on_odom(self, msg): # Cuánto avanzó el robot
@@ -161,11 +187,17 @@ class Localizer(Node):
 
         atan2 devuelve (-π, π], así que al cruzar ±π la lectura salta de forma discreta aunque el robot gire apenas. Se guarda anterior + normalize(Δ). Puede exceder π: quien lo usa
         toma diferencias o normaliza.
+
+        También mide la diferencia entre la hora de los sensores y la nuestra (clock_offset), para fechar la TF que publica publish_tf.
         """
         yaw = yaw_of(msg.pose.pose.orientation)
 
         if self.odoms: yaw = self.odoms[-1][3] + normalize(yaw - self.odoms[-1][3])
         self.odoms.append((seconds(msg.header.stamp), msg.pose.pose.position.x, msg.pose.pose.position.y, yaw))
+        now = self.get_clock().now().nanoseconds
+        if now: # con use_sim_time es 0 hasta el primer /clock: contra 0, la TF saldría fechada en el futuro y TF descartaría las siguientes por viejas
+            self.offsets.append(seconds(msg.header.stamp) - now * 1e-9)
+            self.clock_offset = max(self.offsets)
 
     def on_imu(self, msg): # Cuánto giró el robot
         """
@@ -175,7 +207,7 @@ class Localizer(Node):
         Solo usa angular_velocity, llevada al eje vertical del robot con imu_row. Antes del mapa junta las muestras crudas en self.still para el sesgo (on_map).
         
         Integramos la velocidad angular que nos entrega la IMU para obtener el ángulo. Se descartan dt <= 0 (repetidos o desordenados) y
-        dt >= 0.5 s (huecos: ese giro se pierde y lo corrige el lidar). Al ser una suma, el yaw es continuo y no hace falta desenrollarlo.
+        dt >= imu_gap (huecos: ese giro se pierde y lo corrige el lidar). Al ser una suma, el yaw es continuo y no hace falta desenrollarlo.
         """
         if self.imu_row is None:
             try: tf = self.tf.lookup_transform(self.base_frame, msg.header.frame_id, Time())
@@ -190,7 +222,7 @@ class Localizer(Node):
         if self.board is None: self.still.append(wz) # Antes del mapa esperamos quietitos
 
         # Cuadratura
-        if self.imu_t is not None and 0.0 < t - self.imu_t < 0.5: self.imu_yaw += (wz - self.bias) * (t - self.imu_t)
+        if self.imu_t is not None and 0.0 < t - self.imu_t < self.imu_gap: self.imu_yaw += (wz - self.bias) * (t - self.imu_t)
 
         self.imu_rate = wz - self.bias  # para el deskew de points
         
@@ -198,7 +230,7 @@ class Localizer(Node):
         self.turns.append((t, self.imu_yaw))
 
     @staticmethod
-    def interpolate(queue, t):
+    def interpolate(queue, t, max_age):
         """
         /odom y la IMU reportan cada ~0.1 s, nunca justo en t: se traza una recta entre el dato de antes y el de después y se lee el punto en t. 
         Ej.: x = 1.00 a los 10.00 s y x = 1.05 a los 10.10 s -> a los 10.06 s, x = 1.03.
@@ -206,10 +238,10 @@ class Localizer(Node):
         process_scan la llama con odoms -> [x, y, yaw] y con turns -> [yaw] (devuelve cada columna menos el tiempo).
 
         Casos borde:
-            - None (el scan se descarta): no hay datos, t es más viejo que todo el historial, o el último dato tiene más de 0.25 s (sensor caído).
+            - None (el scan se descarta): no hay datos, t es más viejo que todo el historial, o el último dato tiene más de max_age (sensor caído).
             - t después del último dato (el siguiente todavía no llegó): se prolonga la recta de los dos últimos datos, suponiendo que el robot no realiza cambios bruscos de movimiento.
         """
-        if not queue or t > queue[-1][0] + 0.25 or t < queue[0][0]: return None
+        if not queue or t > queue[-1][0] + max_age or t < queue[0][0]: return None
         data = np.asarray(queue)
 
         if t > data[-1, 0] and len(data) > 1 and data[-1, 0] > data[-2, 0]:  # el siguiente dato no llegó
@@ -263,38 +295,42 @@ class Localizer(Node):
 
         # Instante medio de los rayos: en el real se reparten a lo largo de la vuelta desde el stamp
         t = seconds(msg.header.stamp) + msg.time_increment * (len(msg.ranges) - 1) / 2
-        odom = self.interpolate(self.odoms, t)
-        turn = self.interpolate(self.turns, t)
-        
-        if odom is None or (self.imu_turn and turn is None): return
+        odom = self.interpolate(self.odoms, t, self.max_age)
+        if odom is None: return
         ox, oy, oyaw = odom
-        yaw = turn[0] if self.imu_turn else oyaw
-        
+        turn = self.interpolate(self.turns, t, self.max_age) if self.imu_turn else None
+        imu = None if turn is None else turn[0]  # yaw integrado de la IMU en t; None sin IMU: el giro sale de /odom (turn_source)
+
         pts = self.points(msg, laser)
-        if len(pts) < 20: return
+        if len(pts) < self.min_points: return
 
         if self.pf is None: # Primer scan con mapa: la largada
-            pose = initial_search(self.board, pts, radius=self.search_radius)
+            pose = initial_search(self.board, pts, (0.0, 0.0, 0.0), self.search_radius, self.search_sigma, self.search_z_rand, self.search_yaw_sigma)
             self.pf = ParticleFilter(self.board, self.particles)
-            self.pf.initialize(pose)
-            self.last = (ox, oy, oyaw, yaw)
+            self.pf.initialize(pose, self.init_sigma_xy, self.init_sigma_yaw)
+            self.last = (ox, oy, oyaw, imu)
 
             self.get_logger().info(f'largada estimada: x={pose[0]:.3f} y={pose[1]:.3f} '
                                    f'yaw={math.degrees(pose[2]):.1f}° '
-                                   f'(calce {match_fraction(self.board, pose, pts):.0%})')
+                                   f'(calce {match_fraction(self.board, pose, pts, self.match_tolerance):.0%})')
         else:
-            lx, ly, lyaw, lturn = self.last
+            lx, ly, lyaw, limu = self.last
             c, s = math.cos(lyaw), math.sin(lyaw)
 
             dx = (c * (ox - lx) + s * (oy - ly)) * self.forward_scale
             dy = (-s * (ox - lx) + c * (oy - ly)) * self.forward_scale
-            dth = (yaw - lturn) * self.turn_scale
+            d_imu = None if imu is None or limu is None else imu - limu
+            source = turn_source(oyaw - lyaw, d_imu, self.imu_check)
+            dth = (d_imu if source == 'imu' else oyaw - lyaw) * self.turn_scale
+            if self.imu_turn and source == 'odom':
+                self.get_logger().warn('giro de /odom: ' + ('no llega la IMU (o falta su TF)' if d_imu is None else 'la IMU gira al revés que las ruedas'),
+                                       throttle_duration_sec=5.0)
 
             # Con el robot quieto no se corrige: el mismo scan una y otra vez sobreconfía al filtro.
             if math.hypot(dx, dy) > self.min_forward or abs(dth) > self.min_turn:
                 self.pf.predict(dx, dy, dth, self.trans_noise, self.rot_noise)
                 self.pf.correct(pts, self.sigma, self.z_rand, self.temperature)
-                self.last = (ox, oy, oyaw, yaw)
+                self.last = (ox, oy, oyaw, imu)
         est, _ = self.pf.estimate()
 
         # map->odom: cuánto girar y correr el frame odom para que la pose de la odometría coincida con la del filtro (ambas en t)
@@ -302,21 +338,21 @@ class Localizer(Node):
         c, s = math.cos(th), math.sin(th)
         self.map_odom = (est[0] - (c * ox - s * oy), est[1] - (s * ox + c * oy), th)
 
-        confidence = match_fraction(self.board, est, pts)
+        confidence = match_fraction(self.board, est, pts, self.match_tolerance)
         self.confidence_pub.publish(Float32(data=confidence))
 
         # Contamos los scans seguidos con confianza menor a rescue_confidence, un scan bueno lo devuelve a 0
         self.bad = self.bad + 1 if confidence < self.rescue_confidence else 0
 
-        # Después de 2s sin calzar, busca a fuerza bruta la mejor pose a menos de 0.5m de donde creía estar
+        # Después de rescue_scans sin calzar, busca a fuerza bruta la mejor pose a menos de rescue_radius de donde creía estar
         if self.bad > self.rescue_scans:
-            candidate = initial_search(self.board, pts, center=tuple(est), radius=0.5)
+            candidate = initial_search(self.board, pts, tuple(est), self.rescue_radius, self.search_sigma, self.search_z_rand, self.search_yaw_sigma)
             
             # Si no la hay, el mundo difiere del mapa (objeto, ventana) y el filtro no estaba perdido.
-            if match_fraction(self.board, candidate, pts) > confidence + self.rescue_margin:
+            if match_fraction(self.board, candidate, pts, self.match_tolerance) > confidence + self.rescue_margin:
                 self.get_logger().warn('filtro perdido: relocalizando')
-                self.pf.initialize(candidate)
-                self.last = (ox, oy, oyaw, yaw)  # candidate es la pose en t: el próximo movimiento se mide desde acá
+                self.pf.initialize(candidate, self.init_sigma_xy, self.init_sigma_yaw)
+                self.last = (ox, oy, oyaw, imu)  # candidate es la pose en t: el próximo movimiento se mide desde acá
             self.bad = 0
 
         # Armamos un mensaje de ROS con la pose en el mapa
@@ -331,14 +367,20 @@ class Localizer(Node):
         """
         Publica la última corrección map->odom (self.map_odom, la calcula process_scan) en /tf. Es la salida principal del localizer.
 
-        Corre con un timer a 20 Hz, no con cada scan: Nav2 necesita el frame map desde el arranque y un flujo parejo aunque se descarten scans.
+        Corre con un timer a tf_rate (20 Hz), no con cada scan: Nav2 necesita el frame map desde el arranque y un flujo parejo aunque se descarten scans.
 
         Stamp adelantado tf_lead (0.3 s), como transform_tolerance de AMCL: TF no extrapola hacia adelante y sin esto las consultas en el instante actual pueden fallar.
         Es válido porque map->odom es el desfase de la odometría y cambia despacio. El movimiento rápido va en odom->base_footprint.
+
+        Con la hora de los sensores, no la nuestra (clock_offset): si el software corre en otra compu con el reloj corrido, la TF del robot y la nuestra no
+        se cruzarían (pose atrasada, o ninguna). Antes del primer /odom no se publica: una TF con la otra hora quedaría en los buffers y TF descarta lo que
+        llegue más de 10 s antes que ella.
         """
+        if self.clock_offset is None: return
+
         x, y, th = self.map_odom
         t = TransformStamped()
-        t.header.stamp = (self.get_clock().now() + Duration(seconds=self.tf_lead)).to_msg()
+        t.header.stamp = Time(nanoseconds=self.get_clock().now().nanoseconds + round((self.clock_offset + self.tf_lead) * 1e9)).to_msg()
         t.header.frame_id, t.child_frame_id = 'map', 'odom'
 
         t.transform.translation.x, t.transform.translation.y = float(x), float(y)

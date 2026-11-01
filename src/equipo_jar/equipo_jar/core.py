@@ -85,11 +85,12 @@ def log_likelihood(grid, poses, pts, sigma, z_rand):
     
     return np.log(np.exp(-0.5 * (d / sigma) ** 2) + z_rand).sum(axis=1)
 
-def initial_search(grid, pts, center=(0.0, 0.0, 0.0), radius=0.4, sigma=0.08, z_rand=0.05, sigma_yaw=0.6):
+def initial_search(grid, pts, center, radius, sigma, z_rand, sigma_yaw):
     """
     Pose (x, y, θ) que mejor explica el scan cerca de `center`, por fuerza bruta.
 
     Dos pasadas: una gruesa (±radius y la vuelta entera) y una fina alrededor de la ganadora. Un prior suave hacia `center` solo desempata poses que el lidar no distingue.
+    sigma y z_rand puntúan cada rayo como en log_likelihood; sigma_yaw (rad) es el ancho del prior en el ángulo.
     Sirve para la largada y para relocalizarse (con `center` = última pose buena).
 
     Si el robot está fuera de ±radius devuelve igual una pose equivocada: verificar con match_fraction.
@@ -117,7 +118,7 @@ def initial_search(grid, pts, center=(0.0, 0.0, 0.0), radius=0.4, sigma=0.08, z_
     
     return np.array([p[0], p[1], normalize(p[2])])
 
-def match_fraction(grid, pose, pts, tolerance=0.10):
+def match_fraction(grid, pose, pts, tolerance):
     """
     Confianza de una pose: fracción (0 a 1) de rayos del scan que caen a menos de "tolerance" de una pared.
 
@@ -147,13 +148,13 @@ class ParticleFilter:
         p: (n, 3) poses de las partículas.
         w: (n,) pesos, suman 1.
     """
-    def __init__(self, grid, n=500, seed=None):
+    def __init__(self, grid, n, seed=None):
         self.grid, self.n = grid, n # n: cantidad de partículas
         self.rng = np.random.default_rng(seed)
         self.p = np.zeros((n, 3))
         self.w = np.full(n, 1.0 / n)
 
-    def initialize(self, pose, sigma_xy=0.05, sigma_th=0.05):
+    def initialize(self, pose, sigma_xy, sigma_th):
         """
         Reparte las partículas en una nube alrededor de `pose` (normalmente, la de initial_search).
 
@@ -162,7 +163,7 @@ class ParticleFilter:
         self.p = np.asarray(pose, float) + self.rng.normal(0, [sigma_xy, sigma_xy, sigma_th], (self.n, 3))
         self.w[:] = 1.0 / self.n
 
-    def predict(self, dx, dy, dth, trans_noise=0.1, rot_noise=0.1):
+    def predict(self, dx, dy, dth, trans_noise, rot_noise):
         """
         Mueve las partículas según la odometría desde la última llamada.
           dx, dy: avance en el frame del robot.
@@ -181,14 +182,14 @@ class ParticleFilter:
         self.p[:, 1] += s * ex + c * ey
         self.p[:, 2] = normalize(self.p[:, 2] + eth)
 
-    def correct(self, pts, sigma=0.08, z_rand=0.2, temperature=0.3):
+    def correct(self, pts, sigma, z_rand, temperature):
         """
         Repesa las partículas con un scan.
 
         Peso nuevo ∝ peso viejo × verosimilitud^temperature. 
             -> Bayes de manual, la única diferncia es elevar a la temperatura, basicamente disminuimos las diferencias para mantener el grupo variado
         
-        0.3 sale de la teoría, falta calibrarlo con datos reales. Remuestrea solo si las partículas efectivas (1/Σw²) bajan de n/2: remuestrear siempre empobrece la nube.
+        Remuestrea solo si las partículas efectivas (1/Σw²) bajan de n/2: remuestrear siempre empobrece la nube.
         """
         lw = temperature * log_likelihood(self.grid, self.p, pts, sigma, z_rand) + np.log(self.w + 1e-300)
         w = np.exp(lw - lw.max())
@@ -213,13 +214,13 @@ class ParticleFilter:
 
 # --- Plan de búsqueda (misión) --------------------------------------------
 
-def visibility(grid, x, y, max_range=3.0, n_rays=360):
+def visibility(grid, x, y, max_range, n_rays=360):
     """
     Máscara (height, width) de las celdas que se verían desde (x, y): cada rayo hasta la primera pared. Es para planear, sobre el mapa:
     viewpoint_tour la usa para elegir puntos de vista que entre todos vean el laberinto.
     
     Lanza n_rays rayos en 360° y los recorre cada media celda; maximum.accumulate bloquea todo lo que queda detrás de la primera pared o fuera del mapa.
-        max_range: 3 m es hasta donde la cámara reconoce una caja (~23 px a esa distancia), no el alcance del lidar. 
+        max_range: hasta dónde se ve (la misión usa lidar_range).
         n_rays: con 360, a 3 m los rayos quedan a una celda de distancia.
     """
     ang = np.linspace(0, 2 * np.pi, n_rays, endpoint=False)
@@ -330,7 +331,7 @@ def _two_opt(order, D):
     
     return order
 
-def viewpoint_tour(grid, start, robot_radius=0.20, max_range=3.0, step=0.5, coverage=0.98):
+def viewpoint_tour(grid, start, robot_radius, max_range, step, coverage):
     """
     Como el mapa se conoce, no hace falta explorar: hay que elegir desde dónde mirar y en qué orden. Se calcula una sola vez, al llegar /map (~0,5 s):
 
@@ -428,7 +429,7 @@ class DetectionClusterer:
         publicar en /victimas; la clase no lo toca.
         - radius: a menos de esto del centro de un grupo, la detección es de esa caja (las cajas miden 0,25 m). max_obs: cuántas observaciones guarda por grupo (las últimas).
     """
-    def __init__(self, radius=0.35, max_obs=300):
+    def __init__(self, radius, max_obs=300):
         self.radius, self.max_obs = radius, max_obs
         self.groups = []  # cada uno: {'obs': [(x, y, rx, ry)], 'reported': bool}
 
@@ -451,9 +452,9 @@ class DetectionClusterer:
         o = np.asarray(g['obs'])
         return float(np.median(o[:, 0])), float(np.median(o[:, 1]))
 
-    def ready(self, g, n_min=15, max_spread=0.08, min_baseline=0.20):
-        """n_min observaciones, poco dispersas, y vistas desde dos lugares distintos
-        (o el doble de observaciones si el robot no se movió)."""
+    def ready(self, g, n_min, max_spread, min_baseline):
+        """n_min observaciones, con dispersión (MAD, m) menor a max_spread, y vistas desde lugares a más de min_baseline m (o el doble de
+        observaciones si el robot no se movió)."""
         o = np.asarray(g['obs'])
         if len(o) < n_min: return False
 

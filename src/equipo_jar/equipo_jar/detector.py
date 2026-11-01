@@ -35,8 +35,8 @@ def puntos_laser_a_pixeles(xyz, rotacion, traslacion, fx, fy, cx, cy):
     return u,v,adelante
 
 class ProcesadorVision:
-    def __init__(self, hue_rojo_bajo_1, hue_rojo_alto_1, hue_rojo_bajo_2, hue_rojo_alto_2, saturacion_min, valor_min, mitad_caja):
-        # Umbrales HSV y tamaño de la caja: los valores están solo en params.yaml (sección nodo_equipo), comentados; se pueden retocar después del
+    def __init__(self, hue_rojo_bajo_1, hue_rojo_alto_1, hue_rojo_bajo_2, hue_rojo_alto_2, saturacion_min, valor_min, mitad_caja, erosion_px, salto_max, rayos_min):
+        # Umbrales HSV, tamaño de la caja y filtros de paralaje: los valores están solo en params.yaml (sección nodo_equipo), comentados; se pueden retocar después del
         # cierre de entregas. Elegidos con test_color_lighting.py (fotos reales del bag con luz alterada)
         self.hue_rojo_bajo_1 = hue_rojo_bajo_1
         self.hue_rojo_alto_1 = hue_rojo_alto_1
@@ -47,9 +47,9 @@ class ProcesadorVision:
         self.mitad_caja = mitad_caja # m: de la cara que ve el láser al centro, que es lo que mide el juez
 
         # Contra el paralaje en los bordes de la caja
-        self.erosion_px = 2 # píxeles que se le sacan a la silueta roja de cada lado
-        self.salto_max = 0.05 # m: un salto mayor entre rayos rojos vecinos corta el tramo
-        self.rayos_min = 5 # tramos más cortos se descartan (una caja a 3 m tiene ~14 rayos por cara)
+        self.erosion_px = int(erosion_px) # píxeles que se le sacan a la silueta roja de cada lado
+        self.salto_max = salto_max # m: un salto mayor entre rayos rojos vecinos corta el tramo
+        self.rayos_min = int(rayos_min) # tramos más cortos se descartan
 
     def extraer_coordenadas_cajas(self, imagen_bgr, rangos, angulos, rotacion, traslacion, fx, fy, cx, cy):
         """

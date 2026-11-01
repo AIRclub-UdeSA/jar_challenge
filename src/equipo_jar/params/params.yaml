@@ -5,6 +5,9 @@
 # coordenadas, rutas ni posiciones de víctimas. El CI (tools/verificar_params.py)
 # rechaza estos archivos si rompen la regla.
 #
+# Es lo único que se puede cambiar después del cierre de entregas: todo número que dependa del robot, de los sensores o de la arena está acá, no en
+# el código. Los tests leen este archivo.
+#
 nodo_equipo:
   ros__parameters:
     # Rojo de las víctimas en HSV de OpenCV (hue 0-180): hue en [bajo_1, alto_1] o [bajo_2, alto_2], S >= saturacion_min, V >= valor_min.
@@ -15,55 +18,148 @@ nodo_equipo:
     hue_rojo_alto_2: 180.0
     saturacion_min: 100.0           # cajas 140-180, paredes < 60 (luz original); 90 ya da falsos
     valor_min: 30.0                 # caras oscuras de las cajas: V ~ 90 con luz normal
-    mitad_caja: 0.125               # m: de la cara que ve el láser al centro (cajas de 0.25 m)
+    mitad_caja: 0.125               # m: de la cara que ve el láser al centro (cajas de 0.25 m; las del bag eran de 0.18)
+
+    # Paralaje entre cámara y lidar en los bordes de la caja (test_detector.py)
+    erosion_px: 2                   # píxeles que se le sacan a la silueta roja de cada lado
+    salto_max: 0.05                 # m: un salto mayor entre rayos rojos vecinos corta el tramo (separa la caja de la pared de atrás)
+    rayos_min: 5                    # tramos rojos más cortos se descartan (una caja a 3 m tiene ~14 rayos por cara)
     deskew: -1                      # orden temporal de los rayos, igual que en localizer; 0 lo desactiva
+    desfase_foto_max: 0.1           # s: sin foto tan cerca del instante medio del scan, el scan no se usa
     pared_min: 0.0                  # m: un rayo rojo que pegó a esto o menos de una pared del mapa es la pared; 0: solo en celdas de pared
                                     # (con 0.10 se perdían rayos de una caja apoyada en la pared: test_perception_bag.py)
+
+    # Cuándo reportar (cada reporte gasta uno de los N)
+    radio_grupo: 0.35               # m: una detección a menos de esto del centro de un grupo es esa caja
     observaciones_min: 10           # scans con la caja para reportarla (el doble si el robot no se movió); en el bag, con 10 o 15 los reportes quedan a < 4 cm
+    dispersion_max: 0.08            # m: grupos más dispersos (MAD de sus detecciones) no se reportan
+    base_min: 0.20                  # m que se tiene que mover el robot mientras la ve; si no, el doble de observaciones
+    observaciones_rojo: 2           # con esto, el grupo sin reportar va a /jar/rojo: el navegador sigue mirando ese candidato
 
 localizer:
   ros__parameters:
     base_frame: base_footprint
+    # Lidar
     rays: 90                  # rayos que usa el filtro (de los 1080)
     min_range: 0.15           # m: más cerca son rayos que pegan en el propio robot
     max_range: 8.0            # m
+    min_points: 20            # scans con menos puntos se descartan
     deskew: -1                # orden temporal de los rayos al enderezar el scan (verificado con el bag); 0 lo desactiva
+
+    # Corrección
     sigma: 0.06               # m: error que se le perdona a un rayo (0.08 dejaba que las cajas tiraran más de la pose)
     z_rand: 0.2               # piso para rayos que el mapa no explica (cajas, señuelos)
     temperature: 0.3          # < 1: los rayos no son independientes
+    min_forward: 0.02         # m: con menos movimiento no corrige
+    min_turn: 0.03            # rad
+    match_tolerance: 0.10     # m: confianza = fracción de rayos a menos de esto de una pared (mayor a una celda)
+
+    # Predicción
     trans_noise: 0.15         # error de la odometría, proporcional a lo recorrido
     rot_noise: 0.15           # proporcional a lo girado
     forward_scale: 1.0        # escala del avance de /odom. En el bag el robot avanza ~0.78 de lo que dice /odom, pero con 0.8 el filtro calza igual: el lidar corrige
     turn_scale: 1.0           # escala del giro
-    imu_turn: true            # false: el giro sale de /odom (para comparar)
+    imu_turn: true            # false: el giro sale de /odom. Con true también sale de /odom si la IMU no llega o gira al revés que las ruedas
+    imu_check: 0.05           # rad: giro mínimo entre scans para comparar el signo de la IMU con el de /odom
+    imu_gap: 0.5              # s: un hueco mayor entre mensajes de la IMU no se integra (lo corrige el lidar)
+    bias_samples: 100         # muestras del giróscopo quieto antes del mapa para el sesgo (10 s a 10 Hz)
+    max_age: 0.25             # s: si el último /odom o IMU es más viejo que esto al llegar el scan, el sensor se cayó y el scan se descarta
+
+    # Largada y relocalización
     search_radius: 0.4        # m alrededor del origen para la búsqueda inicial
-    min_forward: 0.02         # m: con menos movimiento no corrige
-    min_turn: 0.03            # rad
-    tf_lead: 0.3              # s: map->odom fechada hacia adelante, como AMCL
+    search_sigma: 0.08        # m: error de rayo en la búsqueda a fuerza bruta (largada y rescate)
+    search_z_rand: 0.05       # piso para rayos que el mapa no explica, en la búsqueda
+    search_yaw_sigma: 0.6     # rad: la búsqueda prefiere yaw 0 (largada) o el último (rescate); solo desempata lo que el lidar no distingue
+    init_sigma_xy: 0.05       # m: nube de partículas alrededor de la pose encontrada
+    init_sigma_yaw: 0.05      # rad
     rescue_confidence: 0.6    # por debajo, el scan no calza (con 16 cajas el mínimo fue 0.71; rescue_margin evita falsos rescates)
     rescue_scans: 15          # scans seguidos sin calzar antes de relocalizar
     rescue_margin: 0.15       # cuánto mejor tiene que calzar la pose nueva para reemplazar al filtro
+    rescue_radius: 0.5        # m alrededor de la última pose para relocalizar
+
+    # Salida
+    tf_lead: 0.3              # s: map->odom fechada hacia adelante, como AMCL
+    tf_rate: 20.0             # Hz de map->odom
     particles: 500
 
 navigator:
   ros__parameters:
     base_frame: base_footprint
     rate_hz: 10.0
-    max_speed: 0.5           # m/s: a 0.6 el chasis pasa a 11 cm de una pared (radio 15)
+    sensor_timeout: 1.0       # s sin /jar/pose o sin scan nuevo: frena (se cayó el localizer o el lidar y la pose sigue solo con la odometría)
+    start_match: 0.05         # m: arranca cuando la TF coincide así con la largada que publicó el localizer
+
+    # Movimiento
+    max_speed: 0.5            # m/s: a 0.6 el chasis pasa a 11 cm de una pared (radio 15)
     max_turn: 1.0             # rad/s
     turn_lead: 0.3            # s: girando mientras avanza, se pide la velocidad para el rumbo que va a tener (los motores tardan); calibrar en pista
+    turn_gain: 1.5            # rad/s por rad de error al girar hacia un candidato
+    speed_gain: 0.8           # m/s por m que falta a la meta: frena al llegar
+    min_speed: 0.08           # m/s: lo mínimo que pide yendo a una meta
+
+    # Cuerpo y camino
     robot_radius: 0.20        # m: el centro del robot no se acerca más que esto a una pared
+    wheel_x: 0.08             # m: centro de las ruedas adelante/atrás del centro del robot (URDF del X3)
+    wheel_y: 0.0845           # m: centro de las ruedas a los costados (separación 0.169)
     body_radius: 0.15         # m: el chasis; lo que entre acá adelante es un choque
-    lookahead: 0.35           # m: punto del camino al que apunta (pure pursuit)
+    self_radius: 0.12         # m: rayos más cerca del centro son el propio robot (en el bag, el más cercano fue una pared a 0.178)
+    drivable_margin: 0.02     # m: holgura sobre body_radius para planear por un paso angosto
     wall_margin: 0.45         # m: hasta acá de una pared, el camino cuesta más (va por el medio del pasillo)
-    goal_tolerance: 0.4       # m: pasó por un punto de paso (el lidar ve 360°: no hace falta llegar justo)
-    start_tolerance: 0.05     # m: llegó a la largada (bono: cuatro ruedas en un círculo de 0.25 m)
-    start_radius: 0.10        # m: trabado más cerca que esto (zona muerta de los motores), termina igual; la rueda más lejana está a 0.15 m del centro
+    wall_penalty: 2.0         # costo extra de un paso pegado a la pared (crece desde wall_margin)
+    close_penalty: 10.0       # costo extra de un paso a menos de robot_radius
+    lookahead: 0.35           # m: punto del camino al que apunta (pure pursuit)
+    lookahead_short: 0.2      # m: si la recta al de lookahead pasa pegada a una pared u obstáculo (una esquina), prueba con este
+    lookahead_min: 0.08       # m: y si no, con este, sin revisar la recta
+
+    # Frenado, obstáculos y destrabe
+    wall_tolerance: 0.15      # m: un punto del lidar a menos de esto de una pared del mapa es esa pared (error de pose y paredes reales corridas)
+    stop_time: 0.5            # s de recorrido que revisa adelante para frenar
+    stop_margin: 0.04         # m: más lo que revisa adelante, para obstáculos
+    wall_stop: 0.03           # m: una pared del mapa frena si está a esto del chasis (al resto lo esquiva el camino)
+    obstacle_range: 1.5       # m: hasta acá anota obstáculos (más lejos, un error chico de ángulo corre las paredes)
+    obstacle_scans: 3         # veces visto para que una celda sea obstáculo
+    clear_cooldown: 5.0       # s entre olvidos de obstáculos cuando no hay camino
+    max_blocked: 6.0          # s tapado en total yendo a un punto antes de saltearlo
+    retreat_radius: 0.35      # m: trabado, se aleja de todo lo que tiene a menos de esto
+    retreat_speed: 0.1        # m/s al alejarse: menos no vence la zona muerta de los motores
+
+    # Recorrido
     lidar_range: 4.0          # m: hasta dónde el lidar cubre el laberinto y busca candidatos (más lejos, girando, una pared corrida parece un objeto)
+    tour_step: 0.5            # m: un punto de paso posible por bloque de este lado
+    tour_coverage: 0.98       # fracción del laberinto que tienen que ver los puntos de paso
+    goal_tolerance: 0.4       # m: pasó por un punto de paso (el lidar ve 360°: no hace falta llegar justo)
+    pending_fraction: 0.05    # un punto de paso con menos de esto sin ver (de lo que le toca) se saltea
+    pending_min: 8            # y al menos estas celdas
+
+    # Candidatos (lo que el lidar ve fuera del mapa, del tamaño de una caja)
+    candidate_scans: 3        # scans que lo tienen que ver
+    candidate_size: 0.6       # m: una mancha más grande es una pared corrida u otro objeto
+    candidate_merge: 0.35     # m: una mancha más cerca que esto de un candidato es el mismo
+    route_distance: 0.3       # m: más lejos de donde anda el robot, es algo afuera del laberinto
+    turning_rate: 0.3         # rad/s: girando más rápido no se anotan candidatos ni fantasmas (scan y pose desfasados)
+    confirm_range: 2.5        # m: hasta acá el lidar confirma que el candidato sigue ahí
+    confirm_radius: 0.25      # m: el lidar ve algo a menos de esto del candidato
+    confirm_misses: 5         # ciclos seguidos sin verlo: era un fantasma
+    occlusion_margin: 0.3     # m: algo así de cerca de la línea al candidato, y delante, lo tapa (ese ciclo no cuenta)
+
+    # Cámara y percepción
     camera_range: 3.0         # m: hasta dónde la cámara reconoce una caja
     camera_fov: 1.06          # rad: 61° de la cámara
+    view_fraction: 0.8        # parte central de la foto en la que un candidato cuenta como en cuadro
     approach: 0.6             # m: hasta acá se acerca a un candidato; después solo lo mira
+    match_radius: 0.4         # m: un reporte o un grupo rojo a menos de esto de un candidato es ese candidato
     clear_time: 1.0           # s en cuadro sin que la percepción vea rojo cerca (/jar/rojo) para descartar un candidato
     watch_time: 3.5           # s en cuadro, moviéndose, para dejar un candidato con rojo que no llega a reportarse (la percepción decide en ~1.5 s)
+    watch_baseline: 0.2       # m que se tiene que mover mirándolo para que cuente watch_time
+    watch_still: 1.6          # quieto, espera watch_time por esto
+
+    # Regreso
     time_limit: 560.0         # s desde /map para estar de vuelta (la corrida se corta a los 600)
-    max_blocked: 6.0          # s tapado en total yendo a un punto antes de saltearlo
+    return_pace: 0.5          # para estimar la vuelta se supone esta fracción de max_speed
+    return_margin: 15.0       # s de margen sobre esa estimación
+    start_tolerance: 0.20     # m: /done con el centro de las cuatro ruedas a menos de esto de la largada (bono: círculo de 0.25 m)
+    start_radius: 0.10        # m: trabado más cerca que esto (zona muerta de los motores), termina igual; la rueda más lejana está a 0.15 m del centro
+    start_stall: 3.0          # s sin acercarse 1 cm para darse por trabado
+    return_min_speed: 0.03    # m/s: lo mínimo que pide volviendo
+    return_ramp: 0.05         # m/s que suma por segundo sin acercarse (zona muerta de los motores)
+    return_max_blocked: 18.0  # s tapado volviendo antes de olvidar los obstáculos anotados (no hay punto que saltear)

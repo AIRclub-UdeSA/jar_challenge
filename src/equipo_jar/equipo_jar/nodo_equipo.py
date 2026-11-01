@@ -17,7 +17,7 @@ from equipo_jar.detector import ProcesadorVision
 from equipo_jar.localizer import MAP_QOS, node_params, yaw_of
 from equipo_jar.reportes import armar_reporte
 
-UMBRALES = ('hue_rojo_bajo_1', 'hue_rojo_alto_1', 'hue_rojo_bajo_2', 'hue_rojo_alto_2', 'saturacion_min', 'valor_min', 'mitad_caja')
+UMBRALES = ('hue_rojo_bajo_1', 'hue_rojo_alto_1', 'hue_rojo_bajo_2', 'hue_rojo_alto_2', 'saturacion_min', 'valor_min', 'mitad_caja', 'erosion_px', 'salto_max', 'rayos_min')
 
 class NodoEquipo(Node):
     def __init__(self):
@@ -27,13 +27,17 @@ class NodoEquipo(Node):
         # Cantidad de víctimas a buscar (N), que llega como argumento del launch (victimas:=N): nunca se reporta más
         self.cantidad_victimas = int(p['cantidad_victimas'])
 
-        # Detector: umbrales HSV del rojo y tamaño de la caja
+        # Detector: umbrales HSV del rojo, tamaño de la caja y filtros de paralaje
         self.procesador_vision = ProcesadorVision(**{k: float(p[k]) for k in UMBRALES})
         self.deskew = p['deskew'] # orden temporal de los rayos, como en el localizer; 0: todos en el instante medio
         self.pared_min = p['pared_min'] # m: un rayo que pegó a esto o menos de una pared del mapa es pared, no caja (0: en una celda de pared)
         self.observaciones_min = int(p['observaciones_min']) # scans con la caja para reportarla (el doble si el robot no se movió)
+        self.dispersion_max = p['dispersion_max'] # m: grupos más dispersos no se reportan
+        self.base_min = p['base_min'] # m: lo que tiene que moverse el robot mientras la ve (si no, el doble de observaciones)
+        self.observaciones_rojo = int(p['observaciones_rojo']) # para avisarle al navegador que ahí hay rojo (/jar/rojo)
+        self.desfase_foto_max = p['desfase_foto_max'] # s: sin foto tan cerca del scan, el scan no se usa
 
-        self.clusterer = DetectionClusterer()
+        self.clusterer = DetectionClusterer(p['radio_grupo'])
 
         self.puente_cv = CvBridge()
         self.tf_buffer = tf2_ros.Buffer()
@@ -90,7 +94,7 @@ class NodoEquipo(Node):
         t_medio = t0 + Duration(seconds=dt * (n - 1) / 2)
         foto = min(self.fotos, key=lambda f: abs((Time.from_msg(f.header.stamp) - t_medio).nanoseconds))
         t_foto = Time.from_msg(foto.header.stamp)
-        if abs((t_foto - t_medio).nanoseconds) > 1e8: return # sin foto a menos de 0.1 s del scan
+        if abs((t_foto - t_medio).nanoseconds) * 1e-9 > self.desfase_foto_max: return # sin foto cerca del scan
 
         # Giro del lidar en odom al empezar y terminar el scan y en la foto -> ángulo de cada rayo en el instante de la foto
         laser = scan.header.frame_id
@@ -128,7 +132,7 @@ class NodoEquipo(Node):
         """Reporta cada caja que ready() da por buena y no se reportó, mientras queden reportes. Cada reporte gasta uno de los N (§7.2)."""
         for g in self.clusterer.groups:
             if self.reportes >= self.cantidad_victimas: return
-            if g['reported'] or not self.clusterer.ready(g, n_min=self.observaciones_min): continue
+            if g['reported'] or not self.clusterer.ready(g, self.observaciones_min, self.dispersion_max, self.base_min): continue
 
             x, y = self.clusterer.center(g)
             self.pub_victimas.publish(armar_reporte(x, y, self.get_clock().now().to_msg()))
@@ -137,13 +141,13 @@ class NodoEquipo(Node):
 
     def publicar_rojo(self):
         """
-        Publica en /jar/rojo los grupos sin reportar con 2 observaciones o más: el navegador sigue mirando un candidato con rojo cerca hasta el reporte y
+        Publica en /jar/rojo los grupos sin reportar con observaciones_rojo observaciones o más: el navegador sigue mirando un candidato con rojo cerca hasta el reporte y
         descarta en ~1 s uno sin rojo (sin esto, esperaba 3.5 s en cada señuelo).
         """
         msg = PoseArray()
         msg.header.frame_id, msg.header.stamp = 'map', self.get_clock().now().to_msg()
         for g in self.clusterer.groups:
-            if g['reported'] or len(g['obs']) < 2: continue
+            if g['reported'] or len(g['obs']) < self.observaciones_rojo: continue
 
             pose = Pose()
             pose.position.x, pose.position.y = self.clusterer.center(g)
