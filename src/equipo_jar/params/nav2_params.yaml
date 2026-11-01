@@ -454,7 +454,11 @@ controller_server:
       # pasando una puerta angosta el objetivo queda del otro lado de la
       # pared: GoalDist/GoalAlign tiran para un lado, PathDist/PathAlign
       # para el otro, y gana quedarse quieto ("Failed to make progress").
-      forward_prune_distance: 1.0
+      # Con 1.0 pasaba algo parecido justo antes de las curvas: volviendo a
+      # la largada en maze_1, DWB retrocedía en vez de seguir el plan. Con
+      # 0.7 esa vuelta llega en 31 s y el circuito de prueba sale 12/12 en
+      # 57 s (con 1.0: aborta / 59.5 s; con 0.5: 43 s / 66.6 s).
+      forward_prune_distance: 0.7
       # Límites de velocidad: los topes que aplica el propio robot (0.5 m/s
       # en x, 0.5 m/s en y, 1 rad/s de giro). El reto es de velocidad, así
       # que se usan enteros.
