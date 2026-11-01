@@ -6,9 +6,10 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
                         QoSReliabilityPolicy, qos_profile_sensor_data)
+from rclpy.duration import Duration
 from rclpy.time import Time
 
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Pose, PoseArray, Quaternion
 from visualization_msgs.msg import Marker, MarkerArray
@@ -90,11 +91,17 @@ class DetectorObstaculos(Node):
         self.declare_parameter('umbral_probabilidad', 101.0)
         self.declare_parameter('racha_minima', 3)
         self.declare_parameter('distancia_minima_valida', 0.25)
+        # Mientras el robot gira más rápido que esto (rad/s) no se publican
+        # detecciones: en el giro los puntos rojos se corren por la pared
+        # (desfase entre imagen, scan y tf).
+        self.declare_parameter('giro_maximo_deteccion', 0.4)
 
         self.map_frame = self.get_parameter('map_frame').value
         self.umbral_probabilidad = self.get_parameter('umbral_probabilidad').value
         self.racha_minima = self.get_parameter('racha_minima').value
         self.distancia_minima_valida = self.get_parameter('distancia_minima_valida').value
+        self.giro_maximo = self.get_parameter('giro_maximo_deteccion').value
+        self.giro_actual = 0.0
 
         self.campo = None
         self.info_mapa = None
@@ -116,6 +123,9 @@ class DetectorObstaculos(Node):
         # las semanas 03, 04 y 06.
         self.create_subscription(
             LaserScan, 'scan_rojo', self.recibir_scan, qos_profile_sensor_data)
+        self.create_subscription(
+            Odometry, '/odom', lambda m: setattr(self, 'giro_actual', m.twist.twist.angular.z),
+            qos_profile_sensor_data)
 
         self.pub_scan_no_mapeado = self.create_publisher(LaserScan, 'scan_no_mapeado', 10)
         self.pub_objetos = self.create_publisher(PoseArray, 'objetos_rojos', 10)
@@ -132,12 +142,14 @@ class DetectorObstaculos(Node):
         self.info_mapa = msg.info
         self.get_logger().info('Mapa recibido.')
 
-    def obtener_transform_a_map(self, frame_id_scan):
-        """Busca en tf2 la transformada del frame del lidar a `map`. None si
-        todavía no está disponible (por ejemplo, si este nodo arranca antes
-        de que semana 06 haya publicado map->odom)."""
+    def obtener_transform_a_map(self, frame_id_scan, instante):
+        """Busca en tf2 la transformada del frame del lidar a `map` en el
+        instante del scan (no la última: girando, 0.1 s de desfase corren el
+        punto varios centímetros). None si no está disponible."""
         try:
-            return self.tf_buffer.lookup_transform(self.map_frame, frame_id_scan, Time())
+            return self.tf_buffer.lookup_transform(
+                self.map_frame, frame_id_scan, Time.from_msg(instante),
+                timeout=Duration(seconds=0.1))
         except Exception as e:
             if not self.aviso_tf_mostrado:
                 self.get_logger().warn(
@@ -204,9 +216,9 @@ class DetectorObstaculos(Node):
           11. Llamar a `self.publicar_scan_filtrado(msg, rangos, no_mapeado)`
               y `self.publicar_objetos(no_mapeado, xs_map, ys_map)`.
         """
-        if self.campo is None:
+        if self.campo is None or abs(self.giro_actual) > self.giro_maximo:
             return
-        transform = self.obtener_transform_a_map(msg.header.frame_id)
+        transform = self.obtener_transform_a_map(msg.header.frame_id, msg.header.stamp)
         if transform is None:
             return
 
@@ -246,7 +258,7 @@ class DetectorObstaculos(Node):
         no_mapeado = validos & dentro_grilla & (probabilidad < self.umbral_probabilidad)
 
         self.publicar_scan_filtrado(msg, rangos, no_mapeado)
-        self.publicar_objetos(no_mapeado, xs_map, ys_map)
+        self.publicar_objetos(no_mapeado, xs_map, ys_map, msg.header.stamp)
 
     # ---------- publishers ----------
 
@@ -267,7 +279,7 @@ class DetectorObstaculos(Node):
         salida.ranges = np.where(no_mapeado, rangos, math.inf).tolist()
         self.pub_scan_no_mapeado.publish(salida)
 
-    def publicar_objetos(self, no_mapeado, xs_map, ys_map):
+    def publicar_objetos(self, no_mapeado, xs_map, ys_map, instante):
         """Agrupa no_mapeado en rachas (con agrupar_en_rachas, de arriba),
         descarta las muy cortas (ruido), y por cada racha que sobrevive
         promedia sus puntos en `map` para obtener la coordenada del
@@ -278,7 +290,9 @@ class DetectorObstaculos(Node):
 
         objetos = PoseArray()
         objetos.header.frame_id = self.map_frame
-        objetos.header.stamp = ahora
+        # Con el instante del scan, para que juntar_victimas use la pose del
+        # robot de ese momento.
+        objetos.header.stamp = instante
 
         marcadores = MarkerArray()
         borrar_todos = Marker()

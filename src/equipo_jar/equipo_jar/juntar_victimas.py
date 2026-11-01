@@ -17,6 +17,7 @@ import rclpy
 from geometry_msgs.msg import PointStamped, PoseArray
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.duration import Duration
 from rclpy.time import Time
 from std_msgs.msg import Empty
 from tf2_ros import Buffer, TransformListener
@@ -34,11 +35,22 @@ class JuntarVictimas(Node):
         self.declare_parameter('radio_grupo', 0.30)
         self.declare_parameter('mitad_caja', 0.09)
         self.declare_parameter('base_frame', 'base_footprint')
+        # Un grupo cuya mediana queda a menos de esto (m) de una víctima ya
+        # reportada es la misma caja vista desde otro lado (§6.1: las víctimas
+        # están separadas para que un reporte no pueda servir para dos).
+        self.declare_parameter('distancia_minima_reportes', 0.7)
+        # Mediana (m) de la distancia de los puntos del grupo a su mediana: un
+        # grupo más disperso que esto (p. ej. puntos corridos por una pared
+        # durante un giro) no se reporta todavía.
+        self.declare_parameter('dispersion_maxima', 0.08)
         self.victimas = self.get_parameter('cantidad_victimas').value
         self.minimas = self.get_parameter('detecciones_minimas').value
         self.radio = self.get_parameter('radio_grupo').value
         self.mitad = self.get_parameter('mitad_caja').value
         self.base_frame = self.get_parameter('base_frame').value
+        self.distancia_minima_reportes = self.get_parameter('distancia_minima_reportes').value
+        self.dispersion_maxima = self.get_parameter('dispersion_maxima').value
+        self.reportadas = []        # medianas ya publicadas
 
         # Cada grupo es un dict: {'puntos': [(x, y), ...], 'publicado': bool}
         self.grupos = []
@@ -61,10 +73,12 @@ class JuntarVictimas(Node):
         self.localizado = True
         self.get_logger().info('Robot localizado: se empiezan a juntar detecciones')
 
-    def posicion_robot(self):
-        """Devuelve (x, y) del robot en `map`, o None si todavía no hay tf."""
+    def posicion_robot(self, instante):
+        """(x, y) del robot en `map` en el instante de la detección, o None."""
         try:
-            tf = self.tf_buffer.lookup_transform('map', self.base_frame, Time())
+            tf = self.tf_buffer.lookup_transform(
+                'map', self.base_frame, Time.from_msg(instante),
+                timeout=Duration(seconds=0.1))
         except Exception:
             return None
         return tf.transform.translation.x, tf.transform.translation.y
@@ -77,7 +91,7 @@ class JuntarVictimas(Node):
         """
         if not self.localizado:
             return
-        pos_robot = self.posicion_robot()
+        pos_robot = self.posicion_robot(msg.header.stamp)
         if pos_robot is None:
             return
         robot_x, robot_y = pos_robot
@@ -113,7 +127,18 @@ class JuntarVictimas(Node):
         if (g['publicado'] or self.publicados >= self.victimas
                 or len(g['puntos']) < self.minimas):
             return
-        mediana = np.median(np.array(g['puntos']), axis=0)
+        puntos = np.array(g['puntos'])
+        mediana = np.median(puntos, axis=0)
+        for r in self.reportadas:
+            if math.hypot(mediana[0] - r[0], mediana[1] - r[1]) < self.distancia_minima_reportes:
+                g['publicado'] = True   # misma caja que una ya reportada
+                self.get_logger().info(
+                    f'Grupo en ({mediana[0]:.2f}, {mediana[1]:.2f}) es la víctima ya '
+                    f'reportada en ({r[0]:.2f}, {r[1]:.2f}): no se reporta')
+                return
+        dispersion = float(np.median(np.hypot(*(puntos - mediana).T)))
+        if dispersion > self.dispersion_maxima:
+            return
         try:
             reporte = armar_reporte(
                 float(mediana[0]), float(mediana[1]), self.get_clock().now().to_msg())
@@ -122,6 +147,7 @@ class JuntarVictimas(Node):
             return
         self.pub.publish(reporte)
         g['publicado'] = True
+        self.reportadas.append((float(mediana[0]), float(mediana[1])))
         self.publicados += 1
         self.get_logger().info(
             f'Publicada víctima {self.publicados}/{self.victimas} en '

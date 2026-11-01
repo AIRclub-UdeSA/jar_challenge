@@ -39,8 +39,15 @@ nodo_equipo:
 # Semana 10, paso 5: una posición por caja a partir de /objetos_rojos.
 juntar_victimas:
   ros__parameters:
-    detecciones_minimas: 30         # detecciones antes de reportar un grupo
+    detecciones_minimas: 12         # detecciones (~1.7 s viendo la caja) antes de reportar
+    distancia_minima_reportes: 0.7  # m: un grupo más cerca de una ya reportada es la misma caja
+    dispersion_maxima: 0.08         # m: grupos más dispersos no se reportan
     radio_grupo: 0.30               # m, distancia máxima a la mediana del grupo
     # Media caja (m): corre cada detección de la cara al centro. Las cajas del
     # simulador miden 0.25 m; las del robot real del workshop, ~0.18 (0.09).
     mitad_caja: 0.125
+
+# Detección de objetos rojos (semana 07/10).
+detector_obstaculos:
+  ros__parameters:
+    giro_maximo_deteccion: 0.4      # rad/s: girando más rápido no se publican detecciones

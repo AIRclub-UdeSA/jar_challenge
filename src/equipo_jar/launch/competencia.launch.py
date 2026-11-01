@@ -133,7 +133,7 @@ def generate_launch_description():
         executable='obstaculos_no_mapeados',
         name='detector_obstaculos',
         output='screen',
-        parameters=[{
+        parameters=[params, {
             'use_sim_time': use_sim_time,
             'umbral_probabilidad': ParameterValue(
                 umbral, value_type=float),
