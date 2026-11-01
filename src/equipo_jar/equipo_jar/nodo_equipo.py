@@ -23,6 +23,7 @@ Los reportes los publica juntar_victimas; acá solo se cuentan.
 """
 import math
 
+import numpy as np
 import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PointStamped, PoseStamped, PoseWithCovarianceStamped, Twist
@@ -87,6 +88,12 @@ class NodoEquipo(Node):
         self.declare_parameter('radio_destrabe', 0.4)
         self.declare_parameter('velocidad_destrabe', 0.15)
         self.declare_parameter('tiempo_destrabe_s', 1.0)
+        # Objetivos sobre obstáculos que no están en /map (cajas): si en el
+        # costmap global en vivo el objetivo tiene más costo que esto (0-100;
+        # 99 = el robot ya toca), se lo corre a la celda libre más cercana.
+        self.declare_parameter('costo_maximo_objetivo', 50)
+        self.declare_parameter('costo_libre_objetivo', 20)
+        self.declare_parameter('radio_ajuste_objetivo', 0.8)
         # Parámetros del planificador de exploración (ver exploracion.py).
         for nombre in ('alcance_cobertura', 'despeje_punto_vista', 'despeje_transito',
                        'despeje_caja', 'fraccion_cobertura', 'reintentos_punto_vista'):
@@ -107,6 +114,9 @@ class NodoEquipo(Node):
         self.radio_destrabe = self.get_parameter('radio_destrabe').value
         self.velocidad_destrabe = self.get_parameter('velocidad_destrabe').value
         self.tiempo_destrabe = self.get_parameter('tiempo_destrabe_s').value
+        self.costo_maximo_objetivo = self.get_parameter('costo_maximo_objetivo').value
+        self.costo_libre_objetivo = self.get_parameter('costo_libre_objetivo').value
+        self.radio_ajuste_objetivo = self.get_parameter('radio_ajuste_objetivo').value
 
         self.estado = ESPERANDO_MAPA
         self.mapa = None
@@ -126,8 +136,11 @@ class NodoEquipo(Node):
         self.navegando = False
         self.objetivo = None
         self.vueltas_fallidas = 0
+        self.yaw_objetivo = 0.0
         self.ultimo_scan = None
         self.destrabe = None        # (vx, vy, hasta) mientras se destraba
+        self.costmap = None         # (costos, info) del costmap global en vivo
+        self.t_revision_objetivo = 0.0
         # Para detectar que el robot quedó quieto con un objetivo activo.
         self.ultimo_avance = None
         self.pose_avance = None
@@ -141,6 +154,8 @@ class NodoEquipo(Node):
         self.create_subscription(Odometry, '/odom', self.al_odom, qos_profile_sensor_data)
         self.create_subscription(
             LaserScan, '/scan', lambda m: setattr(self, 'ultimo_scan', m), qos_profile_sensor_data)
+        self.create_subscription(
+            OccupancyGrid, 'global_costmap/costmap', self.al_costmap, QOS_MAPA)
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
         self.pub_pose_inicial = self.create_publisher(
@@ -174,10 +189,18 @@ class NodoEquipo(Node):
     def al_amcl_pose(self, msg):
         c = msg.pose.covariance
         self.cov_amcl = (c[0], c[7], c[35])
+        if self.estado in (EXPLORANDO, VOLVIENDO):
+            self.get_logger().info(
+                f'amcl: sigma xy {math.sqrt(max(c[0], c[7])):.3f} m, '
+                f'sigma yaw {math.sqrt(c[35]):.3f} rad', throttle_duration_sec=10.0)
         # La primera pose con la dispersión que se le mandó confirma que amcl
         # tomó la pose inicial (antes tenía covarianza cero).
         if self.t_pose_inicial is not None and c[0] > 0.25 * self.dispersion_xy ** 2:
             self.pose_inicial_aceptada = True
+
+    def al_costmap(self, msg):
+        costos = np.array(msg.data, dtype=np.int16).reshape(msg.info.height, msg.info.width)
+        self.costmap = (costos, msg.info)
 
     def al_odom(self, msg):
         # Cualquier movimiento (traslación o giro) cuenta como avance.
@@ -209,10 +232,56 @@ class NodoEquipo(Node):
 
     # ---------- navegación ----------
 
+    def costo_en(self, x, y):
+        """Costo (0-100, -1 desconocido) del costmap global en (x, y), o None."""
+        if self.costmap is None:
+            return None
+        costos, info = self.costmap
+        fila = int((y - info.origin.position.y) / info.resolution)
+        col = int((x - info.origin.position.x) / info.resolution)
+        if not (0 <= fila < info.height and 0 <= col < info.width):
+            return None
+        return int(costos[fila, col])
+
+    def ajustar_objetivo(self, x, y, yaw):
+        """Corre el objetivo fuera de obstáculos que no están en /map.
+
+        Los puntos de vista se calculan sobre el mapa estático, que no tiene
+        las cajas: uno puede caer encima de una. Devuelve el objetivo tal cual,
+        corrido a la celda libre más cercana, o None si no hay ninguna cerca.
+        """
+        costo = self.costo_en(x, y)
+        if costo is None or 0 <= costo <= self.costo_maximo_objetivo:
+            return x, y, yaw
+        costos, info = self.costmap
+        r = info.resolution
+        fila = int((y - info.origin.position.y) / r)
+        col = int((x - info.origin.position.x) / r)
+        radio = int(self.radio_ajuste_objetivo / r)
+        f0, f1 = max(0, fila - radio), min(info.height, fila + radio + 1)
+        c0, c1 = max(0, col - radio), min(info.width, col + radio + 1)
+        ventana = costos[f0:f1, c0:c1]
+        libres = np.argwhere((ventana >= 0) & (ventana <= self.costo_libre_objetivo))
+        if len(libres) == 0:
+            return None
+        df = libres[:, 0] + f0 - fila
+        dc = libres[:, 1] + c0 - col
+        k = int(np.argmin(df * df + dc * dc))
+        if df[k] * df[k] + dc[k] * dc[k] > radio * radio:
+            return None
+        nx = info.origin.position.x + (col + dc[k] + 0.5) * r
+        ny = info.origin.position.y + (fila + df[k] + 0.5) * r
+        self.get_logger().info(
+            f'Objetivo ({x:.2f}, {y:.2f}) sobre un obstáculo (costo {costo}): '
+            f'se corre a ({nx:.2f}, {ny:.2f})')
+        return nx, ny, yaw
+
     def ir_a(self, x, y, yaw):
         """Manda un objetivo a Nav2. Devuelve False si Nav2 todavía no está listo."""
         if not self.nav.server_is_ready():
             return False
+        # Si había otro objetivo activo, Nav2 lo reemplaza; su resultado se ignora.
+        self.goal_handle = None
         meta = NavigateToPose.Goal()
         meta.pose = PoseStamped()
         meta.pose.header.frame_id = 'map'
@@ -222,6 +291,7 @@ class NodoEquipo(Node):
         meta.pose.pose.orientation.z = math.sin(yaw / 2.0)
         meta.pose.pose.orientation.w = math.cos(yaw / 2.0)
         self.objetivo = (x, y)
+        self.yaw_objetivo = yaw
         self.navegando = True
         self.ultimo_avance = self.ahora()
         self.nav.send_goal_async(meta).add_done_callback(self._objetivo_aceptado)
@@ -361,7 +431,16 @@ class NodoEquipo(Node):
                     self.get_logger().info('No quedan objetivos de exploración')
                     self.volver()
                 else:
-                    self.ir_a(*siguiente)
+                    ajustado = self.ajustar_objetivo(*siguiente)
+                    if ajustado is None:
+                        self.get_logger().info(
+                            f'Objetivo ({siguiente[0]:.2f}, {siguiente[1]:.2f}) tapado por un '
+                            'obstáculo: se saltea')
+                        self.exploracion.objetivo_terminado(False)
+                    else:
+                        self.ir_a(*ajustado)
+            else:
+                self.revisar_objetivo_activo()
         elif self.estado == VOLVIENDO and not self.navegando:
             if self.distancia_a_largada() <= self.tolerancia_largada:
                 self.terminar()
@@ -406,6 +485,23 @@ class NodoEquipo(Node):
         self.pub_pose_inicial.publish(msg)
         self.get_logger().info(
             f'Pose inicial (0, 0, 0) con sigma {self.dispersion_xy} m / {self.dispersion_yaw} rad')
+
+    def revisar_objetivo_activo(self):
+        """Una vez por segundo: si el lidar descubrió algo sobre el objetivo, correrlo."""
+        if self.ahora() - self.t_revision_objetivo < 1.0 or self.objetivo is None:
+            return
+        self.t_revision_objetivo = self.ahora()
+        x, y = self.objetivo
+        costo = self.costo_en(x, y)
+        if costo is None or 0 <= costo <= self.costo_maximo_objetivo:
+            return
+        ajustado = self.ajustar_objetivo(x, y, self.yaw_objetivo)
+        if ajustado is None:
+            self.get_logger().info('El objetivo activo quedó tapado: se abandona')
+            self.cancelar()
+            self.al_terminar_objetivo(False)
+        elif (ajustado[0], ajustado[1]) != (x, y):
+            self.ir_a(*ajustado)
 
     def limite_exploracion(self, pose):
         """Segundo de corrida en el que hay que empezar a volver."""

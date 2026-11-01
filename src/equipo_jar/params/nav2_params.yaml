@@ -520,13 +520,20 @@ controller_server:
       # por un hueco angosto.
       critics: ["Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"]
       ObstacleFootprint.scale: 0.02
+      # forward_point_distance: PathAlign/GoalAlign miden un punto que está
+      # esta distancia delante del robot. Con 0.1 la orientación casi no
+      # pesaba y DWB cruzaba los huecos angostos de costado (0.30 m de ancho
+      # en vez de 0.20) y quedaba con una esquina del footprint tocando la
+      # pared. Con 0.4 prefiere ir de frente siguiendo el camino; en espacio
+      # abierto igual puede deslizarse para corregir.
       PathAlign.scale: 32.0
-      PathAlign.forward_point_distance: 0.1
+      PathAlign.forward_point_distance: 0.4
       GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.1
+      GoalAlign.forward_point_distance: 0.4
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
-      Twirling.scale: 10.0
+      # Más bajo que antes (10) para que se anime a girar y alinearse.
+      Twirling.scale: 5.0
 
 # ---------------------------------------------------------------------------
 # Checkpoint 4 — bt_navigator + planner_server. bt_navigator es el "director

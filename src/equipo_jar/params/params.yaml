@@ -24,6 +24,10 @@ nodo_equipo:
     radio_destrabe: 0.4             # m: puntos del lidar que empujan
     velocidad_destrabe: 0.15        # m/s
     tiempo_destrabe_s: 1.0
+    # Objetivos que caen sobre obstáculos que no están en /map (cajas).
+    costo_maximo_objetivo: 50       # costo del costmap global (0-100) tolerado
+    costo_libre_objetivo: 20        # costo de la celda a la que se lo corre
+    radio_ajuste_objetivo: 0.8      # m
     # Exploración: puntos de vista desde donde el lidar ve todo el laberinto.
     alcance_cobertura: 3.5          # m de lidar que cuentan como "visto"
     despeje_punto_vista: 0.25       # m mínimos de un punto de vista a la pared
