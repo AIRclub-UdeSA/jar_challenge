@@ -6,13 +6,18 @@ se reporta tras ~1.4 s en cuadro (10 scans) con 0.2 m de base, o ~2.8 s quieto, 
 puntos o tiempo: chocar, no ver el laberinto, no encontrar una víctima, girar de más, no volver a la largada o volver tarde.
 """
 import math
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import yaml
 
 from equipo_jar.core import Board, line_of_sight, normalize
-from equipo_jar.navigator import Mission, Params
+from equipo_jar.navigator import Mission
 from test_core import RES, maze
 
+NAVIGATOR = yaml.safe_load((Path(__file__).parents[1] / 'params' / 'params.yaml').read_text())['navigator']['ros__parameters']
+P = SimpleNamespace(**NAVIGATOR) # los parámetros del robot (params.yaml del repo), como los atributos del nodo
 START = (0.0, -0.25, 0.0)
 ANG = np.linspace(-math.pi, math.pi, 360, endpoint=False)
 RAY_STEPS = np.arange(0.12, 4.0, RES / 2)
@@ -71,7 +76,7 @@ def simulate(world, grid, p=None, red=(), reports=(), victims=3, t_max=600.0, dt
     Returns:
         (misión, trayectoria (T, 2), terminó, t final, reportes, grados girados).
     """
-    m = Mission(grid, START[:2], p)
+    m = Mission(grid, START[:2], p or P)
     x, y, yaw = START
     traj, t, done, turned, reports = [], 0.0, False, 0.0, list(reports)
     views = {box: [] for box in red}
@@ -145,7 +150,7 @@ def test_returns_right_away_when_all_victims_reported():
 
 def test_returns_before_time_limit():
     grid = maze()
-    p = Params.from_yaml(time_limit=60.0)
+    p = SimpleNamespace(**{**NAVIGATOR, 'time_limit': 60.0})
     _, traj, done, t, _, _ = simulate(grid, grid, p)
     assert done and t <= 60.0
     assert home(traj) < 0.05
@@ -167,7 +172,7 @@ def test_returns_when_noted_obstacles_close_the_way():
     """Si los obstáculos anotados (engordados por el ruido de pose) cierran el único paso a la largada, los olvida y vuelve igual: antes se quedaba
     quieto para siempre (en Gazebo, un palo en el medio de un pasillo de 0.95 m)."""
     grid = maze()
-    m = Mission(grid, START[:2])
+    m = Mission(grid, START[:2], P)
     cx, cy = grid.to_world(*np.indices(grid.free.shape))
     band = grid.free & (np.abs(cx - 1.5) < 0.05) & (cy > -1.0) & (cy < 0.5) # fantasmas de pared a pared en el pasillo de la largada
     m.hits[band] = 3
@@ -186,7 +191,7 @@ def test_no_phantom_candidates_when_scan_lags_while_turning():
     """Girando, el scan llega con la pose de 50 ms antes (3° a 1 rad/s): a 4 m las paredes se corren 20 cm y parecían objetos. Así, girando no se
     anotan candidatos; quieto el mismo desfase no existe. (En Gazebo, con ese desfase aparecieron 20 candidatos fantasma de golpe.)"""
     grid = maze()
-    m = Mission(grid, START[:2])
+    m = Mission(grid, START[:2], P)
     x, y = 2.0, -0.25 # en el medio del pasillo largo: paredes a hasta 4 m
     for k in range(30):
         yaw = 1.0 * 0.1 * k # 1 rad/s
@@ -201,7 +206,7 @@ def test_discards_phantom_candidates_with_lidar():
     """Un error de pose de unos scans (3°: el localizer corrige y la TF tarda 0.3 s en reflejarlo) deja paredes corridas que parecen objetos a 2-4 m.
     El robot va hacia ellos y, con línea de vista a menos de 2.5 m y el lidar sin ver nada ahí, los descarta sin gastar los 3.5 s de cámara."""
     grid = maze()
-    m = Mission(grid, START[:2])
+    m = Mission(grid, START[:2], P)
     x, y, yaw, t = 3.5, -0.25, 0.0, 0.0
     a = 0.05
     rot = np.array([[math.cos(a), -math.sin(a)], [math.sin(a), math.cos(a)]])
@@ -222,7 +227,7 @@ def test_occluded_box_is_not_a_phantom():
     """Una caja tapada por otra que el mapa tampoco tiene: el lidar no la ve, pero no es un fantasma (algo más cerca la tapa)."""
     grid = maze()
     world = with_box(with_box(grid, 1.5, -0.25), 2.5, -0.25)
-    m = Mission(grid, START[:2])
+    m = Mission(grid, START[:2], P)
     m.candidates.append({'xy': (2.5, -0.25), 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None}) # la vio antes, desde otro lado
     for k in range(10): m.step(0.5, -0.25, 0.0, 0.1 * k, lidar(world, 0.5, -0.25))
     far = [cd for cd in m.candidates if cd['xy'] == (2.5, -0.25)][0]
@@ -244,7 +249,22 @@ def test_reopens_candidate_when_red_shows_up_later():
     """Un candidato descartado sin rojo vuelve a mirarse si la percepción después ve rojo ahí (lo vio desde otro lado): una víctima no se pierde por un
     primer vistazo malo."""
     grid = maze()
-    m = Mission(grid, START[:2])
+    m = Mission(grid, START[:2], P)
     m.candidates.append({'xy': (1.5, -0.3), 'time': 1.2, 'views': [], 'misses': 0, 'done': True, 'why': 'sin rojo'})
     m.step(0.0, -0.25, math.pi, 0.0, lidar(grid, 0.0, -0.25), red=[(1.55, -0.35)])
     assert not m.candidates[0]['done'] and m.candidates[0]['time'] == 0.0
+
+
+def test_box_seen_from_another_side_is_not_a_phantom():
+    """
+    En Gazebo un señuelo salió como fantasma: el robot giraba hacia él y se contaban fallos. Una caja real no se descarta así:
+    - quieto, aunque el candidato quede corrido 23 cm hacia las caras que el lidar vio primero: en 3 scans se corrige al centro de lo que ve;
+    - girando, aunque el scan no la muestre (scan y pose desfasados): girando no se cuentan fallos (solo el primer ciclo, sin giro previo).
+    """
+    grid = maze()
+    box = (1.5, -0.3)
+    for xy, spin, world in (((box[0] + 0.20, box[1] + 0.12), 0.0, with_box(grid, *box)), (box, 1.0, grid)):
+        m = Mission(grid, START[:2], P)
+        m.candidates.append({'xy': xy, 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None})
+        for k in range(10): m.step(0.0, -0.25, spin * 0.1 * k, 0.1 * k, lidar(world, 0.0, -0.25))
+        assert m.candidates[0]['misses'] <= 1 and m.candidates[0]['why'] != 'fantasma'

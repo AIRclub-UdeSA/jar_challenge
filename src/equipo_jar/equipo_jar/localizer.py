@@ -7,7 +7,7 @@ from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
@@ -18,6 +18,15 @@ from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 from equipo_jar.core import Board, ParticleFilter, initial_search, match_fraction, normalize
 
 MAP_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+
+def node_params(node):
+    """
+    Parámetros del nodo como diccionario (nombre: valor): los que ROS le cargó de params.yaml y del launch.
+
+    Los nodos se crean con automatically_declare_parameters_from_overrides=True: ROS declara solo lo que trae el yaml, así que los valores están en un
+    único lugar y el código no tiene copias. Si falta uno, el nodo falla al arrancar (KeyError con su nombre).
+    """
+    return {name: p.value for name, p in node.get_parameters_by_prefix('').items()}
 
 def yaw_of(q):
     """
@@ -61,43 +70,43 @@ def seconds(stamp):
 
 class Localizer(Node):
     def __init__(self):
-        super().__init__('localizer')  # Registra el nodo en ROS. Sincroniza con params.yaml
-        p = lambda name, value: self.declare_parameter(name, value).value  # Declara el parámetro y lee su valor
+        super().__init__('localizer', automatically_declare_parameters_from_overrides=True)  # Registra el nodo en ROS con los parámetros de params.yaml
+        p = node_params(self)  # Los valores están solo en params.yaml (sección localizer), comentados
 
         # LIDAR
-        self.base_frame = p('base_frame', 'base_footprint')
-        self.rays = p('rays', 90)
-        self.min_range = p('min_range', 0.15)
-        self.max_range = p('max_range', 8.0)
-        self.deskew = p('deskew', -1)  # Orden temporal de los rayos para enderezar el scan; 0 lo desactiva
+        self.base_frame = p['base_frame']
+        self.rays = int(p['rays'])
+        self.min_range = p['min_range']
+        self.max_range = p['max_range']
+        self.deskew = p['deskew']  # Orden temporal de los rayos para enderezar el scan; 0 lo desactiva
 
         # Corrección
-        self.sigma = p('sigma', 0.06)
-        self.z_rand = p('z_rand', 0.2)
-        self.temperature = p('temperature', 0.3)
-        self.min_forward = p('min_forward', 0.02)
-        self.min_turn = p('min_turn', 0.03)
+        self.sigma = p['sigma']
+        self.z_rand = p['z_rand']
+        self.temperature = p['temperature']
+        self.min_forward = p['min_forward']
+        self.min_turn = p['min_turn']
 
         # Predicción
-        self.trans_noise = p('trans_noise', 0.15)
-        self.rot_noise = p('rot_noise', 0.15)
-        self.forward_scale = p('forward_scale', 1.0)    # se calibra en pista
-        self.turn_scale = p('turn_scale', 1.0)
-        self.imu_turn = p('imu_turn', True)             # False: el giro sale de /odom
+        self.trans_noise = p['trans_noise']
+        self.rot_noise = p['rot_noise']
+        self.forward_scale = p['forward_scale']    # se calibra en pista
+        self.turn_scale = p['turn_scale']
+        self.imu_turn = p['imu_turn']              # False: el giro sale de /odom
 
         # Relocalización
-        self.rescue_confidence = p('rescue_confidence', 0.6)
-        self.rescue_scans = p('rescue_scans', 15)
-        self.rescue_margin = p('rescue_margin', 0.15)
+        self.rescue_confidence = p['rescue_confidence']
+        self.rescue_scans = int(p['rescue_scans'])
+        self.rescue_margin = p['rescue_margin']
 
         # Largada
-        self.search_radius = p('search_radius', 0.4)
+        self.search_radius = p['search_radius']
 
         # Salida
-        self.tf_lead = p('tf_lead', 0.3)
+        self.tf_lead = p['tf_lead']
 
         # Tamaño
-        self.particles = p('particles', 500)
+        self.particles = int(p['particles'])
 
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)  # Guardamos los TF que van llegando
@@ -349,7 +358,9 @@ def main(args=None):
     executor.add_node(node)
 
     try: executor.spin()
-    except KeyboardInterrupt: pass
+    except (KeyboardInterrupt, ExternalShutdownException): pass
+    except Exception:
+        if rclpy.ok(): raise # con ROS ya apagado (Ctrl+C, el launch), spin puede tirar RCLError al armar la espera: no es un error
     finally:
         executor.shutdown()
         node.destroy_node()

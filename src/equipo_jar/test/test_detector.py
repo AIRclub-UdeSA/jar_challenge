@@ -13,14 +13,20 @@ Los casos marcados xfail fallan hoy a propósito: son las mejoras pendientes, co
 Tabla por escenario (200 semillas): python3 src/equipo_jar/test/test_detector.py
 """
 import math
+from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
+import yaml
 from scipy.spatial.transform import Rotation
 
 from equipo_jar.core import DetectionClusterer
 from equipo_jar.detector import ProcesadorVision, mascara_rojo, puntos_laser_a_pixeles
+from equipo_jar.nodo_equipo import UMBRALES
+
+NODO = yaml.safe_load((Path(__file__).parents[1] / 'params' / 'params.yaml').read_text())['nodo_equipo']['ros__parameters']
+VISION = {k: NODO[k] for k in UMBRALES} # umbrales del detector: los de params.yaml del repo
 
 # Cámara del robot real (contrato del simulador: 320x240, sin distorsión)
 W, H, FX, FY, CX, CY = 320, 240, 271.809, 271.809, 158.719, 120.092
@@ -113,7 +119,7 @@ def escena(rng, cajas, pared=None, desfase=0.0, ruido=0.01):
 
 def grupos(img, rangos):
     """Lo que hace el nodo con una escena: detecciones -> base_footprint -> DetectionClusterer. [(centro, n)]."""
-    det = ProcesadorVision().extraer_coordenadas_cajas(img, rangos, ANGULOS, R_OL, T_OL, FX, FY, CX, CY)
+    det = ProcesadorVision(**VISION).extraer_coordenadas_cajas(img, rangos, ANGULOS, R_OL, T_OL, FX, FY, CX, CY)
     cl = DetectionClusterer()
     for x, y in np.asarray(det).reshape(-1, 2) @ LASER_R[:2, :2].T + LASER_T[:2]:  # laser_link -> base_footprint
         cl.add(x, y, 0.0, 0.0)
@@ -158,7 +164,7 @@ def test_proyeccion_eje_optico_y_detras():
 
 
 def _es_rojo(bgr):
-    p = ProcesadorVision()
+    p = ProcesadorVision(**VISION)
     m = mascara_rojo(cv2.cvtColor(np.uint8([[bgr]]), cv2.COLOR_BGR2HSV), p.hue_rojo_bajo_1, p.hue_rojo_alto_1,
                      p.hue_rojo_bajo_2, p.hue_rojo_alto_2, p.saturacion_min, p.valor_min)
     return m[0, 0] == 255

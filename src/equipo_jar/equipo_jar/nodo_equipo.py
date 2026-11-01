@@ -14,25 +14,24 @@ from sensor_msgs.msg import CameraInfo, Image, LaserScan
 
 from equipo_jar.core import Board, DetectionClusterer, normalize
 from equipo_jar.detector import ProcesadorVision
-from equipo_jar.localizer import MAP_QOS, yaw_of
+from equipo_jar.localizer import MAP_QOS, node_params, yaw_of
 from equipo_jar.reportes import armar_reporte
 
 UMBRALES = ('hue_rojo_bajo_1', 'hue_rojo_alto_1', 'hue_rojo_bajo_2', 'hue_rojo_alto_2', 'saturacion_min', 'valor_min', 'mitad_caja')
 
 class NodoEquipo(Node):
     def __init__(self):
-        super().__init__('nodo_equipo')
-        p = lambda nombre, valor: self.declare_parameter(nombre, valor).value # Declara el parámetro y lee su valor
+        super().__init__('nodo_equipo', automatically_declare_parameters_from_overrides=True)
+        p = node_params(self) # Los valores están solo en params.yaml (sección nodo_equipo), comentados
 
         # Cantidad de víctimas a buscar (N), que llega como argumento del launch (victimas:=N): nunca se reporta más
-        self.cantidad_victimas = p('cantidad_victimas', 5)
+        self.cantidad_victimas = int(p['cantidad_victimas'])
 
-        # Detector: umbrales HSV del rojo y tamaño de la caja (los valores por defecto son los de ProcesadorVision)
-        defecto = ProcesadorVision().__dict__
-        self.procesador_vision = ProcesadorVision(**{k: float(p(k, defecto[k])) for k in UMBRALES})
-        self.deskew = p('deskew', -1) # orden temporal de los rayos, como en el localizer; 0: todos en el instante medio
-        self.pared_min = p('pared_min', 0.0) # m: un rayo que pegó a esto o menos de una pared del mapa es pared, no caja (0: en una celda de pared)
-        self.observaciones_min = p('observaciones_min', 10) # scans con la caja para reportarla (el doble si el robot no se movió)
+        # Detector: umbrales HSV del rojo y tamaño de la caja
+        self.procesador_vision = ProcesadorVision(**{k: float(p[k]) for k in UMBRALES})
+        self.deskew = p['deskew'] # orden temporal de los rayos, como en el localizer; 0: todos en el instante medio
+        self.pared_min = p['pared_min'] # m: un rayo que pegó a esto o menos de una pared del mapa es pared, no caja (0: en una celda de pared)
+        self.observaciones_min = int(p['observaciones_min']) # scans con la caja para reportarla (el doble si el robot no se movió)
 
         self.clusterer = DetectionClusterer()
 
@@ -157,6 +156,8 @@ def main(args=None):
 
     try: rclpy.spin(nodo)
     except (KeyboardInterrupt, ExternalShutdownException): pass
+    except Exception:
+        if rclpy.ok(): raise # con ROS ya apagado (Ctrl+C, el launch), spin puede tirar RCLError al armar la espera: no es un error
     finally:
         nodo.destroy_node()
         if rclpy.ok(): rclpy.shutdown()

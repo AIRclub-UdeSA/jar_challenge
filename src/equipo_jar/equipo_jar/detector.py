@@ -35,9 +35,9 @@ def puntos_laser_a_pixeles(xyz, rotacion, traslacion, fx, fy, cx, cy):
     return u,v,adelante
 
 class ProcesadorVision:
-    def __init__(self, hue_rojo_bajo_1=0.0, hue_rojo_alto_1=8.0, hue_rojo_bajo_2=155.0, hue_rojo_alto_2=180.0, saturacion_min=100.0, valor_min=30.0, mitad_caja=0.125):
-        # Umbrales HSV: el nodo los lee de params.yaml (se pueden retocar después del cierre de entregas); los valores por defecto son los mismos.
-        # Elegidos con test_color_lighting.py (fotos reales del bag con luz alterada): hue alto 8 porque paredes y piso empiezan en 12-15
+    def __init__(self, hue_rojo_bajo_1, hue_rojo_alto_1, hue_rojo_bajo_2, hue_rojo_alto_2, saturacion_min, valor_min, mitad_caja):
+        # Umbrales HSV y tamaño de la caja: los valores están solo en params.yaml (sección nodo_equipo), comentados; se pueden retocar después del
+        # cierre de entregas. Elegidos con test_color_lighting.py (fotos reales del bag con luz alterada)
         self.hue_rojo_bajo_1 = hue_rojo_bajo_1
         self.hue_rojo_alto_1 = hue_rojo_alto_1
         self.hue_rojo_bajo_2 = hue_rojo_bajo_2

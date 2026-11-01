@@ -73,10 +73,9 @@ def replay():
     boxes = yaml.safe_load((ARENA / 'cajas.yaml').read_text())['evaluador']['ros__parameters']
     victims = np.reshape(boxes['victimas'], (-1, 2))
     loc.ParticleFilter = lambda board, n: ParticleFilter(board, n, seed=0) # siempre el mismo resultado
-    rclpy.init(args=['--ros-args', '--params-file', str(PARAMS)])
+    rclpy.init(args=['--ros-args', '--params-file', str(PARAMS), '-p', f'cantidad_victimas:={len(victims)}']) # N, como victimas:=N en el launch
     try:
         localizer, node = loc.Localizer(), NodoEquipo()
-        node.cantidad_victimas = len(victims)
         node.procesador_vision.mitad_caja = boxes['lado_caja'] / 2
         reports = []
         node.pub_victimas = SimpleNamespace(publish=lambda m: reports.append((m.point.x, m.point.y)))

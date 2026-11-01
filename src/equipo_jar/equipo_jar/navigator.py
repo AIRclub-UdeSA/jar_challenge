@@ -1,11 +1,7 @@
 import math
-from dataclasses import dataclass, fields
-from pathlib import Path
 
 import numpy as np
 import rclpy
-import yaml
-from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PointStamped, PoseArray, PoseStamped, Twist
 from nav_msgs.msg import OccupancyGrid
 from rclpy.duration import Duration
@@ -20,60 +16,7 @@ from std_msgs.msg import Empty
 from tf2_ros import Buffer, TransformListener
 
 from equipo_jar.core import Board, _graph, line_of_sight, nearest_drivable, normalize, path_dist, viewpoint_tour, visibility
-from equipo_jar.localizer import MAP_QOS, yaw_of
-
-# --- Parámetros -----------------------------------------------------------
-
-def yaml_params(node):
-    """
-    Lee params.yaml y devuelve los parámetros del nodo "node" como diccionario (nombre: valor): su sección del archivo.
-
-    El archivo está dos veces: en el repo (src/equipo_jar/params/) y en la copia que instala la compilación (share/equipo_jar/params/), que es la que
-    el launch le pasa al robot. Lee la del repo si está (tests) y si no la instalada.
-    """
-    path = Path(__file__).resolve().parents[1] / 'params' / 'params.yaml'
-    if not path.exists(): path = Path(get_package_share_directory('equipo_jar')) / 'params' / 'params.yaml'
-
-    return yaml.safe_load(path.read_text())[node]['ros__parameters']
-
-@dataclass
-class Params:
-    """
-    Los parámetros de la navegación en un solo objeto: Mission lee p.max_speed, p.clear_time, etc.
-
-    No tiene valores: están solo en params.yaml (sección navigator), comentados uno por uno. El nodo los recibe de ROS, que lee ese archivo, y los tests
-    los cargan con from_yaml(). Agregar un parámetro es un campo acá y su línea en el yaml.
-    """
-    max_speed: float
-    max_turn: float
-    turn_lead: float
-    robot_radius: float
-    body_radius: float
-    lookahead: float
-    wall_margin: float
-    goal_tolerance: float
-    start_tolerance: float
-    start_radius: float
-    lidar_range: float
-    camera_range: float
-    camera_fov: float
-    approach: float
-    clear_time: float
-    watch_time: float
-    time_limit: float
-    max_blocked: float
-
-    @classmethod
-    def from_yaml(cls, **changes):
-        """
-        Params con los valores de params.yaml; changes pisa los que se pasen (un test que prueba otro time_limit).
-
-        Convierte cada valor al tipo del campo. Si uno falta en el yaml o está mal escrito, KeyError con su nombre: falla al arrancar en vez de correr con
-        un valor que nadie eligió.
-        """
-        values = yaml_params('navigator')
-
-        return cls(**{f.name: f.type(changes.get(f.name, values[f.name])) for f in fields(cls)})
+from equipo_jar.localizer import MAP_QOS, node_params, yaw_of
 
 # --- Caminos (planificación) ----------------------------------------------
 
@@ -178,13 +121,16 @@ class Mission:
     suficiente. Sin candidatos no gira. Vuelve cuando se reportaron las N víctimas, cuando ya vio todo o cuando se acaba el tiempo.
     test_navigator.py la prueba con una simulación cinemática.
 
+    p: los parámetros como atributos (p.max_speed, ...). En el robot es el nodo Navigator, que los lee de params.yaml; en los tests, la sección
+    navigator del yaml.
+
     Estados:
         - 'going': buscando (hacia un candidato o un punto de paso).
         - 'returning' a la largada.
         - 'done': hay que publicar /done y no moverse más.
     """
     def __init__(self, grid, start, p=None):
-        self.grid, self.p = grid, p or Params.from_yaml()
+        self.grid, self.p = grid, p
         self.start = (float(start[0]), float(start[1]))
         self.points, self.vis, self.reachable = viewpoint_tour(grid, self.start, self.p.robot_radius, self.p.lidar_range)
         self.hits = np.zeros(grid.free.shape, np.int16) # veces que el lidar vio algo fuera del mapa en cada celda, hasta 1.5 m (obstáculos)
@@ -225,7 +171,8 @@ class Mission:
         self._mark_obstacles(x, y, lidar[~self.is_wall])
         # Girando, un desfase chico entre scan y pose (50 ms a 1 rad/s son 3°) corre 20 cm una pared a 4 m: parece un objeto. Hasta 1.5 m (obstáculos) no
         if not turning: self._mark_candidates(lidar[~self.is_wall])
-        self._confirm(x, y, lidar[~self.is_wall])
+        # Girando tampoco se confirman: el candidato no se corrige (la línea de arriba) y el desfase lo corre; en Gazebo un señuelo salió como fantasma
+        if not turning: self._confirm(x, y, lidar[~self.is_wall])
         self._watch(x, y, yaw, dt, reports, red)
         self.seen |= visibility(self.grid, x, y, self.p.lidar_range, 180)
 
@@ -343,7 +290,7 @@ class Mission:
         """
         Descarta candidatos fantasma sin gastar cámara: con línea de vista a menos de 2.5 m, si en 5 ciclos seguidos el lidar no ve nada a menos de 0.25 m,
         era una pared corrida por un error de pose de unos scans (el localizer corrige y la TF tarda tf_lead en reflejarlo). lidar: los puntos que no son
-        paredes del mapa. Si uno más cercano lo tapa (otro objeto delante), ese ciclo no cuenta.
+        paredes del mapa. Si uno más cercano lo tapa (otro objeto delante), ese ciclo no cuenta. No se llama girando (ver step).
         """
         r = np.hypot(lidar[:, 0] - x, lidar[:, 1] - y)
         bearing = np.arctan2(lidar[:, 1] - y, lidar[:, 0] - x)
@@ -367,8 +314,8 @@ class Mission:
         Decide qué es cada candidato con lo que dice la percepción mientras lo mira: a menos de camera_range, en el 80 % central de la foto y con línea de vista.
 
         - Un reporte a menos de 0.4 m: era una víctima.
-        - clear_time en cuadro sin rojo cerca (red: grupos rojos que la percepción todavía no reportó): no lo es. Si después aparece rojo cerca (lo vio
-          desde otro lado), se vuelve a abrir.
+        - clear_time en cuadro sin rojo cerca (red: grupos rojos que la percepción todavía no reportó): no lo es. Si después aparece rojo cerca de uno
+          descartado así o como fantasma (lo vio desde otro lado), se vuelve a abrir.
         - Con rojo cerca se lo sigue mirando hasta el reporte; sin reporte tras watch_time en cuadro con 0.2 m de base, o 1.6 veces eso quieto, se deja.
         """
         for cd in self.candidates:
@@ -380,7 +327,7 @@ class Mission:
 
             red_near = any(math.hypot(cx - rx, cy - ry) < 0.4 for rx, ry in red)
             if cd['done']:
-                if red_near and cd['why'] == 'sin rojo':
+                if red_near and cd['why'] in ('sin rojo', 'fantasma'):
                     cd.update(done=False, why=None, time=0.0, views=[])
                     self.log.append(f'candidato en ({cx:.2f}, {cy:.2f}): la percepción ve rojo, lo vuelvo a mirar')
                 continue
@@ -494,14 +441,39 @@ class Navigator(Node):
     No se mueve antes de /map ni antes de que el localizer publique la largada (/jar/pose). Después de /done no vuelve a publicar.
     """
     def __init__(self):
-        super().__init__('navigator')
-        p = lambda name, value: self.declare_parameter(name, value).value # Declara el parámetro y lee su valor
+        super().__init__('navigator', automatically_declare_parameters_from_overrides=True)  # Registra el nodo en ROS con los parámetros de params.yaml
+        p = node_params(self)  # Los valores están solo en params.yaml (sección navigator), comentados. Mission los lee del nodo
 
-        # Parámetros: ROS los trae de params.yaml; se declaran con los mismos valores, leídos del yaml instalado (no hay otra copia)
-        default, node = Params.from_yaml(), yaml_params('navigator')
-        self.p = Params(**{f.name: p(f.name, getattr(default, f.name)) for f in fields(Params)})
-        self.base_frame = p('base_frame', node['base_frame'])
-        self.victims = p('victims', 5) # N: llega del launch (victimas:=N)
+        # Movimiento
+        self.max_speed = p['max_speed']
+        self.max_turn = p['max_turn']
+        self.turn_lead = p['turn_lead']
+
+        # Cuerpo y camino
+        self.body_radius = p['body_radius']
+        self.robot_radius = p['robot_radius']
+        self.wall_margin = p['wall_margin']
+        self.lookahead = p['lookahead']
+        self.max_blocked = p['max_blocked']
+
+        # Recorrido y candidatos
+        self.lidar_range = p['lidar_range']
+        self.goal_tolerance = p['goal_tolerance']
+        self.camera_range = p['camera_range']
+        self.camera_fov = p['camera_fov']
+        self.approach = p['approach']
+        self.clear_time = p['clear_time']
+        self.watch_time = p['watch_time']
+
+        # Regreso
+        self.time_limit = p['time_limit']
+        self.start_tolerance = p['start_tolerance']
+        self.start_radius = p['start_radius']
+
+        # Nodo
+        self.base_frame = p['base_frame']
+        self.rate_hz = p['rate_hz']
+        self.victims = int(p['victims'])  # N: llega del launch (victimas:=N)
 
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)
@@ -515,7 +487,7 @@ class Navigator(Node):
         self.create_subscription(PoseStamped, '/jar/pose', self.on_pose, 10)
         self.create_subscription(PoseArray, '/jar/rojo', self.on_red, 10)
         self.create_subscription(PointStamped, '/victimas', self.on_victim, 10)
-        self.create_timer(1.0 / p('rate_hz', node['rate_hz']), self.control)
+        self.create_timer(1.0 / self.rate_hz, self.control)
 
         # Estado inicial
         self.board = self.mission = self.t0 = self.start = self.ready_at = None
@@ -557,7 +529,7 @@ class Navigator(Node):
 
         r = np.asarray(msg.ranges)
         a = msg.angle_min + np.arange(len(r)) * msg.angle_increment
-        ok = np.isfinite(r) & (r > 0.12) & (r < self.p.lidar_range)
+        ok = np.isfinite(r) & (r > 0.12) & (r < self.lidar_range)
         th = yaw_of(tf.rotation)
         c, s = math.cos(th), math.sin(th)
         x, y = r[ok] * np.cos(a[ok]), r[ok] * np.sin(a[ok])
@@ -587,7 +559,7 @@ class Navigator(Node):
 
             if self.mission is None:
                 if math.hypot(pose[0] - self.start[0], pose[1] - self.start[1]) > 0.05: return # la TF todavía no tiene la largada del localizer
-                self.mission, self.ready_at = Mission(self.board, self.start, self.p), self.get_clock().now()
+                self.mission, self.ready_at = Mission(self.board, self.start, self), self.get_clock().now()
                 self.get_logger().info(f'recorrido: {len(self.mission.points)} puntos de paso desde ({pose[0]:.2f}, {pose[1]:.2f})')
 
             t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
@@ -624,13 +596,15 @@ def main(args=None):
     """
     Punto de entrada del ejecutable navigator (setup.py). Lo arranca competencia.launch.py con params.yaml.
 
-    rclpy.spin alcanza: un solo timer y callbacks cortos. Ctrl+C y el apagado del launch (ExternalShutdownException) terminan sin traceback.
+    rclpy.spin alcanza: un solo timer y callbacks cortos. Ctrl+C y el apagado del launch terminan sin traceback.
     """
     rclpy.init(args=args)
     node = Navigator()
 
     try: rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException): pass
+    except Exception:
+        if rclpy.ok(): raise # con ROS ya apagado (Ctrl+C, el launch), spin puede tirar RCLError al armar la espera: no es un error
     finally:
         node.destroy_node()
         if rclpy.ok(): rclpy.shutdown()

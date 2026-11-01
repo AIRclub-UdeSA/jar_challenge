@@ -18,10 +18,12 @@ import pytest
 import yaml
 
 from equipo_jar.detector import ProcesadorVision, mascara_rojo
+from equipo_jar.nodo_equipo import UMBRALES
 
 BAG = Path(os.environ.get('JAR_BAG', Path.home() / 'rosmaster_ws/bags/laberinto_victimas/laberinto_victimas_0.db3'))
 PARAMS = Path(__file__).parents[1] / 'params' / 'params.yaml'
-THRESHOLDS = ('hue_rojo_bajo_1', 'hue_rojo_alto_1', 'hue_rojo_bajo_2', 'hue_rojo_alto_2', 'saturacion_min', 'valor_min')
+NODO = yaml.safe_load(PARAMS.read_text())['nodo_equipo']['ros__parameters']
+VISION = {k: NODO[k] for k in UMBRALES} # los umbrales que usa el robot
 K5, K15 = np.ones((5, 5), np.uint8), np.ones((15, 15), np.uint8)
 
 LIGHTS = {
@@ -64,7 +66,7 @@ def red(hsv, u):
 
 def label(img):
     """(caja, lejos de toda caja): envolvente convexa de cada mancha roja de más de 60 px, con un criterio holgado y fijo."""
-    m = cv2.morphologyEx(red(cv2.cvtColor(img, cv2.COLOR_BGR2HSV), ProcesadorVision(0, 12, 150, 180, 90, 40)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    m = cv2.morphologyEx(red(cv2.cvtColor(img, cv2.COLOR_BGR2HSV), ProcesadorVision(0, 12, 150, 180, 90, 40, 0.125)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     n, lab, st, _ = cv2.connectedComponentsWithStats(m)
     box = np.zeros(m.shape, np.uint8)
     for k in range(1, n):
@@ -94,7 +96,7 @@ def evaluate(images, u):
 def results():
     if not BAG.exists(): pytest.skip(f'sin el bag {BAG}')
 
-    return evaluate(list(frames(BAG)), ProcesadorVision())
+    return evaluate(list(frames(BAG)), ProcesadorVision(**VISION))
 
 @pytest.mark.parametrize('light', LIGHTS)
 def test_red_threshold_under_light(results, light):
@@ -103,14 +105,8 @@ def test_red_threshold_under_light(results, light):
     assert found >= min_found, f'{light}: se detecta {found:.0%} de la caja (mínimo {min_found:.0%})'
     assert false <= max_false, f'{light}: {false:.1%} de las fotos con falsos (máximo {max_false:.0%})'
 
-def test_params_yaml_matches_defaults():
-    """El nodo lee los umbrales de params.yaml y este test mide los de ProcesadorVision(): tienen que ser los mismos."""
-    params = yaml.safe_load(PARAMS.read_text())['nodo_equipo']['ros__parameters']
-    default = ProcesadorVision()
-    assert {k: params[k] for k in THRESHOLDS} == {k: getattr(default, k) for k in THRESHOLDS}
-
 if __name__ == '__main__':
     images = list(frames(BAG))
     print(f'{len(images)} fotos, {sum(label(img)[0].any() for img in images)} con caja')
-    for name, (found, false) in evaluate(images, ProcesadorVision()).items():
+    for name, (found, false) in evaluate(images, ProcesadorVision(**VISION)).items():
         print(f'{name:17} caja {found:6.1%} | fotos con falsos {false:5.1%}')
