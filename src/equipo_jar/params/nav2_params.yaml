@@ -79,7 +79,9 @@ amcl:
     # Cuántos rayos del scan completo (de 1080) se usan para pesar cada
     # partícula — el equivalente directo de tu submuestreo_scan de
     # semana 06 (ahí bajarlo = más preciso y más lento, acá también).
-    max_beams: 60
+    # 120 en vez de 60: en los pasillos largos del laberinto, con 60 la
+    # corrección no alcanzaba a compensar el drift de la odometría.
+    max_beams: 120
 
     # Rango de partículas del filtro adaptativo. En semana 06 usabas un
     # num_particulas fijo; acá AMCL ajusta solo la cantidad entre estos
@@ -120,6 +122,13 @@ amcl:
     # modelo diferencial, un desplazamiento lateral puro le hace inventar
     # una rotación que nunca ocurrió, y le mete ruido angular a un robot
     # que no rotó.
+    #
+    # Igual usamos el diferencial: medido en el simulador con odometría
+    # perfecta, el OmniMotionModel de este nav2 acumulaba error con la
+    # distancia (0.6 m al cruzar el laberinto) y el robot terminaba contra
+    # las paredes. Con el diferencial el error queda en ~0.1 m. Funciona
+    # porque el controller (Regulated Pure Pursuit) nunca se desplaza de
+    # costado. Si se vuelve a DWB con strafe, el diferencial se pierde.
     robot_model_type: "nav2_amcl::OmniMotionModel"
 
     # Cada cuánto (Hz) AMCL guarda la última pose estimada en el parameter
@@ -128,8 +137,10 @@ amcl:
 
     # Desvío (m) de la gaussiana del campo de verosimilitud — el mismo rol
     # que sigma_sensor en tu campo_verosimilitud.py de semana 06 (chico =
-    # exigente, grande = permisivo).
-    sigma_hit: 0.2
+    # exigente, grande = permisivo). 0.1 en vez de 0.2: en pasillos de
+    # ~0.8 m, un halo de 0.2 casi no distingue estar en el centro de estar
+    # pegado a una pared.
+    sigma_hit: 0.1
 
     # Si AMCL publica la transformada map -> odom. Tiene que ser true: es
     # la transformada que corrige el drift, el objetivo central de todo
@@ -144,17 +155,20 @@ amcl:
 
     # Cuánto tiene que rotar (rad) / trasladarse (m) el robot antes de que
     # AMCL dispare una corrección nueva — evita recalcular en cada scan
-    # mientras el robot está parado.
-    update_min_a: 0.2
-    update_min_d: 0.25
+    # mientras el robot está parado. Más chicos que el default (0.2 rad /
+    # 0.25 m) para corregir más seguido y no dejar crecer el error.
+    update_min_a: 0.1
+    update_min_d: 0.1
 
     # Pesos que combinan las distintas fuentes de probabilidad del modelo
     # de sensor: qué tan seguido un rayo da justo en un obstáculo esperado
     # (z_hit) vs. se va al rango máximo (z_max) vs. es ruido aleatorio
-    # (z_rand) vs. rebota corto (z_short). Tienen que sumar ~1.
-    z_hit: 0.5
+    # (z_rand) vs. rebota corto (z_short). Tienen que sumar ~1. Con z_rand
+    # en 0.5 la mitad de cada rayo se trataba como ruido y el lidar casi no
+    # corregía; el laberinto es estático, así que se le cree más al lidar.
+    z_hit: 0.85
     z_max: 0.05
-    z_rand: 0.5
+    z_rand: 0.05
     z_short: 0.05
 
     # Tópico del lidar — igual que en todas las semanas anteriores.
@@ -198,11 +212,14 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: True
-      # Radio circunscripto del footprint real del X3 (URDF: chasis
-      # 0.300 x 0.1994 m con ruedas incluidas) — confirmado contra el CAD,
-      # ya no es un placeholder. Nav2 lo usa para inflar obstáculos lo
-      # justo para que el robot no choque, sea cual sea su orientación.
-      robot_radius: 0.18
+      # Footprint real del X3 (URDF: chasis 0.300 x 0.1994 m con ruedas
+      # incluidas, corrido 3 cm hacia atrás de base_footprint) en vez del
+      # círculo circunscripto (robot_radius: 0.18). Con el círculo el robot
+      # "medía" 0.36 m de ancho para Nav2 y los huecos de ~0.4 m entre las
+      # cajas y las paredes le parecían cerrados, aunque de costado (0.20 m)
+      # pasa holgado.
+      footprint: "[[0.12, 0.10], [0.12, -0.10], [-0.18, -0.10], [-0.18, 0.10]]"
+      footprint_padding: 0.02
       resolution: 0.05
       # true: las celdas fuera del rango de todos los sensores quedan
       # "desconocido" en vez de "libre" — mismo criterio conservador que
@@ -243,8 +260,12 @@ global_costmap:
       # semana 03, acá una capa más en vez de un `if distancia < margen`.
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        # Más corto y empinado que el de nav2_bringup (0.55 / 3.0): con
+        # 0.55 todo el ancho de un pasillo de 0.8 m tenía costo alto y el
+        # robot no "se animaba" a cruzarlo. Con esto el costo cae rápido
+        # pasando el footprint y el centro del pasillo queda casi libre.
+        cost_scaling_factor: 5.0
+        inflation_radius: 0.35
       always_send_full_costmap: True
 
 local_costmap:
@@ -268,7 +289,8 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.18
+      footprint: "[[0.12, 0.10], [0.12, -0.10], [-0.18, -0.10], [-0.18, 0.10]]"
+      footprint_padding: 0.02
       # voxel_layer en vez de obstacle_layer: guarda una grilla 3D (con
       # altura) en vez de un plano 2D — más caro, pero el costmap local sí
       # se lo puede permitir porque su área es chica (3x3 m contra el mapa
@@ -276,8 +298,12 @@ local_costmap:
       plugins: ["static_layer", "voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        # Más corto y empinado que el de nav2_bringup (0.55 / 3.0): con
+        # 0.55 todo el ancho de un pasillo de 0.8 m tenía costo alto y el
+        # robot no "se animaba" a cruzarlo. Con esto el costo cae rápido
+        # pasando el footprint y el centro del pasillo queda casi libre.
+        cost_scaling_factor: 5.0
+        inflation_radius: 0.35
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -340,7 +366,10 @@ controller_server:
     goal_checker_plugins: ["general_goal_checker"]
     # Un solo plugin de controller activo, con el nombre que usás abajo
     # para configurarlo (`FollowPath`). Nav2 permite tener varios y
-    # cambiar entre ellos, pero acá no hace falta.
+    # cambiar entre ellos, pero acá no hace falta. `FollowPathDWB` (más
+    # abajo) queda configurado pero no se carga: para volver a DWB,
+    # intercambiá los nombres FollowPath/FollowPathDWB (el behavior tree
+    # pide el controller "FollowPath") y volvé amcl a OmniMotionModel.
     controller_plugins: ["FollowPath"]
 
     # Define "trabado": si en `movement_time_allowance` segundos el robot
@@ -356,7 +385,7 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25
+      xy_goal_tolerance: 0.1
       # Permisivo (~180°) a propósito: sin `RotateToGoal` (ver FollowPath
       # más abajo) el robot no necesariamente termina mirando hacia la
       # orientación final del goal. Con una tolerancia chica acá,
@@ -364,14 +393,65 @@ controller_server:
       # terminar nunca. Orientación final estricta queda como Desafío
       # extra (ver README).
       yaw_goal_tolerance: 3.15
+    # Regulated Pure Pursuit: sigue el plan global persiguiendo un punto
+    # que está `lookahead_dist` adelante sobre el camino. A diferencia de
+    # DWB no puntúa trayectorias contra un objetivo local, así que no se
+    # traba en los pasillos angostos donde el plan dobla en U (ver
+    # FollowPathDWB). Frena solo cerca de obstáculos y en curvas cerradas,
+    # y gira en el lugar cuando el camino cambia mucho de dirección. No usa
+    # el desplazamiento lateral del mecanum.
+    FollowPathRPP:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.25
+      # Distancia al punto que persigue: chica para no cortar esquinas en
+      # pasillos de ~0.8 m (con 0.2 o menos el robot no arrancaba).
+      lookahead_dist: 0.35
+      min_lookahead_dist: 0.25
+      max_lookahead_dist: 0.6
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: false
+      transform_tolerance: 0.2
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.6
+      # Frena antes de chocar con algo que no está en el plan.
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      # Más lento en curvas cerradas y cerca de las paredes.
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.1
+      cost_scaling_dist: 0.3
+      cost_scaling_gain: 1.0
+      # Tiene que coincidir con el inflation_layer de los costmaps.
+      inflation_cost_scaling_factor: 5.0
+      # Si el camino sale a más de 45° de donde mira, gira en el lugar.
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.785
+      rotate_to_heading_angular_vel: 1.0
+      max_angular_accel: 3.2
+      allow_reversing: false
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
+
     # DWB (Dynamic Window Approach): en cada ciclo genera un lote de
     # trayectorias candidatas de corto alcance, les pone puntaje según los
     # `critics` de abajo, y ejecuta la de mejor puntaje — el reemplazo
     # directo de la máquina de estados de semana 03 (ahí decidías "girar" o
-    # "avanzar" a mano; acá el plugin evalúa opciones y elige).
+    # "avanzar" a mano; acá el plugin evalúa opciones y elige). No se carga
+    # (ver controller_plugins).
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
-      debug_trajectory_details: True
+      # En True publica en /evaluation todas las trayectorias de cada ciclo
+      # (miles): sirve para depurar, pero frena el loop de control y el
+      # watchdog del robot lo para si pasa 0.5 s sin /cmd_vel.
+      debug_trajectory_details: False
+      # Hasta dónde (m, medido sobre el plan) mira DWB para elegir su
+      # objetivo local. Con el default (2.0), cuando el plan dobla en U
+      # pasando una puerta angosta el objetivo queda del otro lado de la
+      # pared: GoalDist/GoalAlign tiran para un lado, PathDist/PathAlign
+      # para el otro, y gana quedarse quieto ("Failed to make progress").
+      forward_prune_distance: 1.0
       # min/max_vel_x: adelante/atrás, alineado con velocidad_adelante=0.3
       # de semana 03 para no meter un robot "distinto" a mitad de roadmap.
       min_vel_x: -0.3
@@ -399,17 +479,18 @@ controller_server:
       # prueba DWB por ciclo para armar el lote de trayectorias candidatas
       # — más muestras = más opciones evaluadas, pero más costo. vy tiene
       # menos que vx/vtheta porque el rango de velocidad lateral también
-      # es menor.
-      vx_samples: 20
-      vy_samples: 10
-      vtheta_samples: 20
+      # es menor. Con 20/10/20 (4000 trayectorias) el loop no llegaba a
+      # 20 Hz: salían ~10 comandos por segundo. Con ~1000 llega holgado.
+      vx_samples: 12
+      vy_samples: 7
+      vtheta_samples: 12
       # Cuántos segundos hacia adelante simula cada trayectoria candidata
       # antes de puntuarla.
       sim_time: 1.7
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.25
+      xy_goal_tolerance: 0.1
       trans_stopped_velocity: 0.25
       short_circuit_trajectory_evaluation: True
       stateful: True
@@ -421,8 +502,12 @@ controller_server:
       # para desplazarse, y ese crítico asume que sí. Sumamos Twirling en
       # su lugar para evitar que DWB gire sobre el eje sin necesidad, ya
       # que tiene grados de libertad de sobra al no depender de girar.
-      critics: ["Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"]
-      BaseObstacle.scale: 0.02
+      # ObstacleFootprint en vez de BaseObstacle: BaseObstacle solo mira la
+      # celda del centro del robot; ObstacleFootprint chequea el rectángulo
+      # entero con su orientación, que es lo que permite pasar de costado
+      # por un hueco angosto.
+      critics: ["Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"]
+      ObstacleFootprint.scale: 0.02
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
       GoalAlign.scale: 24.0
