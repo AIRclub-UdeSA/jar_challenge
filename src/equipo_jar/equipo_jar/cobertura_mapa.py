@@ -40,44 +40,29 @@ class CoberturaMapa(Node):
 
     
     def next_goal(self):
+        if self.done:
+            return
         if len(self.possible_goals) == 0:
             self.calculate_possible_goals()
-        if not self.done:
-            self.go_to_goal(self.possible_goals.pop(0))
         if len(self.possible_goals) == 0:
+            # Sin objetivos el robot se queda quieto: no se manda nada a nav2.
             self.done = True
-            self.get_logger().info("All goals have been visited")
-    
+            self.get_logger().info("No hay objetivos para visitar")
+            return
+        self.go_to_goal(self.possible_goals.pop(0))
+
     def calculate_possible_goals(self):
         """
-        At this moment, it only calculates the corners of the map, 
-        but it can be improved to calculate more points in the map.
+        Arma self.possible_goals (Pose en `map`).
+
+        TODO: la exploración. Antes eran las 4 esquinas del mapa, que quedan
+        fuera del costmap: el planner nunca llegaba y nav2 hacía girar y
+        retroceder al robot en sus recuperaciones. Por ahora no hay objetivos.
         """
-        self.get_logger().info("Calculating possible goals")
         if self.mapa is None:
             self.get_logger().error("No map provided")
             return
-        if self.done:
-            self.get_logger().info("All goals have been visited")
-            return
-        if len(self.possible_goals) == 0:
-            self.get_logger().info("Calculating possible goals")
-            # Get the corners of the map
-            origin_x = self.mapa.info.origin.position.x
-            origin_y = self.mapa.info.origin.position.y
-            width = self.mapa.info.width * self.mapa.info.resolution
-            height = self.mapa.info.height * self.mapa.info.resolution
-            corners = [
-                self.create_pose(origin_x + width, origin_y),
-                self.create_pose(origin_x, origin_y + height),
-                self.create_pose(origin_x + width, origin_y + height),
-                self.create_pose(origin_x, origin_y),
-            ]
-            self.get_logger().info(f"Possible goals calculated: {corners}")
-            self.possible_goals = corners
-            # La pose inicial la fija amcl (set_initial_pose en
-            # nav2_params.yaml): el robot larga cerca del origen, no en una
-            # esquina del mapa.
+        self.possible_goals = []
 
     def create_pose(self, x, y):
         pose = Pose()

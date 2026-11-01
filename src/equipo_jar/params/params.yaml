@@ -9,7 +9,7 @@ nodo_equipo:
   ros__parameters:
     frecuencia_control_hz: 0.1
     # frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.30      # m/s
+    velocidad_lineal_max: 0.50      # m/s, tope del robot en x y en y
     velocidad_angular_max: 1.00     # rad/s
 
 # Semana 10, paso 5: una posición por caja a partir de /objetos_rojos.

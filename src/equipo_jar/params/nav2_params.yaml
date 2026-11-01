@@ -452,22 +452,23 @@ controller_server:
       # pared: GoalDist/GoalAlign tiran para un lado, PathDist/PathAlign
       # para el otro, y gana quedarse quieto ("Failed to make progress").
       forward_prune_distance: 1.0
-      # min/max_vel_x: adelante/atrás, alineado con velocidad_adelante=0.3
-      # de semana 03 para no meter un robot "distinto" a mitad de roadmap.
-      min_vel_x: -0.3
+      # Límites de velocidad: los topes que aplica el propio robot (0.5 m/s
+      # en x, 0.5 m/s en y, 1 rad/s de giro). El reto es de velocidad, así
+      # que se usan enteros.
+      min_vel_x: -0.5
       # min/max_vel_y: strafe lateral, ¡en 0 por default en nav2_bringup
       # porque asume un robot diferencial que no puede moverse de costado!
       # El X3 es mecanum — sí puede — así que este es el cambio central
       # del checkpoint: sin esto, DWB nunca generaría una trayectoria
       # lateral aunque el robot fuera capaz de hacerla.
-      min_vel_y: -0.2
-      max_vel_x: 0.3
-      max_vel_y: 0.2
-      # velocidad angular máxima, alineado con velocidad_angular=1.0 de
-      # semana 03.
+      min_vel_y: -0.5
+      max_vel_x: 0.5
+      max_vel_y: 0.5
       max_vel_theta: 1.0
       min_speed_xy: 0.0
-      max_speed_xy: 0.3
+      # El robot limita cada eje por separado, así que en diagonal puede ir
+      # a 0.5 en x y 0.5 en y a la vez: 0.5 * sqrt(2).
+      max_speed_xy: 0.707
       min_speed_theta: 0.0
       acc_lim_x: 2.5
       acc_lim_y: 2.5
@@ -480,14 +481,22 @@ controller_server:
       # — más muestras = más opciones evaluadas, pero más costo. vy tiene
       # menos que vx/vtheta porque el rango de velocidad lateral también
       # es menor. Con 20/10/20 (4000 trayectorias) el loop no llegaba a
-      # 20 Hz: salían ~10 comandos por segundo. Con ~1000 llega holgado.
-      vx_samples: 12
-      vy_samples: 7
-      vtheta_samples: 12
+      # 20 Hz: salían ~10 comandos por segundo. Con 0.5 m/s de tope hacen
+      # falta saltos de velocidad finos (~0.07 m/s en x, ~0.1 en y) para que
+      # pueda frenar y acomodarse en el objetivo sin quedar oscilando; con
+      # 15 x 11 x 9 (~1500) entra en 20 Hz.
+      vx_samples: 15
+      vy_samples: 11
+      vtheta_samples: 9
       # Cuántos segundos hacia adelante simula cada trayectoria candidata
-      # antes de puntuarla.
-      sim_time: 1.7
-      linear_granularity: 0.05
+      # antes de puntuarla. 1.2 s a 0.5 m/s = 0.6 m hacia adelante.
+      sim_time: 1.2
+      # Cada cuántos metros de la trayectoria simulada se chequea el
+      # footprint contra el costmap. Con 0.05 eran ~12 chequeos del
+      # rectángulo entero por trayectoria (x ~1500 trayectorias) y el loop
+      # no llegaba a 20 Hz; 0.1 sigue siendo el doble de fino que el
+      # footprint más angosto del robot (0.2 m).
+      linear_granularity: 0.1
       angular_granularity: 0.025
       transform_tolerance: 0.2
       xy_goal_tolerance: 0.1
@@ -711,8 +720,8 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.3, 0.2, 1.0]
-    min_velocity: [-0.3, -0.2, -1.0]
+    max_velocity: [0.5, 0.5, 1.0]
+    min_velocity: [-0.5, -0.5, -1.0]
     max_accel: [2.5, 2.5, 3.2]
     max_decel: [-2.5, -2.5, -3.2]
     odom_topic: "odom"

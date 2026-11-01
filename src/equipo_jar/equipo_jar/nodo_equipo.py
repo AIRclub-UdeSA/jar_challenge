@@ -70,7 +70,6 @@ class NodoEquipo(Node):
             return  # esperar el mapa: no mover el robot ni reportar antes
         # TODO: acá va tu estrategia. Por ahora el robot se queda quieto.
         # self.pub_cmd_vel.publish(Twist())
-        self.get_logger().info('Ciclo de control: siguiente objetivo')
         self.cobertura_mapa.next_goal()
 
     def terminar(self):
