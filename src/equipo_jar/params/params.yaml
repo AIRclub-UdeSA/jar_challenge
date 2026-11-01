@@ -7,10 +7,13 @@
 #
 nodo_equipo:
   ros__parameters:
-    frecuencia_control_hz: 0.1
-    # frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.50      # m/s, tope del robot en x y en y
-    velocidad_angular_max: 1.00     # rad/s
+    frecuencia_control_hz: 5.0
+    tiempo_corrida_s: 600.0         # §5: la corrida dura 10 minutos
+    margen_vuelta_s: 30.0           # margen para llegar a la largada antes del final
+    velocidad_vuelta_estimada: 0.2  # m/s medios, para estimar cuánto tarda la vuelta
+    tolerancia_largada: 0.15        # m; el bono de vuelta exige <= 0.25 m (§8)
+    intentos_vuelta: 3
+    tiempo_sin_avance_s: 20.0       # el juez corta la corrida a los 60 s quieto
 
 # Semana 10, paso 5: una posición por caja a partir de /objetos_rojos.
 juntar_victimas:
