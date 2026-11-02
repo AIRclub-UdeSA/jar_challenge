@@ -33,6 +33,28 @@ evasor:
     angulo_frente_deg: 180.0
     velocidad_adelante: 0.3
     velocidad_angular: 0.4          # rad/s: por debajo de giro_maximo, para detectar girando
+    # Mejoras (cada una se apaga con false; todo en false = evasor original):
+    girar_hacia_libre: true         # girar hacia el lado más libre hasta despejar el frente
+    margen_lateral: 0.22            # m: pared más cerca al costado -> alejarse de costado
+    velocidad_lateral: 0.1          # m/s
+    distancia_lenta: 1.0            # m: desde acá frena de a poco hasta distancia_choque_m
+    acercarse_rojo: true            # acercarse a lo rojo que todavía no se confirmó
+    distancia_acercamiento: 0.7     # m del objeto donde se queda mirando
+    tiempo_max_acercamiento: 10.0   # s: después lo abandona (y lo ignora 30 s)
+    distancia_max_rojo: 2.5         # m
+    radio_confirmada: 0.5           # m
+    explorar_con_memoria: true      # elegir rumbo hacia lo que la cámara no vio
+    fov_camara_deg: 61.0            # campo horizontal de la cámara (de camera_info)
+    alcance_camara: 2.5             # m
+    peso_libre: 1.0
+    peso_no_visto: 2.0
+    periodo_reevaluar: 4.0          # s
+    no_visto_minimo: 0.05           # fracción sin ver adelante por debajo de la cual cambia de rumbo
+    barridos: true                  # vuelta completa en zonas con mucho sin ver
+    radio_barrido: 1.2              # m
+    fraccion_para_barrer: 0.5
+    distancia_entre_barridos: 1.0   # m
+    espacio_para_barrer: 0.3        # m libres alrededor para girar sin rozar
 
 localizador:
   ros__parameters:

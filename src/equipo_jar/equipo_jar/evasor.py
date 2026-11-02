@@ -1,241 +1,355 @@
+"""Evasor: explora el laberinto esquivando obstáculos y buscando terreno que la cámara no vio.
+
+Publica en cmd_vel_evasor; nodo_equipo decide si lo reenvía a /cmd_vel (no antes del mapa,
+no después del /done). La lógica pura está en exploracion.py.
+
+Estados:
+  AVANZAR    hacia adelante, más lento cuanto más cerca está lo de enfrente, y alejándose de
+             costado de las paredes laterales (base mecanum).
+  GIRAR      en el lugar, hacia la dirección elegida (con memoria: la más libre y con más
+             terreno sin ver; sin memoria: el lado más libre hasta despejar el frente).
+  BARRER     una vuelta completa en el lugar al llegar a una zona con mucho sin ver: la
+             cámara ve solo ~61°.
+  ACERCARSE  hacia un objeto rojo no mapeado que todavía no se confirmó, para verlo de cerca.
+
+Cada mejora se apaga desde params.yaml (girar_hacia_libre, acercarse_rojo,
+explorar_con_memoria, barridos): con todo en false queda el evasor original.
+"""
 import math
 
 import numpy as np
 import rclpy
+from geometry_msgs.msg import PointStamped, PoseArray, Twist
+from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener
 
+from equipo_jar.exploracion import (Cobertura, angulos_relativos, distancia_en_sector,
+                                    elegir_direccion, factor_velocidad, lado_mas_libre,
+                                    velocidad_lateral)
 from equipo_jar.imu import GiroImu
 
 FRECUENCIA_HZ = 10.0
 
-ESTADO_AVANZAR = 0
-ESTADO_GIRAR = 1
+AVANZAR = 'avanzar'
+GIRAR = 'girar'
+BARRER = 'barrer'
+ACERCARSE = 'acercarse'
+
+QOS_MAPA = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
+
+
+def normalizar(angulo: float) -> float:
+    return math.atan2(math.sin(angulo), math.cos(angulo))
+
+
+def yaw_de_quaternion(q) -> float:
+    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
 class Evasor(Node):
 
     def __init__(self):
         super().__init__('evasor')
-
-        # Cuántos grados a cada lado del frente mira el sensor para decidir si hay
-        # un obstáculo (cono de visión total = angulo_vision_deg).
-        self.declare_parameter('angulo_vision_deg', 60.0)
-        
-        # A qué distancia (metros) se considera que el choque es inminente.
-        self.declare_parameter('distancia_choque_m', 0.6)
-        
-        # Ángulo del /scan que corresponde al frente del robot. Depende del
-        # montaje del lidar; en el rosmaster_x3 simulado el joint de laser_link
-        # tiene 180 grados de yaw fijo (ver lidar.urdf.xacro), así que el 0 del
-        # /scan apunta para atrás y hay que compensarlo con 180.0.
-        self.declare_parameter('angulo_frente_deg', 180.0)
-        self.declare_parameter('velocidad_adelante', 0.3)
-        
-        # Signo y magnitud de la velocidad angular con la que se gira. El signo
-        # define el sentido: siempre se gira para el mismo lado (positivo =
-        # antihorario / izquierda, negativo = horario / derecha).
-        self.declare_parameter('velocidad_angular', 1.0)
-        
-        # Magnitud fija del giro cada vez que se detecta un obstáculo.
-        self.declare_parameter('angulo_giro_deg', 110.0)
-
-        self.angulo_vision_deg = self.get_parameter('angulo_vision_deg').value
-        self.distancia_choque_m = self.get_parameter('distancia_choque_m').value
-        self.angulo_frente_deg = self.get_parameter('angulo_frente_deg').value
-        self.velocidad_adelante = self.get_parameter('velocidad_adelante').value
-        self.velocidad_angular = self.get_parameter('velocidad_angular').value
-        self.angulo_giro_deg = self.get_parameter('angulo_giro_deg').value
+        parametros = {
+            # Cono frontal (grados) y distancia (m) a la que un obstáculo obliga a girar.
+            'angulo_vision_deg': 60.0,
+            'distancia_choque_m': 0.6,
+            # Ángulo del /scan que es el frente del robot: el lidar está montado a 180°.
+            'angulo_frente_deg': 180.0,
+            'velocidad_adelante': 0.3,
+            'velocidad_angular': 0.4,
+            # Solo sin girar_hacia_libre ni memoria (evasor original): giro fijo, siempre a la izq.
+            'angulo_giro_deg': 110.0,
+            # Nivel 1: girar hacia el lado más libre hasta despejar el frente.
+            'girar_hacia_libre': True,
+            # Nivel 1: con una pared a menos de esto al costado, alejarse de costado.
+            'margen_lateral': 0.22,
+            'velocidad_lateral': 0.1,
+            # Nivel 1: a partir de esta distancia al frente se empieza a frenar.
+            'distancia_lenta': 1.0,
+            # Acercarse a lo rojo no confirmado.
+            'acercarse_rojo': True,
+            'distancia_acercamiento': 0.7,    # m: a esta distancia del objeto se queda mirando
+            'tiempo_max_acercamiento': 10.0,  # s: después se abandona (y se ignora un rato)
+            'distancia_max_rojo': 2.5,        # m: objetos más lejanos no se persiguen
+            'radio_confirmada': 0.5,          # m: un objeto tan cerca de una confirmada ya está
+            # Nivel 2: memoria de lo que vio la cámara.
+            'explorar_con_memoria': True,
+            'fov_camara_deg': 61.0,           # campo horizontal de la cámara (camera_info)
+            'alcance_camara': 2.5,            # m: hasta dónde se cuenta como "visto"
+            'peso_libre': 1.0,
+            'peso_no_visto': 2.0,
+            'periodo_reevaluar': 4.0,         # s: cada cuánto se mira si queda algo nuevo adelante
+            'no_visto_minimo': 0.05,          # fracción: menos que esto adelante = "ya visto"
+            # Nivel 2: vueltas completas en zonas con mucho sin ver.
+            'barridos': True,
+            'radio_barrido': 1.2,             # m
+            'fraccion_para_barrer': 0.5,      # fracción sin ver alrededor para hacer una vuelta
+            'distancia_entre_barridos': 1.0,  # m
+            'espacio_para_barrer': 0.3,       # m libres alrededor para girar sin rozar
+        }
+        for nombre, valor in parametros.items():
+            self.declare_parameter(nombre, valor)
+            setattr(self, nombre, self.get_parameter(nombre).value)
+        self.angulo_frente = math.radians(self.angulo_frente_deg)
+        self.angulo_vision = math.radians(self.angulo_vision_deg)
+        self.angulo_giro = math.radians(self.angulo_giro_deg)
+        self.fov_camara = math.radians(self.fov_camara_deg)
 
         self.publisher_ = self.create_publisher(Twist, 'cmd_vel_evasor', 10)
-        
-        # Publica una copia filtrada de /scan (mismos campos, pero con
-        # infinito en todo lo que la máscara descarta) solo para poder
-        # verla en RViz. No la usa ningún otro nodo ni afecta la decisión
-        # del evasor — es pura ayuda visual para debuggear hay_obstaculo().
+        # Copia de /scan con solo los rayos que frenan al robot, para verla en RViz.
         self.publisher_scan_cono = self.create_publisher(LaserScan, 'scan_cono', 10)
-        
-        # Los sensores (lidar, cámara) publican con QoS "best effort": mandan
-        # el dato y no reintentan si se pierde. El default de rclpy es
-        # "reliable", y un subscriber reliable NO se conecta a un publisher
-        # best effort — no llega ningún mensaje y tampoco hay error. Por eso
-        # acá va qos_profile_sensor_data y no un 10 como en /odom, que sí es
-        # reliable. Más sobre esto en el README.
-        self.subscription = self.create_subscription(
-            LaserScan, 'scan', self.recibir_scan, qos_profile_sensor_data
-        )
-        
-        # Odometría real (integrada por wheel_state_odometry.py a partir de
-        # /joint_states, no lo que se comanda). Se usa para medir cuánto giró
-        # efectivamente el robot, en vez de asumir un tiempo fijo.
-        self.subscription_odom = self.create_subscription(
-            Odometry, 'odom', self.recibir_odom, 10
-        )
-        # Giro medido con el IMU: en el robot real las ruedas patinan al girar y la odometría
-        # sobreestima o subestima el ángulo. Si el IMU no llegó todavía, se usa /odom.
+        self.create_subscription(LaserScan, 'scan', self.recibir_scan, qos_profile_sensor_data)
+        self.create_subscription(Odometry, 'odom', self.recibir_odom, 10)
+        self.create_subscription(OccupancyGrid, '/map', self.recibir_mapa, QOS_MAPA)
+        self.create_subscription(PoseArray, 'objetos_no_mapeados', self.recibir_objetos, 10)
+        self.create_subscription(PointStamped, 'victima_confirmada', self.recibir_confirmada, 10)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        # Giro medido con el IMU: en el robot real las ruedas patinan al girar.
         self.giro = GiroImu(self, self.tf_buffer)
-        self.timer = self.create_timer(1.0 / FRECUENCIA_HZ, self.maquina_de_estados)
+        self.create_timer(1.0 / FRECUENCIA_HZ, self.maquina_de_estados)
 
         self.ultimo_scan = None
         self.yaw_actual = None
-        self.estado = ESTADO_AVANZAR
+        self.cobertura = None
+        self.estado = AVANZAR
+        self.ticks = 0
         self.yaw_inicial_giro = ('odom', 0.0)
-        self.angulo_frente_rad = self.angulo_frente_deg * 2*math.pi / 360 
-        self.angulo_vision_rad = self.angulo_vision_deg * 2*math.pi / 360 
-        self.angulo_giro_rad = self.angulo_giro_deg * 2*math.pi / 360 
+        self.sentido_giro = 1
+        self.yaw_objetivo = None          # GIRAR con memoria: rumbo en `map` al que ir
+        self.ultima_reevaluacion = 0.0
+        self.ultimo_barrido = None        # (x, y) en `map`
+        self.confirmadas = []             # (x, y) en `map`
+        self.descartados = []             # (x, y, hasta_cuando) objetos rojos abandonados
+        self.objetos = []                 # últimos objetos rojos no mapeados (x, y)
+        self.objetivo_rojo = None
+        self.inicio_acercamiento = 0.0
+
+    # ---------- entradas ----------
 
     def recibir_scan(self, msg: LaserScan):
         self.ultimo_scan = msg
 
     def recibir_odom(self, msg: Odometry):
-        q = msg.pose.pose.orientation
-        self.yaw_actual = math.atan2(
-            2.0 * (q.w * q.z + q.x * q.y),
-            1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        )
+        self.yaw_actual = yaw_de_quaternion(msg.pose.pose.orientation)
 
-    def normalizar_angulo(self, angulo: float) -> float:
-        """Lleva un ángulo en radianes al rango [-pi, pi]."""
-        return math.atan2(math.sin(angulo), math.cos(angulo))
+    def recibir_mapa(self, msg: OccupancyGrid):
+        if self.cobertura is None:
+            grilla = np.array(msg.data, dtype=np.int16).reshape((msg.info.height, msg.info.width))
+            self.cobertura = Cobertura(grilla, msg.info.resolution,
+                                       msg.info.origin.position.x, msg.info.origin.position.y)
+
+    def recibir_objetos(self, msg: PoseArray):
+        self.objetos = [(p.position.x, p.position.y) for p in msg.poses]
+
+    def recibir_confirmada(self, msg: PointStamped):
+        self.confirmadas.append((msg.point.x, msg.point.y))
+
+    def ahora(self) -> float:
+        """Segundos del reloj de ROS (el simulado en Gazebo y en el bag)."""
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def pose_map(self):
+        """(x, y, yaw) del robot en `map`, o None sin localización."""
+        try:
+            t = self.tf_buffer.lookup_transform('map', 'base_footprint', Time()).transform
+        except Exception:
+            return None
+        return t.translation.x, t.translation.y, yaw_de_quaternion(t.rotation)
+
+    # ---------- lidar ----------
+
+    def lidar(self):
+        scan = self.ultimo_scan
+        rangos = np.asarray(scan.ranges, dtype=float)
+        rel = angulos_relativos(len(rangos), scan.angle_min, scan.angle_increment,
+                                self.angulo_frente)
+        return rangos, rel, scan.range_min
+
+    def distancia_frente(self, rangos, rel, rmin):
+        return distancia_en_sector(rangos, rel, 0.0, self.angulo_vision, rmin)
+
+    def hay_obstaculo(self, rangos, rel, rmin) -> bool:
+        dif = np.abs(rel) < self.angulo_vision / 2
+        mascara = dif & (rangos > rmin) & (rangos < self.distancia_choque_m)
+        self.publicar_scan_filtrado(mascara)
+        return bool(mascara.any())
 
     def publicar_scan_filtrado(self, mascara: np.ndarray):
-        """Publica en scan_cono una copia de self.ultimo_scan que solo
-        conserva los rangos donde mascara es True (el resto va a infinito,
-        como cualquier LaserScan sin retorno). Es la misma idea que van a
-        reencontrar en semana 04 con /scan_rojo: republicar una porción del
-        scan como su propio tópico es una forma barata de ver en RViz una
-        decisión que, si no, queda escondida adentro del nodo. No es el
-        objetivo de este workshop (es plomería de mensajes, no la máscara en
-        sí), por eso viene resuelta."""
         scan = self.ultimo_scan
-        rangos_filtrados = np.where(mascara, np.array(scan.ranges), math.inf)
         msg = LaserScan()
         msg.header = scan.header
-        msg.angle_min = scan.angle_min
-        msg.angle_max = scan.angle_max
-        msg.angle_increment = scan.angle_increment
-        msg.time_increment = scan.time_increment
-        msg.scan_time = scan.scan_time
-        msg.range_min = scan.range_min
-        msg.range_max = scan.range_max
-        msg.ranges = rangos_filtrados.tolist()
+        msg.angle_min, msg.angle_max = scan.angle_min, scan.angle_max
+        msg.angle_increment, msg.time_increment = scan.angle_increment, scan.time_increment
+        msg.scan_time, msg.range_min, msg.range_max = scan.scan_time, scan.range_min, scan.range_max
+        msg.ranges = np.where(mascara, np.asarray(scan.ranges), math.inf).tolist()
         self.publisher_scan_cono.publish(msg)
 
-    def hay_obstaculo(self) -> bool:
-        """
-        Devuelve True si hay algo más cerca que distancia_choque_m
-        dentro del cono frontal (angulo_frente_deg +/- angulo_vision_deg/2).
-        """
-        scan = self.ultimo_scan 
-        if scan is None or len(scan.ranges) == 0:
-            return False 
-
-        # Version vectorizada con np.array
-        rangos = np.asarray(scan.ranges)
-        angs = scan.angle_min + scan.angle_increment * np.arange(len(rangos))
-        
-        rel = np.arctan2(np.sin(angs - self.angulo_frente_rad),
-                         np.cos(angs - self.angulo_frente_rad))
-        
-        dentro_cono = np.abs(rel) < self.angulo_vision_rad / 2
-        mas_cerca = (rangos > scan.range_min) & (rangos < self.distancia_choque_m)
-        mascara = dentro_cono & mas_cerca
-        
-        self.publicar_scan_filtrado(mascara)
-        
-        return bool(mascara.any())
-        
+    # ---------- giros (medidos con el IMU, o con /odom si no hay IMU) ----------
 
     def yaw_para_giros(self):
-        """Yaw con el que se mide cuánto giró el robot: el del IMU si está, si no el de
-        /odom. El del IMU no está normalizado, así que la resta no da la vuelta en ±pi."""
         if self.giro.listo:
             return ('imu', self.giro.yaw)
         return ('odom', self.yaw_actual)
 
-    def iniciar_giro(self):
-        """Guarda el yaw actual como referencia para saber, más adelante,
-        cuánto giró realmente el robot."""
-        self.yaw_inicial_giro = self.yaw_para_giros()
-
     def angulo_girado(self) -> float:
-        """Cuánto giró el robot (en radianes, siempre positivo) desde que
-        empezó el giro actual."""
         fuente, yaw = self.yaw_para_giros()
         fuente_inicial, yaw_inicial = self.yaw_inicial_giro
-        if fuente != fuente_inicial:   # el IMU apareció a mitad del giro: arrancar de nuevo
+        if fuente != fuente_inicial:
             self.yaw_inicial_giro = (fuente, yaw)
             return 0.0
         if fuente == 'imu':
             return abs(yaw - yaw_inicial)
-        return abs(self.normalizar_angulo(yaw - yaw_inicial))
+        return abs(normalizar(yaw - yaw_inicial))
 
-    def avanzar(self) -> Twist:
-        """Devuelve un Twist que mueva el robot derecho hacia
-        adelante, a velocidad_adelante (m/s)."""
-        msg = Twist()
-        msg.linear.x = self.velocidad_adelante
-        return msg
+    # ---------- decisiones ----------
 
-    def girar(self) -> Twist:
-        """Igual que avanzar(), pero para girar en el lugar,
-        a velocidad_angular (rad/s)."""
-        msg = Twist()
-        msg.angular.z = self.velocidad_angular
-        return msg
+    def cambiar(self, estado, motivo):
+        if estado != self.estado:
+            self.get_logger().info(f'{self.estado} -> {estado}: {motivo}')
+        self.estado = estado
+        self.yaw_inicial_giro = self.yaw_para_giros()
 
-    def frenar(self):
-        msg = Twist()
-        self.publisher_.publish(msg)
+    def elegir_giro(self, rangos, rel, rmin, motivo):
+        """Pasa a GIRAR hacia la mejor dirección (con memoria) o hacia el lado más libre."""
+        pose = self.pose_map()
+        if self.explorar_con_memoria and self.cobertura is not None and pose is not None:
+            candidatos = [math.radians(a) for a in range(-150, 181, 30)]
+            libres = [distancia_en_sector(rangos, rel, c, math.radians(40), rmin)
+                      for c in candidatos]
+            no_vistos = [self.cobertura.no_visto_hacia(pose[0], pose[1], pose[2] + c,
+                                                       math.radians(30), self.alcance_camara)
+                         for c in candidatos]
+            i = elegir_direccion(libres, no_vistos, self.distancia_choque_m + 0.15,
+                                 self.peso_libre, self.peso_no_visto)
+            if i is not None:
+                self.yaw_objetivo = normalizar(pose[2] + candidatos[i])
+                self.sentido_giro = 1 if candidatos[i] >= 0 else -1
+                self.cambiar(GIRAR, f'{motivo}; rumbo {math.degrees(candidatos[i]):+.0f}° '
+                                    f'(sin ver {no_vistos[i]:.0%})')
+                return
+        self.yaw_objetivo = None
+        self.sentido_giro = lado_mas_libre(rangos, rel, rmin) if self.girar_hacia_libre else 1
+        self.cambiar(GIRAR, motivo)
+
+    def objetivo_rojo_valido(self, pose):
+        """El objeto rojo no confirmado más cercano a perseguir, o None."""
+        ahora = self.ahora()
+        self.descartados = [d for d in self.descartados if d[2] > ahora]
+        mejor, d_mejor = None, self.distancia_max_rojo
+        for x, y in self.objetos:
+            if any(math.hypot(x - cx, y - cy) < self.radio_confirmada for cx, cy in self.confirmadas):
+                continue
+            if any(math.hypot(x - dx, y - dy) < self.radio_confirmada for dx, dy, _ in self.descartados):
+                continue
+            d = math.hypot(x - pose[0], y - pose[1])
+            if d < d_mejor:
+                mejor, d_mejor = (x, y), d
+        return mejor
 
     def maquina_de_estados(self):
-        """
-        Timer callback, corre a FRECUENCIA_HZ. Es la máquina de estados
-        completa: primero decide si hay que cambiar de estado (transición),
-        después actúa según el estado ya actualizado, y publica.
-
-        1. Si estoy en AVANZAR, ver si corresponde pasar a GIRAR. Al
-           entrar a GIRAR, guardar la referencia para poder medir después
-           cuánto giré.
-        2. Si estoy en GIRAR, ver si ya giré lo suficiente para volver a
-           AVANZAR.
-        3. Según el estado ya actualizado, armar el Twist llamando a la
-           función que corresponda.
-        4. Publicar el Twist.
-        """
         if self.yaw_actual is None or self.ultimo_scan is None:
-            return  # Todavía no tenemos datos de odometría o lidar
+            return
+        self.ticks += 1
+        rangos, rel, rmin = self.lidar()
+        pose = self.pose_map()
+        if pose is not None and self.cobertura is not None and self.ticks % 5 == 0:
+            self.cobertura.marcar(pose[0], pose[1], pose[2], self.fov_camara, self.alcance_camara)
 
-        # Transición de estados
-        if self.estado == ESTADO_AVANZAR:
-            if self.hay_obstaculo():
-                self.iniciar_giro()
-                self.estado = ESTADO_GIRAR
-                self.log(f"Cambiando de estado AVANZAR a GIRAR")
-                self.frenar()
-        elif self.estado == ESTADO_GIRAR:
-            if self.angulo_girado() > self.angulo_giro_rad:
-                self.estado = ESTADO_AVANZAR
-                self.log(f"Cambiando de estado GIRAR a AVANZAR")
-                self.frenar()
+        d_frente = self.distancia_frente(rangos, rel, rmin)
+        obstaculo = self.hay_obstaculo(rangos, rel, rmin)
+        msg = Twist()
 
-        # Acción según el estado
-        
-        if self.estado == ESTADO_AVANZAR:
-            msg = self.avanzar()
-        elif self.estado == ESTADO_GIRAR:
-            msg = self.girar()
+        # ----- transiciones -----
+        if self.estado == AVANZAR:
+            objetivo = self.objetivo_rojo_valido(pose) if (self.acercarse_rojo and pose) else None
+            if objetivo is not None:
+                self.objetivo_rojo = objetivo
+                self.inicio_acercamiento = self.ahora()
+                self.cambiar(ACERCARSE, f'objeto rojo en ({objetivo[0]:.2f}, {objetivo[1]:.2f})')
+            elif obstaculo:
+                self.elegir_giro(rangos, rel, rmin, f'obstáculo a {d_frente:.2f} m')
+            elif self.debe_barrer(pose, rangos, rel, rmin):
+                self.ultimo_barrido = pose[:2]
+                self.cambiar(BARRER, 'zona con mucho sin ver')
+            elif self.nada_nuevo_adelante(pose):
+                self.elegir_giro(rangos, rel, rmin, 'nada nuevo adelante')
+
+        elif self.estado == GIRAR:
+            if self.yaw_objetivo is not None and pose is not None:
+                listo = abs(normalizar(self.yaw_objetivo - pose[2])) < 0.1
+            elif self.girar_hacia_libre:
+                listo = (d_frente > self.distancia_choque_m + 0.2 and self.angulo_girado() > 0.25)
+            else:
+                listo = self.angulo_girado() > self.angulo_giro
+            if listo or self.angulo_girado() > 2 * math.pi:
+                self.ultima_reevaluacion = self.ahora()
+                self.cambiar(AVANZAR, 'giro terminado')
+
+        elif self.estado == BARRER:
+            if self.angulo_girado() >= 2 * math.pi:
+                self.ultima_reevaluacion = self.ahora()
+                self.elegir_giro(rangos, rel, rmin, 'barrido terminado')
+
+        elif self.estado == ACERCARSE:
+            gx, gy = self.objetivo_rojo
+            confirmada = any(math.hypot(gx - cx, gy - cy) < self.radio_confirmada
+                             for cx, cy in self.confirmadas)
+            vencido = self.ahora() - self.inicio_acercamiento > self.tiempo_max_acercamiento
+            if confirmada or vencido or pose is None:
+                if not confirmada:
+                    self.descartados.append((gx, gy, self.ahora() + 30.0))
+                self.cambiar(AVANZAR, 'confirmada' if confirmada else 'acercamiento abandonado')
+
+        # ----- acción -----
+        if self.estado == AVANZAR:
+            msg.linear.x = self.velocidad_adelante * factor_velocidad(
+                d_frente, self.distancia_choque_m, self.distancia_lenta)
+            if self.girar_hacia_libre:
+                d_izq = distancia_en_sector(rangos, rel, math.pi / 2, math.radians(60), rmin)
+                d_der = distancia_en_sector(rangos, rel, -math.pi / 2, math.radians(60), rmin)
+                msg.linear.y = velocidad_lateral(d_izq, d_der, self.margen_lateral,
+                                                 self.velocidad_lateral)
+        elif self.estado in (GIRAR, BARRER):
+            sentido = 1 if self.estado == BARRER else self.sentido_giro
+            if self.estado == GIRAR and self.yaw_objetivo is not None and pose is not None:
+                sentido = 1 if normalizar(self.yaw_objetivo - pose[2]) >= 0 else -1
+            msg.angular.z = sentido * self.velocidad_angular
+        elif self.estado == ACERCARSE:
+            gx, gy = self.objetivo_rojo
+            rumbo = normalizar(math.atan2(gy - pose[1], gx - pose[0]) - pose[2])
+            distancia = math.hypot(gx - pose[0], gy - pose[1])
+            msg.angular.z = max(-self.velocidad_angular, min(self.velocidad_angular, 1.5 * rumbo))
+            if abs(rumbo) < 0.35 and distancia > self.distancia_acercamiento and not obstaculo:
+                msg.linear.x = min(self.velocidad_adelante, 0.5 * (distancia - self.distancia_acercamiento) + 0.05)
 
         self.publisher_.publish(msg)
 
-    def log(self, msg: str):
-        self.get_logger().info(msg)
+    def debe_barrer(self, pose, rangos, rel, rmin) -> bool:
+        if not (self.barridos and pose is not None and self.cobertura is not None):
+            return False
+        if self.ultimo_barrido is not None and math.hypot(
+                pose[0] - self.ultimo_barrido[0], pose[1] - self.ultimo_barrido[1]) < self.distancia_entre_barridos:
+            return False
+        validos = np.isfinite(rangos) & (rangos > rmin)
+        if validos.any() and rangos[validos].min() < self.espacio_para_barrer:
+            return False   # girar en el lugar rozaría algo
+        return self.cobertura.no_visto_alrededor(pose[0], pose[1], self.radio_barrido) > self.fraccion_para_barrer
+
+    def nada_nuevo_adelante(self, pose) -> bool:
+        if not (self.explorar_con_memoria and pose is not None and self.cobertura is not None):
+            return False
+        if self.ahora() - self.ultima_reevaluacion < self.periodo_reevaluar:
+            return False
+        self.ultima_reevaluacion = self.ahora()
+        return self.cobertura.no_visto_hacia(pose[0], pose[1], pose[2], math.radians(30),
+                                             self.alcance_camara) < self.no_visto_minimo
 
 
 def main(args=None):
@@ -248,6 +362,7 @@ def main(args=None):
     finally:
         nodo.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

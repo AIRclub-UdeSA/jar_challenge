@@ -76,11 +76,14 @@ def main():
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        if rclpy.ok():
-            nodo_equipo.pub_cmd_vel.publish(Twist())  # dejar el robot frenado
-        for nodo in nodos:
-            executor.remove_node(nodo)
-            nodo.destroy_node()
+        try:
+            if rclpy.ok():
+                nodo_equipo.pub_cmd_vel.publish(Twist())  # dejar el robot frenado
+            for nodo in nodos:
+                executor.remove_node(nodo)
+                nodo.destroy_node()
+        except KeyboardInterrupt:
+            pass   # un segundo Ctrl-C mientras se cierra: no hay nada más que limpiar
         if rclpy.ok():
             rclpy.shutdown()
 
