@@ -231,7 +231,8 @@ def generate_launch_description():
     lifecycle = Node(
         package='nav2_lifecycle_manager', 
         executable='lifecycle_manager',
-        parameters=[{
+        # nav2_params primero (bond_timeout ajustable desde params/), el dict último.
+        parameters=[nav2_params, {
             'use_sim_time': use_sim_time, 
             'autostart': autostart, 
             'node_names': lifecycle_nodes

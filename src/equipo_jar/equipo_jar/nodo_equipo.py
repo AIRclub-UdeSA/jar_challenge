@@ -83,6 +83,9 @@ class NodoEquipo(Node):
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
         self.declare_parameter('distancia_encadenar', 0.3)
         self.declare_parameter('inspecciones_maximas', 15)
+        # Tope por objetivo: base + por_metro * distancia en línea recta (s).
+        self.declare_parameter('tiempo_objetivo_base_s', 20.0)
+        self.declare_parameter('tiempo_objetivo_por_metro_s', 6.0)
         # Segunda pasada: solo si faltan víctimas y sobra este tiempo (s).
         self.declare_parameter('margen_segunda_pasada_s', 120.0)
         self.declare_parameter('alcance_segunda_pasada', 1.8)
@@ -147,6 +150,11 @@ class NodoEquipo(Node):
         self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
         self.inspecciones_maximas = self.get_parameter('inspecciones_maximas').value
         self.inspecciones_hechas = 0
+        self.tiempo_objetivo_base = self.get_parameter('tiempo_objetivo_base_s').value
+        self.tiempo_objetivo_por_metro = self.get_parameter('tiempo_objetivo_por_metro_s').value
+        self.t_inicio_objetivo = None
+        self.tope_objetivo = math.inf
+        self.id_objetivo = 0
         self.margen_segunda_pasada = self.get_parameter('margen_segunda_pasada_s').value
         self.alcance_segunda_pasada = self.get_parameter('alcance_segunda_pasada').value
         self.segunda_pasada_hecha = False
@@ -188,6 +196,9 @@ class NodoEquipo(Node):
                 self.create_client(ChangeState, f'{n}/change_state'))
             for n in self.nodos_nav2}
         self.arranque_directo = None    # índice del nodo que se está levantando
+        self.t_nodo_directo = None      # desde cuándo se intenta levantar ese nodo
+        self.bt_activo = False
+        self.t_consulta_bt = -math.inf
         self.rechazos = 0
         self.reintentar_objetivo = False
         self.goal_previo = None
@@ -405,12 +416,23 @@ class NodoEquipo(Node):
             f'se corre a ({nx:.2f}, {ny:.2f})')
         return nx, ny, yaw
 
-    def ir_a(self, x, y, yaw):
-        """Manda un objetivo a Nav2. Devuelve False si Nav2 todavía no está listo."""
+    def ir_a(self, x, y, yaw, nuevo=True):
+        """Manda un objetivo a Nav2. Devuelve False si Nav2 todavía no está listo.
+
+        nuevo=False cuando se reenvía el mismo objetivo (corrido o reintentado):
+        no reinicia el tope de tiempo del objetivo.
+        """
         if not self.nav.server_is_ready():
             return False
         # Si había otro objetivo activo, Nav2 lo reemplaza; su resultado se ignora.
         self.goal_handle = None
+        self.id_objetivo += 1
+        if nuevo or self.t_inicio_objetivo is None:
+            pose = self.pose_robot()
+            distancia = 0.0 if pose is None else math.hypot(x - pose[0], y - pose[1])
+            self.t_inicio_objetivo = self.ahora()
+            self.tope_objetivo = (self.tiempo_objetivo_base
+                                  + self.tiempo_objetivo_por_metro * distancia)
         meta = NavigateToPose.Goal()
         meta.pose = PoseStamped()
         meta.pose.header.frame_id = 'map'
@@ -424,11 +446,19 @@ class NodoEquipo(Node):
         self.navegando = True
         self.ultimo_avance = self.ahora()
         self.ancla = None
-        self.nav.send_goal_async(meta).add_done_callback(self._objetivo_aceptado)
+        ident = self.id_objetivo
+        self.nav.send_goal_async(meta).add_done_callback(
+            lambda f: self._objetivo_aceptado(ident, f))
         return True
 
-    def _objetivo_aceptado(self, futuro):
+    def _objetivo_aceptado(self, ident, futuro):
         gh = futuro.result()
+        if ident != self.id_objetivo:
+            # Respuesta de un objetivo que ya se reemplazó o se canceló: si Nav2
+            # lo aceptó y no hay otro en curso, que no siga manejando.
+            if gh.accepted and not self.navegando:
+                gh.cancel_goal_async()
+            return
         if not gh.accepted:
             # bt_navigator rechaza mientras no está activo: se reintenta el
             # mismo objetivo en el próximo ciclo antes de darlo por fallido.
@@ -437,6 +467,7 @@ class NodoEquipo(Node):
             if self.rechazos < 3:
                 self.reintentar_objetivo = True
                 return
+            self.rechazos = 0
             self.navegando = False
             self.al_terminar_objetivo(False)
             return
@@ -453,6 +484,8 @@ class NodoEquipo(Node):
         self.al_terminar_objetivo(futuro.result().status == GoalStatus.STATUS_SUCCEEDED)
 
     def cancelar(self):
+        self.id_objetivo += 1   # las respuestas pendientes quedan viejas
+        self.reintentar_objetivo = False
         for gh in (self.goal_handle, self.goal_previo):
             if gh is not None:
                 gh.cancel_goal_async()
@@ -566,19 +599,21 @@ class NodoEquipo(Node):
             if self.segundos_de_corrida() - self.t_ultimo_giro_espera > 30.0:
                 self.t_ultimo_giro_espera = self.segundos_de_corrida()
                 self.get_logger().warn('Nav2 sigue sin arrancar: giro corto para no quedar quieto')
-            if self.segundos_de_corrida() - self.t_ultimo_giro_espera < 1.0:
-                cmd = Twist()
-                cmd.angular.z = 0.5
+            desde_giro = self.segundos_de_corrida() - self.t_ultimo_giro_espera
+            if desde_giro < 1.5:
+                cmd = Twist()   # 1 s girando y después cero: el driver real puede no frenar solo
+                cmd.angular.z = 0.5 if desde_giro < 1.0 else 0.0
                 self.pub_cmd_vel.publish(cmd)
         if self.estado == LOCALIZANDO:
-            if not self.nav.server_is_ready() or self.arranque_directo is not None:
+            self.consultar_bt_navigator()
+            if not self.nav2_listo() or self.arranque_directo is not None:
                 # También mientras se espera a amcl: si el bringup abortó,
                 # amcl tampoco está activo y la localización no avanza.
                 self.quizas_reiniciar_nav2()
             if not self.localizado:
                 self.localizar()
                 return
-            if pose is None or not self.nav.server_is_ready() or self.arranque_directo is not None:
+            if pose is None or not self.nav2_listo() or self.arranque_directo is not None:
                 self.get_logger().info(
                     'Esperando ' + ('la tf map -> base_footprint' if pose is None else 'a Nav2'),
                     throttle_duration_sec=5.0)
@@ -595,7 +630,15 @@ class NodoEquipo(Node):
 
         if self.reintentar_objetivo:
             self.reintentar_objetivo = False
-            self.ir_a(self.objetivo[0], self.objetivo[1], self.yaw_objetivo)
+            self.ir_a(self.objetivo[0], self.objetivo[1], self.yaw_objetivo, nuevo=False)
+
+        if self.navegando and self.ahora() - self.t_inicio_objetivo > self.tope_objetivo:
+            self.get_logger().warn(
+                f'Objetivo sin alcanzar en {self.tope_objetivo:.0f} s, en '
+                f'{self.texto_pose()}: se abandona')
+            self.cancelar()
+            self.al_terminar_objetivo(False)
+            return   # el destrabe usa /cmd_vel en este ciclo
 
         if self.navegando and self.sin_desplazamiento(pose):
             self.get_logger().warn(
@@ -603,6 +646,7 @@ class NodoEquipo(Node):
                 f'{self.texto_pose()}: se abandona el objetivo')
             self.cancelar()
             self.al_terminar_objetivo(False)
+            return
 
         if self.navegando and self.ahora() - self.ultimo_avance > self.tiempo_sin_avance:
             self.get_logger().warn(
@@ -610,6 +654,7 @@ class NodoEquipo(Node):
                 'se abandona el objetivo')
             self.cancelar()
             self.al_terminar_objetivo(False)
+            return
 
         if self.estado == EXPLORANDO:
             if self.reportes >= self.cantidad_victimas:
@@ -747,6 +792,7 @@ class NodoEquipo(Node):
             self.get_logger().warn('Nav2 no arrancó: se levantan sus nodos desde la misión')
             self.arranque_directo = 0
             self.t_llamada_directa = None
+            self.t_nodo_directo = None
             self.reinicios_nav2 = 1
             self.t_espera_nav2 = ahora
             return
@@ -761,11 +807,44 @@ class NodoEquipo(Node):
         reset = ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.RESET)
         self.gestor_nav2.call_async(reset).add_done_callback(self._arrancar_nav2)
 
+    def consultar_bt_navigator(self):
+        """Una vez por segundo, el estado de bt_navigator (rechaza objetivos si no está activo)."""
+        if 'bt_navigator' not in self.clientes_estado:
+            return
+        if self.ahora() - self.t_consulta_bt < 1.0:
+            return
+        cliente, _ = self.clientes_estado['bt_navigator']
+        if not cliente.service_is_ready():
+            return
+        self.t_consulta_bt = self.ahora()
+        cliente.call_async(GetState.Request()).add_done_callback(self._estado_bt)
+
+    def _estado_bt(self, futuro):
+        if futuro.result() is not None:
+            self.bt_activo = futuro.result().current_state.id == State.PRIMARY_STATE_ACTIVE
+
+    def nav2_listo(self):
+        if 'bt_navigator' not in self.clientes_estado:
+            return self.nav.server_is_ready()
+        return self.nav.server_is_ready() and self.bt_activo
+
     def paso_arranque_directo(self):
         """Lleva el nodo actual a 'active' (configure + activate) y pasa al siguiente."""
+        if self.bt_activo and self.arranque_directo < len(self.nodos_nav2) - 1:
+            # El lifecycle_manager terminó por su cuenta.
+            self.arranque_directo = len(self.nodos_nav2)
         if self.arranque_directo >= len(self.nodos_nav2):
             self.arranque_directo = None
             self.get_logger().info('Nodos de Nav2 levantados desde la misión')
+            return
+        if self.t_nodo_directo is None:
+            self.t_nodo_directo = self.ahora()
+        elif self.ahora() - self.t_nodo_directo > 15.0:
+            self.get_logger().warn(
+                f'{self.nodos_nav2[self.arranque_directo]} no se pudo levantar: se sigue')
+            self.arranque_directo += 1
+            self.t_nodo_directo = None
+            self.t_llamada_directa = None
             return
         if self.t_llamada_directa is not None:
             if self.ahora() - self.t_llamada_directa < 5.0:
@@ -795,6 +874,7 @@ class NodoEquipo(Node):
             # Activo (o en un estado del que no se sale con configure/activate).
             self.arranque_directo += 1
             self.t_llamada_directa = None
+            self.t_nodo_directo = None
             return
         self.get_logger().info(f'{nodo}: transición {transicion}')
         _, cambio = self.clientes_estado[nodo]
@@ -845,7 +925,7 @@ class NodoEquipo(Node):
             self.cancelar()
             self.al_terminar_objetivo(False)
         elif (ajustado[0], ajustado[1]) != (x, y):
-            self.ir_a(*ajustado)
+            self.ir_a(*ajustado, nuevo=False)
 
     # ---------- candidatos ----------
 
@@ -920,16 +1000,19 @@ class NodoEquipo(Node):
             if c['visitas'] >= 1:
                 continue
             c['visitas'] += 1
-            self.inspecciones_hechas += 1
             p = self.exploracion.punto_de_inspeccion((c['x'], c['y']), pose[:2])
             if p is None:
                 continue
+            self.inspecciones_hechas += 1
             self.get_logger().info(
                 f'Yendo a mirar el candidato ({c["x"]:.2f}, {c["y"]:.2f}) desde '
                 f'({p[0]:.2f}, {p[1]:.2f})')
             self.objetivo_es_inspeccion = True
             yaw = math.atan2(c['y'] - p[1], c['x'] - p[0])
-            return self.ir_a(p[0], p[1], yaw)
+            if self.ir_a(p[0], p[1], yaw):
+                return True
+            self.objetivo_es_inspeccion = False
+            return False
         return False
 
     def limite_exploracion(self, pose):

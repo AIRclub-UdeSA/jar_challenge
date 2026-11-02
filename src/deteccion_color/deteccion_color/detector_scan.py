@@ -150,7 +150,7 @@ class DetectorScanColor(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.ultima_imagen = None
-        self.imagenes = collections.deque(maxlen=5)   # (stamp en s, mensaje)
+        self.imagenes = collections.deque(maxlen=15)   # (stamp en s, mensaje)
         self.aviso_desfase_mostrado = False
         self.salteados = 0
         self.info_camara = None

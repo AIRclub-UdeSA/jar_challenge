@@ -22,6 +22,7 @@ práctica para medir cuántos puntos de vista hacen falta.
 | Nuevo: oclusión en `detector_scan` | De cerca, puntos del lidar detrás de la caja caían sobre pixeles rojos (paralaje cámara-lidar) y armaban una víctima falsa a 0.85 m. Un rayo rojo con otro más corto en la misma zona de la imagen se descarta. |
 | Nuevo: rojo pegado a paredes | `margen_pared` 0.08 en `detector_obstaculos`: rayos de una pared que caían sobre pixeles de una caja cercana (desfase imagen-scan al girar) armaban una víctima falsa en maze_1. |
 | Revisión del investigador (2/11) | Hechos: `use_sim_time` de Nav2 ya no lo pisa `nav2_params.yaml` (en el robot real quedaba en true); `umbral_probabilidad`, `racha_minima` y `distancia_minima_valida` del detector rojo pasan a `params.yaml`; tf con `spin_thread`; una excepción en el ciclo no mata la misión; sin pose no se explora; el objetivo encadenado se cancela al inspeccionar o volver; `/done` sin espera si ya están los N reportes; si Nav2 no responde en la vuelta, `/done` igual a los 10 s. El rojo visto de pasada también crea o suma a un candidato (la misión va a mirarlo de cerca). Giro de inspección parametrizado (`despeje_giro`, `giro_minimo_inspeccion`, ...); si se saltean más de 20 scans seguidos por desfase, se usa la imagen más reciente. Segunda pasada con alcance 1.8 m si faltan víctimas y sobran 120 s (laberinto_1: 200 → 300). Límite de la corrida en tiempo de pared (como el juez) y tope de 15 inspecciones. Para la arena (solo `params/`): `mitad_caja: 0.09`, HSV, menos muestras de DWB si falta CPU. |
+| Segunda revisión (2/11) | Hechos: Nav2 cuenta como listo solo con bt_navigator activo (GetState); tope de 15 s por nodo en el arranque directo; `rechazos` se reinicia; freno después del giro de espera; los watchdogs cortan el ciclo (no pisan el destrabe); id por objetivo (respuestas viejas se ignoran o se cancelan); tope de tiempo por objetivo (`tiempo_objetivo_base_s` + `tiempo_objetivo_por_metro_s`·distancia); conteo de inspecciones corregido; cola de 15 imágenes; `bond_timeout` en `nav2_params.yaml`. Hoja de ajuste para la arena: ver más abajo. |
 | P9 | Hecho: los 5 mundos con cada cambio, y maze_1/2/3 con la largada desviada (±0.2 m, ±0.6 rad): máximo en los tres. En laberinto_1, V1 y V2 están en bolsillos sin entrada (también en el `.world`): solo se ven por rendijas. |
 
 ## Resumen: plan recomendado hasta el cierre (martes 3/11, 9:00)
@@ -593,3 +594,24 @@ no hay puntajes para comparar. Forks públicos de `AIRclub-UdeSA/jar_challenge`:
 - Archivos locales: `/opt/ros/humble/share/nav2_bt_navigator/behavior_trees/*.xml`,
   `/opt/ros/humble/share/nav2_controller/plugins.xml`, `rosmaster_ws/src/yahboom_rosmaster/...` (URDF, mundos y mapas),
   `rosmaster_ws/src/jar_workshops/semana-08-cobertura-mapa/` (raycast con Bresenham, A*).
+
+## Hoja de ajuste en la arena (solo `src/equipo_jar/params/`)
+
+| Qué medir | Parámetro (archivo) | Valor actual | Alternativa |
+|---|---|---|---|
+| Lado de la caja | `mitad_caja` (params) | 0.125 | lado/2 (cajas de 18 cm: **0.09**) |
+| ¿El lidar ve la caja? | — | — | `ros2 topic echo /scan` frente a una caja |
+| Rojo con la luz del lugar | `saturacion_min`, `valor_min`, `hue_rojo_alto_1`, `hue_rojo_bajo_2` | 120 / 80 / 10 / 170 | 90 / 50 / 12 / 165 (sin ensanchar el hue si hay distractores naranjas o rosas) |
+| Desfase entre stamps de imagen y scan | `desfase_maximo_imagen` | 0.2 | 0.3–0.5; −1 si los relojes no coinciden |
+| Bordes rojos falsos o caja lejana sin detectar | `erosion_mascara` | 1 | 2 / 0 |
+| amcl ruidoso de lejos | `rango_maximo`, `dispersion_maxima` | 3.5 / 0.08 | 2.5 / 0.12 |
+| Reportes lentos | `detecciones_minimas` | 12 | 8 |
+| Zona muerta de motores | `min_speed_xy`, `min_speed_theta` (nav2), `giro_minimo_inspeccion` | 0.08 / 0.3 / 0.0 | 0.10 / 0.45 / 0.4 |
+| Rebotes del propio robot en el lidar | `obstacle_min_range` (costmaps), `laser_min_range` (amcl) | 0.0 / −1 | 0.12 / 0.15 |
+| Choques (−50 cada uno) | `max_vel_x` / `max_vel_y` / `max_speed_xy` | 0.5 / 0.5 / 0.707 | 0.35 / 0.35 / 0.5 |
+| Margen de la vuelta | `velocidad_vuelta_estimada`, `margen_vuelta_s` | 0.2 / 30 | 0.15 / 45 |
+| Muchos candidatos falsos en paredes | `margen_pared` (detector_no_mapeados), `inspecciones_maximas` | 0.15 / 15 | 0.20 / 10 (0.10 probado: 40 falsos en laberinto_1) |
+| CPU ("Control loop missed its desired rate") | `vx/vy/vtheta_samples` | 15 / 11 / 9 | 9 / 7 / 7 |
+| Localización lenta | `tiempo_localizacion_s` | 5 | 8 |
+
+Si `install/` no se compiló con `--symlink-install`, cualquier cambio en `params/` necesita `colcon build --packages-select equipo_jar`.

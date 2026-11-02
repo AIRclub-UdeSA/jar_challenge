@@ -742,3 +742,9 @@ velocity_smoother:
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
+
+# Si un nodo no responde al bond en este tiempo (s), el lifecycle_manager
+# resetea Nav2 entero (amcl vuelve a la pose inicial). 0 desactiva los bonds.
+lifecycle_manager:
+  ros__parameters:
+    bond_timeout: 4.0
