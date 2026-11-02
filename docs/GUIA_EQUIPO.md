@@ -151,9 +151,9 @@ tools/verificar.sh --template                  # rápido, sin simulador (~1 min)
 tools/verificar.sh --template --sim maze_1_6x5 # además, una corrida headless puntuada
 ```
 
-`--template` saltea el chequeo de `equipo.yaml`, que queda con `codigo_inscripcion: COMPLETAR`
-hasta que lo carguemos. `verificar.sh` compila adentro del repo (`build/`, `install/`, `log/`, todo
-ignorado por git); no molesta al build del workspace.
+`--template` saltea el chequeo de `equipo.yaml`. Como ya está completo, también se puede correr sin
+`--template`, que es como corre el CI del PR de entrega. `verificar.sh` compila adentro del repo
+(`build/`, `install/`, `log/`, todo ignorado por git); no molesta al build del workspace.
 
 ## 4. Reglas que no se negocian
 
@@ -246,5 +246,6 @@ git push entrega main                             # copiarlo al fork
 - **El PR nunca se mergea.** Al cierre de entregas, la organización toma el último commit del fork.
 - El PR es público: nada de mails ni datos personales.
 
-**Pendiente:** el código de inscripción llega al completar el formulario de inscripción (si no
-llegó: `airclub@udesa.edu.ar`). Confirmar con la organización la fecha de cierre de entregas.
+`codigo_inscripcion` quedó en `100`: la organización confirmó que vale cualquier código.
+
+**Pendiente:** confirmar con la organización la fecha de cierre de entregas.
