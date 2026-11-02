@@ -325,7 +325,9 @@ class NodoEquipo(Node):
             self.empezar_destrabe()
         if self.estado == EXPLORANDO:
             if not exito:
-                self.get_logger().info(f'No se llegó a {self.objetivo}: se sigue con el próximo')
+                self.get_logger().info(
+                    f'No se llegó a ({self.objetivo[0]:.2f}, {self.objetivo[1]:.2f}) '
+                    f'desde {self.texto_pose()}: se sigue con el próximo')
             self.exploracion.objetivo_terminado(exito)
         elif self.estado == VOLVIENDO:
             if exito or self.distancia_a_largada() <= self.tolerancia_largada:
@@ -370,7 +372,14 @@ class NodoEquipo(Node):
         v = self.velocidad_destrabe
         self.destrabe = (v * ex / norma, v * ey / norma, self.ahora() + self.tiempo_destrabe)
         self.get_logger().info(
-            f'Destrabe: alejándose de la pared hacia ({ex / norma:.2f}, {ey / norma:.2f})')
+            f'Destrabe en {self.texto_pose()}: alejándose de la pared hacia '
+            f'({ex / norma:.2f}, {ey / norma:.2f})')
+
+    def texto_pose(self):
+        pose = self.pose_robot()
+        if pose is None:
+            return '(sin pose)'
+        return f'({pose[0]:.2f}, {pose[1]:.2f}, {math.degrees(pose[2]):.0f}°)'
 
     def distancia_a_largada(self):
         pose = self.pose_robot()
@@ -414,7 +423,8 @@ class NodoEquipo(Node):
 
         if self.navegando and self.ahora() - self.ultimo_avance > self.tiempo_sin_avance:
             self.get_logger().warn(
-                f'{self.tiempo_sin_avance:.0f} s sin moverse: se abandona el objetivo')
+                f'{self.tiempo_sin_avance:.0f} s sin moverse en {self.texto_pose()}: '
+                'se abandona el objetivo')
             self.cancelar()
             self.al_terminar_objetivo(False)
 
