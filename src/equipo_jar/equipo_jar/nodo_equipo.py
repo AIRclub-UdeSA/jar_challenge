@@ -169,6 +169,7 @@ class NodoEquipo(Node):
         self.tiempo_sin_desplazamiento = self.get_parameter('tiempo_sin_desplazamiento_s').value
         self.ancla = None   # (x, y, yaw, t): última pose desde la que hubo desplazamiento
         self.ancla_vuelta = None   # (x, y, t de pared) para el tope de la vuelta
+        self.recien_llegado = False   # se acaba de llegar a un punto de inspección
         self.despeje_giro = self.get_parameter('despeje_giro').value
         self.giro_minimo = self.get_parameter('giro_minimo_inspeccion').value
         self.giro_maximo = self.get_parameter('giro_maximo_inspeccion').value
@@ -519,6 +520,9 @@ class NodoEquipo(Node):
             self.empezar_destrabe()
         if self.estado == EXPLORANDO and self.objetivo_es_inspeccion:
             self.objetivo_es_inspeccion = False
+            # Se llegó a mirar un candidato: si su posición estimada se corrió y
+            # quedó un poco más cerca que el mínimo, igual se lo mira desde acá.
+            self.recien_llegado = exito
         elif self.estado == EXPLORANDO:
             if not exito:
                 self.get_logger().info(
@@ -1003,9 +1007,11 @@ class NodoEquipo(Node):
             return False   # sin lugar para girar en el lugar
         # De muy cerca la caja tapa toda la imagen y los puntos del lidar sobre ella
         # caen fuera del cuadro: daba "no es rojo" con una víctima a 0.33 m.
+        minima = 0.35 if self.recien_llegado else self.distancia_minima_inspeccion
+        self.recien_llegado = False
         visibles = [c for c in self.pendientes()
-                    if self.distancia_minima_inspeccion
-                    <= math.hypot(c['x'] - pose[0], c['y'] - pose[1]) < self.distancia_inspeccion
+                    if minima <= math.hypot(c['x'] - pose[0], c['y'] - pose[1])
+                    < self.distancia_inspeccion
                     and self.exploracion.linea_de_vista(pose[:2], (c['x'], c['y']))]
         if not visibles:
             return False
