@@ -18,6 +18,7 @@ nodo_equipo:
     distancia_encadenar: 0.45       # m; a esta distancia de un punto de vista se pasa al próximo
     inspecciones_maximas: 15        # tope de candidatos a mirar (un mapa corrido arma muchos falsos)
     distancia_minima_inspeccion: 0.5  # m; más cerca la cámara no ve bien la caja
+    despeje_candidato_claro: 0.2    # m a la pared: estos se miran apenas aparecen, aunque se esté navegando
     tiempo_mirar_dudoso_s: 2.0      # con 1 sola detección roja se sigue mirando hasta acá
     recoveries_para_cortar: 2       # recoveries de Nav2 (Spin/Wait/BackUp) antes de cortar; 0 = nunca
     margen_segunda_pasada_s: 120.0  # si faltan víctimas y sobra este tiempo, otra ruta más cerca

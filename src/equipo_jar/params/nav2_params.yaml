@@ -293,7 +293,10 @@ local_costmap:
       # celda y el footprint "toca" paredes que en realidad están a 2-3 cm.
       resolution: 0.025
       footprint: "[[0.12, 0.10], [0.12, -0.10], [-0.18, -0.10], [-0.18, 0.10]]"
-      footprint_padding: 0.01
+      # Igual que el global: con 0.01 DWB llevaba el centro del robot a la zona
+      # inscripta del global en las puntas de pared y el planner fallaba con
+      # "Starting point in lethal space" hasta que un recovery lo sacaba.
+      footprint_padding: 0.03
       # voxel_layer en vez de obstacle_layer: guarda una grilla 3D (con
       # altura) en vez de un plano 2D — más caro, pero el costmap local sí
       # se lo puede permitir porque su área es chica (3x3 m contra el mapa
@@ -355,10 +358,10 @@ local_costmap:
 
 controller_server:
   ros__parameters:
-    # 20 Hz: cada cuánto controller_server le pide una nueva velocidad al
+    # 10 Hz: cada cuánto controller_server le pide una nueva velocidad al
     # plugin — el mismo rol que la frecuencia de tu loop de control manual
     # en semana 03, ahora declarativo en vez de un `rate.sleep()`.
-    controller_frequency: 20.0
+    controller_frequency: 10.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001

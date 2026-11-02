@@ -84,6 +84,9 @@ class NodoEquipo(Node):
         self.declare_parameter('distancia_encadenar', 0.3)
         self.declare_parameter('inspecciones_maximas', 15)
         self.declare_parameter('distancia_minima_inspeccion', 0.5)   # m
+        # Candidatos que se miran apenas aparecen (aunque se esté navegando): a
+        # esta distancia (m) o más de una pared del mapa.
+        self.declare_parameter('despeje_candidato_claro', 0.2)
         self.declare_parameter('recoveries_para_cortar', 2)   # 0 = nunca se corta
         # Con 1 detección roja se sigue mirando hasta este tiempo (s).
         self.declare_parameter('tiempo_mirar_dudoso_s', 2.0)
@@ -155,6 +158,7 @@ class NodoEquipo(Node):
         self.inspecciones_maximas = self.get_parameter('inspecciones_maximas').value
         self.inspecciones_hechas = 0
         self.distancia_minima_inspeccion = self.get_parameter('distancia_minima_inspeccion').value
+        self.despeje_candidato_claro = self.get_parameter('despeje_candidato_claro').value
         self.recoveries_para_cortar = self.get_parameter('recoveries_para_cortar').value
         self.tiempo_mirar_dudoso = self.get_parameter('tiempo_mirar_dudoso_s').value
         self.tiempo_objetivo_base = self.get_parameter('tiempo_objetivo_base_s').value
@@ -711,7 +715,12 @@ class NodoEquipo(Node):
                 self.volver()
             elif self.inspeccion is not None:
                 self.paso_inspeccion(pose)
-            elif not self.navegando and self.empezar_inspeccion(pose):
+            elif self.empezar_inspeccion(pose, solo_claros=self.navegando):
+                # Apenas hay un candidato claro a la vista se lo mira, aunque se esté
+                # yendo a un punto de vista: ese objetivo se cancela sin darlo por
+                # visitado y se retoma después de mirar. Los pegados a una pared
+                # (casi siempre pared corrida por el error de amcl) esperan a que
+                # el robot esté detenido.
                 pass
             elif not self.navegando:
                 siguiente = self.exploracion.siguiente(pose)
@@ -999,9 +1008,9 @@ class NodoEquipo(Node):
             return []   # con un mapa corrido puede haber muchos candidatos falsos
         return [c for c in self.candidatos
                 if c['estado'] == 'PENDIENTE' and c['n'] >= self.detecciones_candidato
-                and c['inspecciones'] < 2]
+                and c['inspecciones'] < 1]   # una sola vez por candidato
 
-    def empezar_inspeccion(self, pose):
+    def empezar_inspeccion(self, pose, solo_claros=False):
         """Si hay un candidato pendiente a la vista, empieza a girar hacia él."""
         if pose is None or self.exploracion.despeje(pose[0], pose[1]) < self.despeje_giro:
             return False   # sin lugar para girar en el lugar
@@ -1012,7 +1021,9 @@ class NodoEquipo(Node):
         visibles = [c for c in self.pendientes()
                     if minima <= math.hypot(c['x'] - pose[0], c['y'] - pose[1])
                     < self.distancia_inspeccion
-                    and self.exploracion.linea_de_vista(pose[:2], (c['x'], c['y']))]
+                    and self.exploracion.linea_de_vista(pose[:2], (c['x'], c['y']))
+                    and (not solo_claros or self.exploracion.despeje(c['x'], c['y'])
+                         >= self.despeje_candidato_claro)]
         if not visibles:
             return False
         # El que pide menos giro (evita el zig-zag entre candidatos).
@@ -1021,7 +1032,8 @@ class NodoEquipo(Node):
             err = math.atan2(c['y'] - pose[1], c['x'] - pose[0]) - pose[2]
             return abs(math.atan2(math.sin(err), math.cos(err)))
         c = min(visibles, key=giro)
-        self.cancelar()   # el objetivo encadenado anterior no tiene que seguir manejando
+        self.cancelar()   # el objetivo en curso (o el encadenado) deja de manejar
+        self.objetivo_es_inspeccion = False
         self.inspecciones_hechas += 1
         self.inspeccion = {'c': c, 'fase': 'girar', 't': self.ahora()}
         self.get_logger().info(
@@ -1041,6 +1053,10 @@ class NodoEquipo(Node):
                 w = min(self.giro_maximo, max(self.giro_minimo, 1.5 * abs(err)))
                 cmd.angular.z = math.copysign(w, err)
             else:
+                self.get_logger().info(
+                    f'Mirando el candidato ({c["x"]:.2f}, {c["y"]:.2f}) desde '
+                    f'{self.texto_pose()}: error de rumbo {math.degrees(err):.0f}°'
+                    + (' (se acabó el tiempo de giro)' if abs(err) > 0.25 else ''))
                 insp['fase'] = 'mirar'
                 insp['t'] = ahora
         elif insp['fase'] == 'mirar':
@@ -1060,12 +1076,34 @@ class NodoEquipo(Node):
     def terminar_inspeccion(self, resultado):
         c = self.inspeccion['c']
         c['inspecciones'] += 1
+        if resultado == 'no es rojo':
+            self.descartar_en_cuadro(c)
         if c['estado'] == 'ROJO':
             c['estado'] = 'PENDIENTE'   # se vuelve a mirar si no se llegó a reportar
         self.get_logger().info(
             f'Candidato ({c["x"]:.2f}, {c["y"]:.2f}): {resultado} '
             f'({c["rojo"]} detecciones rojas)')
         self.inspeccion = None
+
+    def descartar_en_cuadro(self, mirado):
+        """Descarta los otros candidatos que entraron en el mismo cuadro sin nada rojo."""
+        pose = self.pose_robot()
+        if pose is None:
+            return
+        otros = []
+        for c in self.candidatos:
+            if c is mirado or c['estado'] != 'PENDIENTE' or c['rojo'] > 0:
+                continue
+            err = math.atan2(c['y'] - pose[1], c['x'] - pose[0]) - pose[2]
+            d = math.hypot(c['x'] - pose[0], c['y'] - pose[1])
+            if (abs(math.atan2(math.sin(err), math.cos(err))) < 0.4
+                    and self.distancia_minima_inspeccion <= d < self.distancia_inspeccion
+                    and self.exploracion.linea_de_vista(pose[:2], (c['x'], c['y']))):
+                c['estado'] = 'DESCARTADO'
+                c['inspecciones'] += 1
+                otros.append(f'({c["x"]:.2f}, {c["y"]:.2f})')
+        if otros:
+            self.get_logger().info(f'En el mismo cuadro, tampoco rojos: {", ".join(otros)}')
 
     def ir_a_candidato_pendiente(self, pose):
         """Terminada la ruta, ir a mirar candidatos que no se vieron de cerca."""
