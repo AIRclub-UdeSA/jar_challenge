@@ -168,6 +168,7 @@ class NodoEquipo(Node):
         self.segunda_pasada_hecha = False
         self.tiempo_sin_desplazamiento = self.get_parameter('tiempo_sin_desplazamiento_s').value
         self.ancla = None   # (x, y, yaw, t): última pose desde la que hubo desplazamiento
+        self.ancla_vuelta = None   # (x, y, t de pared) para el tope de la vuelta
         self.despeje_giro = self.get_parameter('despeje_giro').value
         self.giro_minimo = self.get_parameter('giro_minimo_inspeccion').value
         self.giro_maximo = self.get_parameter('giro_maximo_inspeccion').value
@@ -462,9 +463,10 @@ class NodoEquipo(Node):
         return True
 
     def _feedback(self, ident, fb):
-        # Los recoveries del BT (Spin, Wait 5 s, BackUp, en ronda) cuestan 20-35 s
-        # y casi nunca destraban: pasado el primero se corta y la misión hace su
-        # destrabe y sigue.
+        # Los recoveries del BT (borrar costmaps, Spin, Wait 5 s, BackUp) cuestan
+        # 20-35 s y casi nunca destraban. number_of_recoveries cuenta también los
+        # borrados de costmap; con 2 se probó mejor que con 1 (maze_2 199 -> 130 s)
+        # sin perder puntos. En la vuelta no se corta.
         # En la vuelta no: ahí los recoveries de Nav2 sí sirven y no hay otro objetivo.
         if (ident == self.id_objetivo and self.estado == EXPLORANDO
                 and fb.feedback.number_of_recoveries >= self.recoveries_para_cortar):
@@ -527,7 +529,8 @@ class NodoEquipo(Node):
             distancia = self.distancia_a_largada()
             # Nav2 puede dar "llegué" con la pose de un instante antes de que amcl
             # se corrija: el bono de vuelta pide <= 0.25 m, así que se mira de nuevo.
-            if distancia <= self.tolerancia_largada or (exito and distancia <= 0.2):
+            if distancia <= self.tolerancia_largada or (
+                    distancia <= 0.2 and (exito or self.vueltas_fallidas >= 1)):
                 self.terminar()
             else:
                 if exito:
@@ -691,6 +694,10 @@ class NodoEquipo(Node):
             self.al_terminar_objetivo(False)
             return
 
+        if self.estado == VOLVIENDO and self.vuelta_sin_salida(pose):
+            self.terminar()
+            return
+
         if self.estado == EXPLORANDO:
             if self.reportes >= self.cantidad_victimas:
                 self.get_logger().info('Se reportaron todas las víctimas')
@@ -743,6 +750,22 @@ class NodoEquipo(Node):
                     self.get_logger().warn('Nav2 no responde en la vuelta: se termina igual')
                     self.terminar()
 
+    def vuelta_sin_salida(self, pose):
+        """En la vuelta, /done igual si se acaba la corrida o el robot no se mueve."""
+        ahora = self.segundos_de_corrida()   # reloj de pared, como el juez
+        if ahora > self.tiempo_corrida - 10.0:
+            self.get_logger().warn('Se acaba la corrida: /done donde esté')
+            return True
+        if self.ancla_vuelta is None or math.hypot(
+                pose[0] - self.ancla_vuelta[0], pose[1] - self.ancla_vuelta[1]) > 0.10:
+            self.ancla_vuelta = (pose[0], pose[1], ahora)
+            return False
+        if ahora - self.ancla_vuelta[2] > 40.0:
+            # El juez corta a los 60 s sin moverse y sin /done se pierde el +100.
+            self.get_logger().warn('40 s sin moverse en la vuelta: /done donde esté')
+            return True
+        return False
+
     def sin_desplazamiento(self, pose):
         ahora = self.ahora()
         if self.ancla is None:
@@ -753,7 +776,9 @@ class NodoEquipo(Node):
         if math.hypot(pose[0] - x, pose[1] - y) > 0.10:
             self.ancla = (*pose, ahora)
             return False
-        return ahora - t > self.tiempo_sin_desplazamiento
+        # En la vuelta se deja más margen a los recoveries de Nav2 (Spin + Wait).
+        tope = self.tiempo_sin_desplazamiento * (2.0 if self.estado == VOLVIENDO else 1.0)
+        return ahora - t > tope
 
     def parametros_exploracion(self):
         return {nombre: self.get_parameter(nombre).value
