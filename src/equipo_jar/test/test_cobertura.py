@@ -243,3 +243,18 @@ def test_sin_largo_de_camino_el_limite_es_el_minimo(distancia):
 
 def test_con_velocidad_invalida_el_limite_es_el_minimo():
     assert tiempo_limite_meta(12.0, 45.0, 0.0) == 45.0
+
+
+@pytest.mark.parametrize('pose', [(9.0, 9.0), (2.0, -5.0), (-1.0, -1.0)])
+def test_distancias_desde_una_pose_fuera_del_mapa_no_lanza_excepcion(pose):
+    """Antes: IndexError con un índice grande. Se llama en cada ciclo de la misión con la pose del
+    robot, así que el error se repetía y el robot quedaba frenado mientras durara."""
+    c = cobertura(sala())
+    assert len(c.distancias_desde(*pose)) > 100
+
+
+def test_distancias_desde_una_pose_del_lado_negativo_arranca_en_el_borde_cercano():
+    """Antes: el índice negativo se daba vuelta y el Dijkstra arrancaba en la otra punta."""
+    c = cobertura(sala())
+    d = c.distancias_desde(-1.0, -1.0)
+    assert c.distancia_a(d, 0.5, 0.5) < c.distancia_a(d, 3.5, 2.5)

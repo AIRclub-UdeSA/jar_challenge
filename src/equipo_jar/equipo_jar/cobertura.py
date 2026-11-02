@@ -227,7 +227,11 @@ class Cobertura:
     def distancias_desde(self, x, y):
         """Dijkstra por las celdas transitables: distancia (m) a cada celda alcanzable."""
         g = PASO_GRILLA
+        # Una pose fuera de la grilla (AMCL perdido un momento) se lleva al borde. Si no, un índice
+        # grande tira IndexError y uno negativo se da vuelta sin avisar: el error se repetiría en
+        # cada ciclo de la misión y el robot quedaría frenado mientras dure.
         i, j = self.celda(x, y)
+        i, j = min(max(i, 0), self.alto - 1), min(max(j, 0), self.ancho - 1)
         inicio = (i - i % g, j - j % g)
         if not self.transitable[inicio]:
             # El robot quedó cerca de algo: se arranca desde la celda más despejada de alrededor.
