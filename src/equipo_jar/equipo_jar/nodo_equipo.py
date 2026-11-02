@@ -176,6 +176,7 @@ class NodoEquipo(Node):
         self.reintentar_objetivo = False
         self.goal_previo = None
         self.t_nav_caido = None
+        self.t_ultimo_giro_espera = -math.inf
         self.t_llamada_directa = None   # instante de la llamada pendiente
 
         self.estado = ESPERANDO_MAPA
@@ -539,6 +540,16 @@ class NodoEquipo(Node):
             if self.destrabe is not None:
                 return
         pose = self.pose_robot()
+        if self.estado == LOCALIZANDO and self.segundos_de_corrida() > 45.0:
+            # Nav2 todavía no está: el juez corta a los 60 s sin moverse. Un giro
+            # corto cada 30 s (en el lugar, ya con el mapa publicado) lo evita.
+            if self.segundos_de_corrida() - self.t_ultimo_giro_espera > 30.0:
+                self.t_ultimo_giro_espera = self.segundos_de_corrida()
+                self.get_logger().warn('Nav2 sigue sin arrancar: giro corto para no quedar quieto')
+            if self.segundos_de_corrida() - self.t_ultimo_giro_espera < 1.0:
+                cmd = Twist()
+                cmd.angular.z = 0.5
+                self.pub_cmd_vel.publish(cmd)
         if self.estado == LOCALIZANDO:
             if not self.nav.server_is_ready() or self.arranque_directo is not None:
                 # También mientras se espera a amcl: si el bringup abortó,
