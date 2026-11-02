@@ -43,6 +43,10 @@ class JuntarVictimas(Node):
         # grupo más disperso que esto (p. ej. puntos corridos por una pared
         # durante un giro) no se reporta todavía.
         self.declare_parameter('dispersion_maxima', 0.08)
+        # Al final de la corrida (equipo/vaciar_reportes) se publican los
+        # mejores grupos que no llegaron a detecciones_minimas: un reporte
+        # errado da 0 y no resta, así que los lugares que sobran se usan.
+        self.declare_parameter('detecciones_minimas_final', 3)
         self.victimas = self.get_parameter('cantidad_victimas').value
         self.minimas = self.get_parameter('detecciones_minimas').value
         self.radio = self.get_parameter('radio_grupo').value
@@ -50,6 +54,7 @@ class JuntarVictimas(Node):
         self.base_frame = self.get_parameter('base_frame').value
         self.distancia_minima_reportes = self.get_parameter('distancia_minima_reportes').value
         self.dispersion_maxima = self.get_parameter('dispersion_maxima').value
+        self.minimas_final = self.get_parameter('detecciones_minimas_final').value
         self.reportadas = []        # medianas ya publicadas
 
         # Cada grupo es un dict: {'puntos': [(x, y), ...], 'publicado': bool}
@@ -63,6 +68,7 @@ class JuntarVictimas(Node):
         qos_latch = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(Empty, 'equipo/localizado', self.al_localizar, qos_latch)
+        self.create_subscription(Empty, 'equipo/vaciar_reportes', self.vaciar_reportes, 10)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -139,6 +145,30 @@ class JuntarVictimas(Node):
         dispersion = float(np.median(np.hypot(*(puntos - mediana).T)))
         if dispersion > self.dispersion_maxima:
             return
+        self.publicar(g, mediana)
+
+    def cerca_de_reportada(self, x, y):
+        return any(math.hypot(x - r[0], y - r[1]) < self.distancia_minima_reportes
+                   for r in self.reportadas)
+
+    def vaciar_reportes(self, _msg):
+        """Gasta los reportes que sobran en los grupos con más detecciones."""
+        restantes = self.victimas - self.publicados
+        if restantes <= 0:
+            return
+        grupos = [g for g in self.grupos
+                  if not g['publicado'] and len(g['puntos']) >= self.minimas_final]
+        for g in sorted(grupos, key=lambda g: -len(g['puntos'])):
+            if self.publicados >= self.victimas:
+                break
+            mediana = np.median(np.array(g['puntos']), axis=0)
+            if self.cerca_de_reportada(mediana[0], mediana[1]):
+                continue
+            self.get_logger().info(
+                f'Fin de corrida: se reporta un grupo de {len(g["puntos"])} detecciones')
+            self.publicar(g, mediana)
+
+    def publicar(self, g, mediana):
         try:
             reporte = armar_reporte(
                 float(mediana[0]), float(mediana[1]), self.get_clock().now().to_msg())

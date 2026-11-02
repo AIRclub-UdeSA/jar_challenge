@@ -52,6 +52,7 @@ ESPERANDO_MAPA = 'ESPERANDO_MAPA'
 LOCALIZANDO = 'LOCALIZANDO'
 EXPLORANDO = 'EXPLORANDO'
 VOLVIENDO = 'VOLVIENDO'
+FINALIZANDO = 'FINALIZANDO'
 TERMINADO = 'TERMINADO'
 
 
@@ -190,6 +191,8 @@ class NodoEquipo(Node):
         self.create_subscription(PoseArray, 'objetos_rojos', self.al_objetos_rojos, 10)
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
+        self.pub_vaciar = self.create_publisher(Empty, 'equipo/vaciar_reportes', 10)
+        self.t_finalizando = None
         self.pub_pose_inicial = self.create_publisher(
             PoseWithCovarianceStamped, 'equipo/pose_inicial', 10)
         self.pub_localizado = self.create_publisher(Empty, 'equipo/localizado', QOS_MAPA)
@@ -454,6 +457,13 @@ class NodoEquipo(Node):
     def ciclo_de_control(self):
         if self.estado in (ESPERANDO_MAPA, TERMINADO):
             return  # sin mapa no se mueve ni reporta (§5); al terminar, quieto
+        if self.estado == FINALIZANDO:
+            # Se le da un momento a juntar_victimas para publicar los reportes
+            # que sobran antes del /done.
+            self.pub_cmd_vel.publish(Twist())
+            if self.ahora() - self.t_finalizando >= 1.5:
+                self.publicar_done()
+            return
         if self.destrabe is not None:
             vx, vy, hasta = self.destrabe
             cmd = Twist()
@@ -707,8 +717,17 @@ class NodoEquipo(Node):
         self.cambiar_estado(VOLVIENDO)
 
     def terminar(self):
-        """Publica en /done: termina la corrida (§5) y deja el robot quieto."""
+        """Pide gastar los reportes que sobran y, un momento después, publica /done."""
         self.cancelar()
+        self.inspeccion = None
+        self.pub_cmd_vel.publish(Twist())
+        if self.reportes < self.cantidad_victimas:
+            self.pub_vaciar.publish(Empty())
+        self.t_finalizando = self.ahora()
+        self.cambiar_estado(FINALIZANDO)
+
+    def publicar_done(self):
+        """Publica en /done: termina la corrida (§5) y deja el robot quieto."""
         self.pub_done.publish(Empty())
         self.pub_cmd_vel.publish(Twist())
         self.get_logger().info(
