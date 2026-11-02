@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+from scipy import ndimage
 
 import rclpy
 from rclpy.node import Node
@@ -103,6 +104,12 @@ class DetectorObstaculos(Node):
         # detecciones: en el giro los puntos rojos se corren por la pared
         # (desfase entre imagen, scan y tf).
         self.declare_parameter('giro_maximo_deteccion', 0.4)
+        # Puntos a menos de esto (m) de una celda no libre del mapa cuentan
+        # como pared. 0 (default) = como en el workshop. Hace falta cuando el
+        # detector corre sobre /scan completo (candidatos a víctima): con unos
+        # cm de error de localización, los rayos que pegan en las paredes caen
+        # en celdas libres y armarían objetos falsos a lo largo de ellas.
+        self.declare_parameter('margen_pared', 0.0)
 
         self.map_frame = self.get_parameter('map_frame').value
         self.umbral_probabilidad = self.get_parameter('umbral_probabilidad').value
@@ -110,6 +117,8 @@ class DetectorObstaculos(Node):
         self.distancia_minima_valida = self.get_parameter('distancia_minima_valida').value
         self.giro_maximo = self.get_parameter('giro_maximo_deteccion').value
         self.giro_actual = 0.0
+        self.margen_pared = self.get_parameter('margen_pared').value
+        self.dist_pared = None
 
         self.campo = None
         self.info_mapa = None
@@ -147,6 +156,8 @@ class DetectorObstaculos(Node):
         # de verosimilitud, solo importan los límites de la grilla.
         alto, ancho = msg.info.height, msg.info.width
         self.campo = np.array(msg.data, dtype=np.float64).reshape((alto, ancho))
+        libre = (self.campo >= 0) & (self.campo < 50)
+        self.dist_pared = ndimage.distance_transform_edt(libre) * msg.info.resolution
         self.info_mapa = msg.info
         self.get_logger().info('Mapa recibido.')
 
@@ -270,6 +281,11 @@ class DetectorObstaculos(Node):
         probabilidad[dentro_grilla] = self.campo[fila[dentro_grilla], col[dentro_grilla]]
 
         no_mapeado = validos & dentro_grilla & (probabilidad < self.umbral_probabilidad)
+        if self.margen_pared > 0.0:
+            lejos = np.zeros(n, dtype=bool)
+            lejos[dentro_grilla] = (
+                self.dist_pared[fila[dentro_grilla], col[dentro_grilla]] >= self.margen_pared)
+            no_mapeado &= lejos
 
         self.publicar_scan_filtrado(msg, rangos, no_mapeado)
         self.publicar_objetos(no_mapeado, xs_map, ys_map, msg.header.stamp)

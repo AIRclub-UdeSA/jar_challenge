@@ -79,3 +79,17 @@ def test_ordenar_recorrido_visita_cuadrado_en_orden():
     assert orden[0] == 0 and sorted(orden) == list(range(len(puntos)))
     largo = sum(d[a, b] for a, b in zip(orden, orden[1:] + orden[:1]))
     assert largo == pytest.approx(12.0, abs=0.3)
+
+
+def test_linea_de_vista_corta_en_la_pared(exploracion):
+    assert exploracion.linea_de_vista((0.5, 1.0), (1.5, 1.0))
+    assert not exploracion.linea_de_vista((1.0, 1.0), (3.0, 1.0)), 'la pared de x = 2 m tapa'
+
+
+def test_punto_de_inspeccion_ve_el_objetivo(exploracion):
+    objetivo = (3.0, 1.0)
+    p = exploracion.punto_de_inspeccion(objetivo, (0.5, 0.5))
+    assert p is not None
+    assert 0.6 <= math.dist(p, objetivo) <= 1.5 + 0.1
+    assert exploracion.linea_de_vista(p, objetivo)
+    assert exploracion.despeje(*p) >= 0.25 - 1e-9

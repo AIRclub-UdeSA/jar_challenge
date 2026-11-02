@@ -137,6 +137,24 @@ def generate_launch_description():
         }],
     )
 
+    # El mismo detector sobre el /scan completo (cualquier color): cada
+    # objeto que no está en el mapa es un candidato (víctima, señuelo o
+    # distractor). La misión gira la cámara hacia los candidatos para ver si
+    # son rojos: el lidar los ve en 360° y desde lejos, la cámara no.
+    detector_no_mapeados = Node(
+        package='obstaculos_no_mapeados',
+        executable='obstaculos_no_mapeados',
+        name='detector_no_mapeados',
+        output='screen',
+        parameters=[params, {'use_sim_time': use_sim_time}],
+        remappings=[
+            ('scan_rojo', '/scan'),
+            ('objetos_rojos', 'objetos_no_mapeados'),
+            ('objetos_rojos_markers', 'objetos_no_mapeados_markers'),
+            ('scan_no_mapeado', 'scan_no_mapeado_todo'),
+        ],
+    )
+
     # Semana 10, paso 5: junta /objetos_rojos en una posición por caja y
     # publica cada una en /victimas, como mucho `victimas` reportes.
     juntar_victimas = Node(
@@ -253,6 +271,7 @@ def generate_launch_description():
         # navegación, percepción...). Todos con el mismo `parameters=[params, ...]`.
         detector_scan,
         detector_obstaculos,
+        detector_no_mapeados,
         juntar_victimas,
         controller,
         planner,

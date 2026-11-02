@@ -238,6 +238,54 @@ class Exploracion:
             # Se reintenta al final, cuando el robot venga desde otro lado.
             self.pendientes.append((x, y, intentos + 1))
 
+    def dentro(self, fila, col):
+        alto, ancho = self.ocupado.shape
+        return 0 <= fila < alto and 0 <= col < ancho
+
+    def despeje(self, x, y):
+        """Distancia (m) de (x, y) a la pared más cercana del mapa (0 fuera)."""
+        fila, col = self.celda(x, y)
+        return float(self.dist_pared[fila, col]) if self.dentro(fila, col) else 0.0
+
+    def linea_de_vista(self, a, b, margen_final=0.2):
+        """True si entre a y b no hay paredes del mapa (sin contar los últimos cm)."""
+        d = math.hypot(b[0] - a[0], b[1] - a[1])
+        pasos = max(2, int(d / (self.res / 2)))
+        for i in range(pasos):
+            t = i / pasos
+            if t * d > d - margen_final:
+                break
+            fila, col = self.celda(a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+            if not self.dentro(fila, col) or self.ocupado[fila, col]:
+                return False
+        return True
+
+    def punto_de_inspeccion(self, objetivo, desde, d_min=0.6, d_max=1.5):
+        """Celda libre a d_min-d_max de `objetivo`, con vista directa, la más cercana a `desde`.
+
+        Se busca en un anillo alrededor del objetivo, sobre celdas con
+        despeje_punto_vista (el robot tiene que poder girar en el lugar).
+        """
+        r = self.res
+        fila0, col0 = self.celda(*objetivo)
+        radio = int(d_max / r) + 1
+        mejor, mejor_d = None, math.inf
+        for df in range(-radio, radio + 1, 2):
+            for dc in range(-radio, radio + 1, 2):
+                fila, col = fila0 + df, col0 + dc
+                if not self.dentro(fila, col):
+                    continue
+                if self.dist_pared[fila, col] < self.p['despeje_punto_vista']:
+                    continue
+                x, y = self.punto(fila, col)
+                d = math.hypot(x - objetivo[0], y - objetivo[1])
+                if not (d_min <= d <= d_max) or not self.linea_de_vista((x, y), objetivo):
+                    continue
+                dd = math.hypot(x - desde[0], y - desde[1])
+                if dd < mejor_d:
+                    mejor, mejor_d = (x, y), dd
+        return mejor
+
     def distancia_camino(self, a, b):
         """Distancia (m) por el laberinto de `a` a la largada, si `b` es la largada."""
         if self.distancias_largada is None:

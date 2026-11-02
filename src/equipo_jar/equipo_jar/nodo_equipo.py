@@ -26,7 +26,8 @@ import math
 import numpy as np
 import rclpy
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PointStamped, PoseStamped, PoseWithCovarianceStamped, Twist
+from geometry_msgs.msg import (PointStamped, PoseArray, PoseStamped,
+                               PoseWithCovarianceStamped, Twist)
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import OccupancyGrid, Odometry
@@ -99,6 +100,14 @@ class NodoEquipo(Node):
         # abortado), se le pide al lifecycle_manager que lo reinicie.
         self.declare_parameter('espera_nav2_s', 30.0)
         self.declare_parameter('reintentos_nav2', 2)
+        # Candidatos: objetos que el lidar ve fuera del mapa (detector_no_mapeados).
+        # Se gira la cámara hacia los que estén a menos de distancia_inspeccion
+        # y con vista directa, y se mira tiempo_mirar_s para ver si son rojos.
+        self.declare_parameter('radio_candidato', 0.35)
+        self.declare_parameter('detecciones_candidato', 3)
+        self.declare_parameter('distancia_inspeccion', 3.0)
+        self.declare_parameter('tiempo_mirar_s', 2.0)
+        self.declare_parameter('espera_reporte_s', 5.0)
         # Parámetros del planificador de exploración (ver exploracion.py).
         for nombre in ('alcance_cobertura', 'despeje_punto_vista', 'despeje_transito',
                        'despeje_caja', 'fraccion_cobertura', 'reintentos_punto_vista'):
@@ -125,6 +134,15 @@ class NodoEquipo(Node):
         self.espera_nav2 = self.get_parameter('espera_nav2_s').value
         self.reintentos_nav2 = self.get_parameter('reintentos_nav2').value
         self.reinicios_nav2 = 0
+        self.radio_candidato = self.get_parameter('radio_candidato').value
+        self.detecciones_candidato = self.get_parameter('detecciones_candidato').value
+        self.distancia_inspeccion = self.get_parameter('distancia_inspeccion').value
+        self.tiempo_mirar = self.get_parameter('tiempo_mirar_s').value
+        self.espera_reporte = self.get_parameter('espera_reporte_s').value
+        self.candidatos = []        # dicts: x, y, n, rojo, estado, inspecciones, visitas
+        self.inspeccion = None      # candidato que se está mirando
+        self.objetivo_es_inspeccion = False
+        self.reportadas = []        # posiciones publicadas en /victimas
         self.t_espera_nav2 = None
         self.gestor_nav2 = self.create_client(
             ManageLifecycleNodes, 'lifecycle_manager/manage_nodes')
@@ -167,6 +185,9 @@ class NodoEquipo(Node):
             LaserScan, '/scan', lambda m: setattr(self, 'ultimo_scan', m), qos_profile_sensor_data)
         self.create_subscription(
             OccupancyGrid, 'global_costmap/costmap', self.al_costmap, QOS_MAPA)
+        self.create_subscription(
+            PoseArray, 'objetos_no_mapeados', self.al_objetos_no_mapeados, 10)
+        self.create_subscription(PoseArray, 'objetos_rojos', self.al_objetos_rojos, 10)
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
         self.pub_pose_inicial = self.create_publisher(
@@ -193,8 +214,12 @@ class NodoEquipo(Node):
             f'resolución {mapa.info.resolution:.3f} m')
         self.cambiar_estado(LOCALIZANDO)
 
-    def al_reporte(self, _msg):
+    def al_reporte(self, msg):
         self.reportes += 1
+        self.reportadas.append((msg.point.x, msg.point.y))
+        for c in self.candidatos:
+            if math.hypot(c['x'] - msg.point.x, c['y'] - msg.point.y) < 0.5:
+                c['estado'] = 'REPORTADO'
         self.get_logger().info(f'Reportes publicados: {self.reportes}/{self.cantidad_victimas}')
 
     def al_amcl_pose(self, msg):
@@ -208,6 +233,30 @@ class NodoEquipo(Node):
         # tomó la pose inicial (antes tenía covarianza cero).
         if self.t_pose_inicial is not None and c[0] > 0.25 * self.dispersion_xy ** 2:
             self.pose_inicial_aceptada = True
+
+    def al_objetos_no_mapeados(self, msg):
+        if self.estado not in (EXPLORANDO, VOLVIENDO):
+            return
+        for p in msg.poses:
+            x, y = p.position.x, p.position.y
+            for c in self.candidatos:
+                if math.hypot(c['x'] - x, c['y'] - y) < self.radio_candidato:
+                    c['n'] += 1
+                    k = min(c['n'], 20)
+                    c['x'] += (x - c['x']) / k
+                    c['y'] += (y - c['y']) / k
+                    break
+            else:
+                reportado = any(math.hypot(r[0] - x, r[1] - y) < 0.5 for r in self.reportadas)
+                self.candidatos.append({
+                    'x': x, 'y': y, 'n': 1, 'rojo': 0, 'inspecciones': 0, 'visitas': 0,
+                    'estado': 'REPORTADO' if reportado else 'PENDIENTE'})
+
+    def al_objetos_rojos(self, msg):
+        for p in msg.poses:
+            for c in self.candidatos:
+                if math.hypot(c['x'] - p.position.x, c['y'] - p.position.y) < 0.4:
+                    c['rojo'] += 1
 
     def al_costmap(self, msg):
         costos = np.array(msg.data, dtype=np.int16).reshape(msg.info.height, msg.info.width)
@@ -334,7 +383,9 @@ class NodoEquipo(Node):
     def al_terminar_objetivo(self, exito):
         if not exito:
             self.empezar_destrabe()
-        if self.estado == EXPLORANDO:
+        if self.estado == EXPLORANDO and self.objetivo_es_inspeccion:
+            self.objetivo_es_inspeccion = False
+        elif self.estado == EXPLORANDO:
             if not exito:
                 self.get_logger().info(
                     f'No se llegó a ({self.objetivo[0]:.2f}, {self.objetivo[1]:.2f}) '
@@ -450,9 +501,15 @@ class NodoEquipo(Node):
             elif self.segundos_de_corrida() > self.limite_exploracion(pose):
                 self.get_logger().info('Se acaba el tiempo')
                 self.volver()
+            elif self.inspeccion is not None:
+                self.paso_inspeccion(pose)
+            elif not self.navegando and self.empezar_inspeccion(pose):
+                pass
             elif not self.navegando:
                 siguiente = self.exploracion.siguiente(pose)
-                if siguiente is None:
+                if siguiente is None and self.ir_a_candidato_pendiente(pose):
+                    pass
+                elif siguiente is None:
                     self.get_logger().info('No quedan objetivos de exploración')
                     self.volver()
                 else:
@@ -556,6 +613,85 @@ class NodoEquipo(Node):
         elif (ajustado[0], ajustado[1]) != (x, y):
             self.ir_a(*ajustado)
 
+    # ---------- candidatos ----------
+
+    def pendientes(self):
+        return [c for c in self.candidatos
+                if c['estado'] == 'PENDIENTE' and c['n'] >= self.detecciones_candidato
+                and c['inspecciones'] < 2]
+
+    def empezar_inspeccion(self, pose):
+        """Si hay un candidato pendiente a la vista, empieza a girar hacia él."""
+        if pose is None or self.exploracion.despeje(pose[0], pose[1]) < 0.22:
+            return False   # sin lugar para girar en el lugar
+        visibles = [c for c in self.pendientes()
+                    if math.hypot(c['x'] - pose[0], c['y'] - pose[1]) < self.distancia_inspeccion
+                    and self.exploracion.linea_de_vista(pose[:2], (c['x'], c['y']))]
+        if not visibles:
+            return False
+        c = min(visibles, key=lambda c: math.hypot(c['x'] - pose[0], c['y'] - pose[1]))
+        self.inspeccion = {'c': c, 'fase': 'girar', 't': self.ahora()}
+        self.get_logger().info(
+            f'Inspeccionando candidato en ({c["x"]:.2f}, {c["y"]:.2f}) desde {self.texto_pose()}')
+        return True
+
+    def paso_inspeccion(self, pose):
+        """Gira la cámara hacia el candidato y mira si es rojo."""
+        insp = self.inspeccion
+        c = insp['c']
+        cmd = Twist()
+        ahora = self.ahora()
+        if pose is not None and insp['fase'] == 'girar':
+            err = math.atan2(c['y'] - pose[1], c['x'] - pose[0]) - pose[2]
+            err = math.atan2(math.sin(err), math.cos(err))
+            if abs(err) > 0.15 and ahora - insp['t'] < 6.0:
+                cmd.angular.z = max(-0.8, min(0.8, 1.5 * err))
+            else:
+                insp['fase'] = 'mirar'
+                insp['t'] = ahora
+        elif insp['fase'] == 'mirar':
+            mirando = ahora - insp['t']
+            if c['estado'] == 'REPORTADO':
+                self.terminar_inspeccion('reportado')
+            elif c['rojo'] >= 2 and mirando < self.tiempo_mirar + self.espera_reporte:
+                c['estado'] = 'ROJO'   # esperar a que juntar_victimas reporte
+            elif mirando > self.tiempo_mirar and c['rojo'] < 2:
+                c['estado'] = 'DESCARTADO'
+                self.terminar_inspeccion('no es rojo')
+            elif mirando > self.tiempo_mirar + self.espera_reporte:
+                self.terminar_inspeccion('rojo, sin reporte todavía')
+        self.pub_cmd_vel.publish(cmd)
+
+    def terminar_inspeccion(self, resultado):
+        c = self.inspeccion['c']
+        c['inspecciones'] += 1
+        if c['estado'] == 'ROJO':
+            c['estado'] = 'PENDIENTE'   # se vuelve a mirar si no se llegó a reportar
+        self.get_logger().info(
+            f'Candidato ({c["x"]:.2f}, {c["y"]:.2f}): {resultado} '
+            f'({c["rojo"]} detecciones rojas)')
+        self.inspeccion = None
+
+    def ir_a_candidato_pendiente(self, pose):
+        """Terminada la ruta, ir a mirar candidatos que no se vieron de cerca."""
+        if pose is None:
+            return False
+        for c in sorted(self.pendientes(),
+                        key=lambda c: math.hypot(c['x'] - pose[0], c['y'] - pose[1])):
+            if c['visitas'] >= 1:
+                continue
+            c['visitas'] += 1
+            p = self.exploracion.punto_de_inspeccion((c['x'], c['y']), pose[:2])
+            if p is None:
+                continue
+            self.get_logger().info(
+                f'Yendo a mirar el candidato ({c["x"]:.2f}, {c["y"]:.2f}) desde '
+                f'({p[0]:.2f}, {p[1]:.2f})')
+            self.objetivo_es_inspeccion = True
+            yaw = math.atan2(c['y'] - p[1], c['x'] - p[0])
+            return self.ir_a(p[0], p[1], yaw)
+        return False
+
     def limite_exploracion(self, pose):
         """Segundo de corrida en el que hay que empezar a volver."""
         distancia = 0.0
@@ -566,6 +702,7 @@ class NodoEquipo(Node):
         return self.tiempo_corrida - self.margen_vuelta - distancia / self.velocidad_vuelta
 
     def volver(self):
+        self.inspeccion = None
         self.cancelar()
         self.cambiar_estado(VOLVIENDO)
 

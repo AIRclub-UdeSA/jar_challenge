@@ -30,6 +30,12 @@ nodo_equipo:
     radio_ajuste_objetivo: 0.8      # m
     espera_nav2_s: 30.0             # s sin Nav2 activo antes de reiniciarlo
     reintentos_nav2: 2
+    # Candidatos a víctima (objetos fuera del mapa): mirarlos con la cámara.
+    radio_candidato: 0.35           # m para juntar detecciones del mismo objeto
+    detecciones_candidato: 3
+    distancia_inspeccion: 3.0       # m: se gira la cámara a los que estén más cerca
+    tiempo_mirar_s: 2.0
+    espera_reporte_s: 5.0           # s extra si se vio rojo, hasta que se reporte
     # Exploración: puntos de vista desde donde el lidar ve todo el laberinto.
     alcance_cobertura: 3.5          # m de lidar que cuentan como "visto"
     despeje_punto_vista: 0.25       # m mínimos de un punto de vista a la pared
@@ -64,3 +70,12 @@ detector_scan:
     hue_rojo_alto_2: 180.0
     saturacion_min: 120.0
     valor_min: 80.0
+
+# Candidatos a víctima: objetos que el lidar ve fuera del mapa (cualquier color).
+detector_no_mapeados:
+  ros__parameters:
+    umbral_probabilidad: 50.0       # /map: 0 libre, 100 pared; los puntos en paredes no cuentan
+    margen_pared: 0.10              # m: puntos más cerca de una pared del mapa no cuentan
+    racha_minima: 4
+    distancia_minima_valida: 0.25
+    giro_maximo_deteccion: 0.4
