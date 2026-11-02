@@ -14,6 +14,7 @@ nodo_equipo:
     tolerancia_largada: 0.15        # m; el bono de vuelta exige <= 0.25 m (§8)
     intentos_vuelta: 3
     tiempo_sin_avance_s: 20.0       # el juez corta la corrida a los 60 s quieto
+    tiempo_sin_desplazamiento_s: 15.0  # s sin moverse en el mapa (amcl) con un objetivo: patina
     distancia_encadenar: 0.3        # m; a esta distancia de un punto de vista se pasa al próximo
     despeje_giro: 0.22              # m libres a la pared para girar en el lugar a mirar un candidato
     giro_minimo_inspeccion: 0.0     # rad/s; subir (~0.4) si el robot real no gira a baja velocidad

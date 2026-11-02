@@ -81,6 +81,10 @@ class NodoEquipo(Node):
         # abandona ese objetivo (el juez corta la corrida a los 60 s quieto).
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
         self.declare_parameter('distancia_encadenar', 0.3)
+        # Con un objetivo activo, si la pose en el mapa (amcl) no se mueve 0.10 m
+        # ni gira 0.3 rad en este tiempo, se abandona: patinando contra una
+        # pared /odom marca movimiento y el watchdog de arriba no salta.
+        self.declare_parameter('tiempo_sin_desplazamiento_s', 15.0)
         # Giro en el lugar para apuntar la cámara a un candidato.
         self.declare_parameter('despeje_giro', 0.22)        # m libres a la pared para girar
         self.declare_parameter('giro_minimo_inspeccion', 0.0)   # rad/s (zona muerta del real)
@@ -136,6 +140,8 @@ class NodoEquipo(Node):
         self.intentos_vuelta = self.get_parameter('intentos_vuelta').value
         self.tiempo_sin_avance = self.get_parameter('tiempo_sin_avance_s').value
         self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
+        self.tiempo_sin_desplazamiento = self.get_parameter('tiempo_sin_desplazamiento_s').value
+        self.ancla = None   # (x, y, yaw, t): última pose desde la que hubo desplazamiento
         self.despeje_giro = self.get_parameter('despeje_giro').value
         self.giro_minimo = self.get_parameter('giro_minimo_inspeccion').value
         self.giro_maximo = self.get_parameter('giro_maximo_inspeccion').value
@@ -404,6 +410,7 @@ class NodoEquipo(Node):
         self.yaw_objetivo = yaw
         self.navegando = True
         self.ultimo_avance = self.ahora()
+        self.ancla = None
         self.nav.send_goal_async(meta).add_done_callback(self._objetivo_aceptado)
         return True
 
@@ -580,6 +587,13 @@ class NodoEquipo(Node):
             self.reintentar_objetivo = False
             self.ir_a(self.objetivo[0], self.objetivo[1], self.yaw_objetivo)
 
+        if self.navegando and self.sin_desplazamiento(pose):
+            self.get_logger().warn(
+                f'{self.tiempo_sin_desplazamiento:.0f} s sin desplazarse en el mapa en '
+                f'{self.texto_pose()}: se abandona el objetivo')
+            self.cancelar()
+            self.al_terminar_objetivo(False)
+
         if self.navegando and self.ahora() - self.ultimo_avance > self.tiempo_sin_avance:
             self.get_logger().warn(
                 f'{self.tiempo_sin_avance:.0f} s sin moverse en {self.texto_pose()}: '
@@ -636,6 +650,18 @@ class NodoEquipo(Node):
                 elif self.ahora() - self.t_nav_caido > 10.0:
                     self.get_logger().warn('Nav2 no responde en la vuelta: se termina igual')
                     self.terminar()
+
+    def sin_desplazamiento(self, pose):
+        ahora = self.ahora()
+        if self.ancla is None:
+            self.ancla = (*pose, ahora)
+            return False
+        x, y, yaw, t = self.ancla
+        giro = abs(math.atan2(math.sin(pose[2] - yaw), math.cos(pose[2] - yaw)))
+        if math.hypot(pose[0] - x, pose[1] - y) > 0.10 or giro > 0.3:
+            self.ancla = (*pose, ahora)
+            return False
+        return ahora - t > self.tiempo_sin_desplazamiento
 
     def cerca_del_punto_de_vista(self, pose):
         return (pose is not None and not self.objetivo_es_inspeccion
