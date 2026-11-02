@@ -15,6 +15,10 @@ nodo_equipo:
     intentos_vuelta: 3
     tiempo_sin_avance_s: 20.0       # el juez corta la corrida a los 60 s quieto
     distancia_encadenar: 0.3        # m; a esta distancia de un punto de vista se pasa al próximo
+    despeje_giro: 0.22              # m libres a la pared para girar en el lugar a mirar un candidato
+    giro_minimo_inspeccion: 0.0     # rad/s; subir (~0.4) si el robot real no gira a baja velocidad
+    giro_maximo_inspeccion: 0.8     # rad/s
+    tiempo_giro_inspeccion: 6.0     # s
     # Pose inicial: dispersión de amcl alrededor del origen y cuándo convergió.
     dispersion_inicial_xy: 0.3      # m
     dispersion_inicial_yaw: 0.6     # rad

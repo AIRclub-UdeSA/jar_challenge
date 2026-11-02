@@ -81,6 +81,11 @@ class NodoEquipo(Node):
         # abandona ese objetivo (el juez corta la corrida a los 60 s quieto).
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
         self.declare_parameter('distancia_encadenar', 0.3)
+        # Giro en el lugar para apuntar la cámara a un candidato.
+        self.declare_parameter('despeje_giro', 0.22)        # m libres a la pared para girar
+        self.declare_parameter('giro_minimo_inspeccion', 0.0)   # rad/s (zona muerta del real)
+        self.declare_parameter('giro_maximo_inspeccion', 0.8)   # rad/s
+        self.declare_parameter('tiempo_giro_inspeccion', 6.0)   # s
         # Pose inicial: dispersión (desvío estándar) de la nube de amcl alrededor
         # del origen, y cuándo se la considera convergida.
         self.declare_parameter('dispersion_inicial_xy', 0.3)
@@ -131,6 +136,10 @@ class NodoEquipo(Node):
         self.intentos_vuelta = self.get_parameter('intentos_vuelta').value
         self.tiempo_sin_avance = self.get_parameter('tiempo_sin_avance_s').value
         self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
+        self.despeje_giro = self.get_parameter('despeje_giro').value
+        self.giro_minimo = self.get_parameter('giro_minimo_inspeccion').value
+        self.giro_maximo = self.get_parameter('giro_maximo_inspeccion').value
+        self.tiempo_giro = self.get_parameter('tiempo_giro_inspeccion').value
         self.dispersion_xy = self.get_parameter('dispersion_inicial_xy').value
         self.dispersion_yaw = self.get_parameter('dispersion_inicial_yaw').value
         self.sigma_localizado_xy = self.get_parameter('sigma_localizado_xy').value
@@ -769,7 +778,7 @@ class NodoEquipo(Node):
 
     def empezar_inspeccion(self, pose):
         """Si hay un candidato pendiente a la vista, empieza a girar hacia él."""
-        if pose is None or self.exploracion.despeje(pose[0], pose[1]) < 0.22:
+        if pose is None or self.exploracion.despeje(pose[0], pose[1]) < self.despeje_giro:
             return False   # sin lugar para girar en el lugar
         visibles = [c for c in self.pendientes()
                     if math.hypot(c['x'] - pose[0], c['y'] - pose[1]) < self.distancia_inspeccion
@@ -792,8 +801,9 @@ class NodoEquipo(Node):
         if pose is not None and insp['fase'] == 'girar':
             err = math.atan2(c['y'] - pose[1], c['x'] - pose[0]) - pose[2]
             err = math.atan2(math.sin(err), math.cos(err))
-            if abs(err) > 0.15 and ahora - insp['t'] < 6.0:
-                cmd.angular.z = max(-0.8, min(0.8, 1.5 * err))
+            if abs(err) > 0.15 and ahora - insp['t'] < self.tiempo_giro:
+                w = min(self.giro_maximo, max(self.giro_minimo, 1.5 * abs(err)))
+                cmd.angular.z = math.copysign(w, err)
             else:
                 insp['fase'] = 'mirar'
                 insp['t'] = ahora

@@ -152,6 +152,7 @@ class DetectorScanColor(Node):
         self.ultima_imagen = None
         self.imagenes = collections.deque(maxlen=5)   # (stamp en s, mensaje)
         self.aviso_desfase_mostrado = False
+        self.salteados = 0
         self.info_camara = None
         self.aviso_tf_mostrado = False
 
@@ -185,12 +186,22 @@ class DetectorScanColor(Node):
         desfase, msg = min(((abs(t - t_scan), m) for t, m in self.imagenes),
                            key=lambda par: par[0])
         if 0 <= self.desfase_maximo < desfase:
-            if not self.aviso_desfase_mostrado:
-                self.get_logger().warn(
-                    f'Imagen y scan desfasados {desfase:.2f} s: se saltean esos scans '
-                    '(desfase_maximo_imagen)')
-                self.aviso_desfase_mostrado = True
-            return None
+            self.salteados += 1
+            if self.salteados <= 20:
+                if not self.aviso_desfase_mostrado:
+                    self.get_logger().warn(
+                        f'Imagen y scan desfasados {desfase:.2f} s: se saltean esos scans '
+                        '(desfase_maximo_imagen)')
+                    self.aviso_desfase_mostrado = True
+                return None
+            # Muchos seguidos: los relojes de la cámara y del lidar no coinciden.
+            # Mejor la imagen más reciente que quedarse sin detección.
+            self.get_logger().warn(
+                f'{self.salteados} scans seguidos desfasados ({desfase:.2f} s): '
+                'se usa la imagen más reciente', throttle_duration_sec=10.0)
+            msg = self.imagenes[-1][1]
+        else:
+            self.salteados = 0
         return self.puente.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
     def recibir_info_camara(self, msg: CameraInfo):
