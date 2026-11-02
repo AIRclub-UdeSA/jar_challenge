@@ -10,20 +10,29 @@ nodo_equipo:
     frecuencia_control_hz: 10.0
     velocidad_lineal_max: 0.30      # m/s
     velocidad_angular_max: 1.00     # rad/s
+    tiempo_regreso: 530.0           # s desde el mapa: empezar a buscar la largada (o con N reportes)
+    tiempo_limite: 590.0            # s desde el mapa: frenar y publicar /done (la corrida corta a 600)
+    distancia_aproximacion: 10.0     # m: largada más cerca que esto y a la vista -> ir derecho
+    margen_paredes: 0.2             # m: el camino recto a la largada no puede pasar más cerca
+    velocidad_regreso: 0.15         # m/s
+    ganancia_regreso: 1.0           # 1/s
+    tolerancia_llegada: 0.05        # m: a menos de esto de la largada, /done
+    distancia_fijar_largada: 0.5    # m recorridos antes de pasar la largada al mapa
 
 detector_scan:
   ros__parameters:
     saturacion_min: 120.0
-    giro_maximo: 0.3                # rad/s (IMU): girando más rápido no se marca rojo; 0 = apagado
+    giro_maximo: 0.5                # rad/s (IMU): girando más rápido no se marca rojo; 0 = apagado
+    erosion_mascara: 2              # px que se achica cada mancha roja (bordes de las cajas)
 
 evasor:
   ros__parameters:
     distancia_choque_m: 0.5
-    angulo_giro_deg: 110.0
+    angulo_giro_deg: 25.0
     angulo_vision_deg: 60.0
     angulo_frente_deg: 180.0
     velocidad_adelante: 0.3
-    velocidad_angular: 1.0
+    velocidad_angular: 0.4          # rad/s: por debajo de giro_maximo, para detectar girando
 
 localizador:
   ros__parameters:
@@ -61,7 +70,7 @@ gestor_victimas:
     radio_asociacion: 0.35              # m: dos detecciones más cerca son la misma caja
     observaciones_minimas: 8            # veces que hay que ver una caja para reportarla
     tiempo_olvido: 5.0                  # s sin ver un candidato no confirmado antes de descartarlo
-    distancia_maxima_observacion: 2.0   # m: detecciones más lejanas se ignoran
+    distancia_maxima_observacion: 0.5   # m: detecciones más lejanas se ignoran
     medio_lado_caja: 0.125              # m: de la cara que ve el lidar al centro de la caja
     calidad_minima: 0.6                 # (0-1) por debajo, la pose es dudosa y se ignoran detecciones
     calidad_vencimiento: 1.0            # s

@@ -79,6 +79,10 @@ class DetectorScanColor(Node):
         self.declare_parameter('hue_rojo_alto_2', 180.0)
         self.declare_parameter('saturacion_min', 120.0)
         self.declare_parameter('valor_min', 80.0)
+        # Píxeles que se achica cada mancha roja antes de cruzarla con el lidar. Cámara y lidar no
+        # están en el mismo lugar ni miden en el mismo instante: sin esto, rayos que pasan rozando
+        # el borde de una caja y pegan en lo que hay detrás caen sobre píxeles rojos. 0 = apagado.
+        self.declare_parameter('erosion_mascara', 2)
         # Girando rápido, la imagen y el scan son de instantes distintos (el scan tarda ~0,13 s
         # en dar la vuelta) y los puntos rojos se corren sobre la pared (semana 10). Por encima
         # de esta velocidad de giro (rad/s, medida con el IMU) no se marca nada como rojo.
@@ -91,6 +95,7 @@ class DetectorScanColor(Node):
         self.hue_rojo_alto_2 = self.get_parameter('hue_rojo_alto_2').value
         self.saturacion_min = self.get_parameter('saturacion_min').value
         self.valor_min = self.get_parameter('valor_min').value
+        self.erosion_mascara = self.get_parameter('erosion_mascara').value
         self.giro_maximo = self.get_parameter('giro_maximo').value
 
         self.puente = CvBridge()
@@ -210,6 +215,8 @@ class DetectorScanColor(Node):
             self.saturacion_min,
             self.valor_min
             )
+        if self.erosion_mascara > 0:
+            mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=int(self.erosion_mascara))
         if self.pub_mascara.get_subscription_count() > 0:
             imagen_mascara = self.puente.cv2_to_imgmsg(mask, encoding='mono8')
             imagen_mascara.header = self.ultima_imagen.header
@@ -230,10 +237,11 @@ class DetectorScanColor(Node):
 
     def cambiar_parametros(self, parametros):
         calibrables = ('hue_rojo_bajo_1', 'hue_rojo_alto_1', 'hue_rojo_bajo_2',
-                       'hue_rojo_alto_2', 'saturacion_min', 'valor_min', 'giro_maximo')
+                       'hue_rojo_alto_2', 'saturacion_min', 'valor_min', 'giro_maximo',
+                       'erosion_mascara')
         for p in parametros:
             if p.name in calibrables:
-                setattr(self, p.name, float(p.value))
+                setattr(self, p.name, int(p.value) if p.name == 'erosion_mascara' else float(p.value))
                 self.get_logger().info(f'{p.name} = {p.value}')
         return SetParametersResult(successful=True)
 
