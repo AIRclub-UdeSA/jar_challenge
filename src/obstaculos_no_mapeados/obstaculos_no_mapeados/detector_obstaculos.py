@@ -124,7 +124,7 @@ class DetectorObstaculos(Node):
         self.info_mapa = None
 
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
         self.aviso_tf_mostrado = False
 
         # El juez publica /map una sola vez, retenido: transient local, para

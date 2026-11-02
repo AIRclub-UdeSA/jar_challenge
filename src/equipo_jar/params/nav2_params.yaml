@@ -17,9 +17,7 @@
 
 amcl:
   ros__parameters:
-    # Reloj de Gazebo en vez del reloj de pared — mismo motivo que en
-    # todos los nodos del simulador desde semana 01.
-    use_sim_time: True
+    # use_sim_time lo pone el launch (true en el sim, false en el robot).
 
     # alpha1-alpha4: ruido del modelo de movimiento (predicción), el mismo
     # rol que gamma1-gamma6 en tu localizador.py de semana 06, aunque acá
@@ -214,7 +212,6 @@ global_costmap:
       # mundo real, no relativo al robot.
       global_frame: map
       robot_base_frame: base_footprint
-      use_sim_time: True
       # Footprint real del X3 (URDF: chasis 0.300 x 0.1994 m con ruedas
       # incluidas, corrido 3 cm hacia atrás de base_footprint) en vez del
       # círculo circunscripto (robot_radius: 0.18). Con el círculo el robot
@@ -222,7 +219,7 @@ global_costmap:
       # cajas y las paredes le parecían cerrados, aunque de costado (0.20 m)
       # pasa holgado.
       footprint: "[[0.12, 0.10], [0.12, -0.10], [-0.18, -0.10], [-0.18, 0.10]]"
-      footprint_padding: 0.05
+      footprint_padding: 0.03
       resolution: 0.05
       # true: las celdas fuera del rango de todos los sensores quedan
       # "desconocido" en vez de "libre" — mismo criterio conservador que
@@ -287,7 +284,6 @@ local_costmap:
       # tiene alrededor ahora mismo.
       global_frame: odom
       robot_base_frame: base_footprint
-      use_sim_time: True
       # rolling_window + width/height: la ventana de 3x3 m se recentra sola
       # en el robot en vez de ser un costmap fijo — por eso "local".
       rolling_window: true
@@ -359,7 +355,6 @@ local_costmap:
 
 controller_server:
   ros__parameters:
-    use_sim_time: True
     # 20 Hz: cada cuánto controller_server le pide una nueva velocidad al
     # plugin — el mismo rol que la frecuencia de tu loop de control manual
     # en semana 03, ahora declarativo en vez de un `rate.sleep()`.
@@ -568,7 +563,6 @@ controller_server:
 
 bt_navigator:
   ros__parameters:
-    use_sim_time: True
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom
@@ -634,20 +628,11 @@ bt_navigator:
       - nav2_drive_on_heading_cancel_bt_node
       - nav2_is_battery_charging_condition_bt_node
 
-bt_navigator_navigate_through_poses_rclcpp_node:
-  ros__parameters:
-    use_sim_time: True
-
-bt_navigator_navigate_to_pose_rclcpp_node:
-  ros__parameters:
-    use_sim_time: True
-
 planner_server:
   ros__parameters:
     # Frecuencia esperada del plugin de abajo — solo para detectar si el
     # planner está tardando de más, no cambia cómo planifica.
     expected_planner_frequency: 20.0
-    use_sim_time: True
     # Un solo plugin de planner global, igual que `controller_plugins` en
     # Checkpoint 3.
     planner_plugins: ["GridBased"]
@@ -696,7 +681,6 @@ planner_server:
 # momento hace falta ese flujo, inerte por ahora.
 map_saver:
   ros__parameters:
-    use_sim_time: True
     save_map_timeout: 5.0
     free_thresh_default: 0.25
     occupied_thresh_default: 0.65
@@ -704,7 +688,6 @@ map_saver:
 
 smoother_server:
   ros__parameters:
-    use_sim_time: True
     smoother_plugins: ["simple_smoother"]
     simple_smoother:
       plugin: "nav2_smoother::SimpleSmoother"
@@ -731,19 +714,13 @@ behavior_server:
     global_frame: odom
     robot_base_frame: base_footprint
     transform_tolerance: 0.1
-    use_sim_time: true
     simulate_ahead_time: 2.0
     max_rotational_vel: 1.0
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
 
-robot_state_publisher:
-  ros__parameters:
-    use_sim_time: True
-
 waypoint_follower:
   ros__parameters:
-    use_sim_time: True
     loop_rate: 20
     stop_on_failure: false
     waypoint_task_executor_plugin: "wait_at_waypoint"
@@ -754,7 +731,6 @@ waypoint_follower:
 
 velocity_smoother:
   ros__parameters:
-    use_sim_time: True
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"

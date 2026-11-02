@@ -71,7 +71,7 @@ class JuntarVictimas(Node):
         self.create_subscription(Empty, 'equipo/vaciar_reportes', self.vaciar_reportes, 10)
 
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
         self.create_subscription(PoseArray, 'objetos_rojos', self.recibir_objetos, 10)
         self.pub = self.create_publisher(PointStamped, '/victimas', 10)
 

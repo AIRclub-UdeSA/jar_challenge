@@ -26,10 +26,10 @@ nodo_equipo:
     velocidad_destrabe: 0.15        # m/s
     tiempo_destrabe_s: 1.0
     # Objetivos que caen sobre obstáculos que no están en /map (cajas).
-    costo_maximo_objetivo: 50       # costo del costmap global (0-100) tolerado
-    costo_libre_objetivo: 20        # costo de la celda a la que se lo corre
+    costo_maximo_objetivo: 85       # costo del costmap global (0-100) tolerado; 99-100 = caja o pared
+    costo_libre_objetivo: 70        # costo de la celda a la que se lo corre (centro de un pasillo ~60)
     radio_ajuste_objetivo: 0.8      # m
-    espera_nav2_s: 30.0             # s sin Nav2 activo antes de reiniciarlo
+    espera_nav2_s: 20.0             # s sin Nav2 activo antes de levantarlo desde la misión
     reintentos_nav2: 2
     # Candidatos a víctima (objetos fuera del mapa): mirarlos con la cámara.
     radio_candidato: 0.35           # m para juntar detecciones del mismo objeto
@@ -59,7 +59,12 @@ juntar_victimas:
 # Detección de objetos rojos (semana 07/10).
 detector_obstaculos:
   ros__parameters:
+    umbral_probabilidad: 101.0      # 101 deja pasar todas las detecciones rojas (semana 10, paso 5)
+    racha_minima: 3                 # puntos contiguos mínimos para que una racha cuente como objeto
+    distancia_minima_valida: 0.25   # m; filtra el rebote contra el propio robot
     giro_maximo_deteccion: 0.4      # rad/s: girando más rápido no se publican detecciones
+    margen_pared: 0.08              # m: rojo pegado a una pared del mapa no cuenta (rayos de la pared
+                                    # que caen sobre pixeles de una caja cercana)
 
 # Máscara de rojo de la cámara (OpenCV HSV: hue 0-180, saturación y valor 0-255).
 # El rojo cruza el 0 del hue, por eso son dos rangos. Recalibrar en la arena.
@@ -74,6 +79,8 @@ detector_scan:
     erosion_mascara: 1              # px; 0 = sin erosión
     rango_maximo: 3.5               # m; rojo más lejos no cuenta
     desfase_maximo_imagen: 0.2      # s entre imagen y scan; negativo = sin chequeo
+    ventana_oclusion_px: 6.0        # rojo detrás de algo más cercano no cuenta; 0 = sin filtro
+    margen_oclusion: 0.15           # m
 
 # Candidatos a víctima: objetos que el lidar ve fuera del mapa (cualquier color).
 detector_no_mapeados:

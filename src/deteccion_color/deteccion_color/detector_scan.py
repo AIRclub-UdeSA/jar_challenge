@@ -123,6 +123,13 @@ class DetectorScanColor(Node):
         # Se usa la imagen más cercana al stamp del scan; si la diferencia
         # pasa este valor (s), el scan se saltea. Negativo: sin chequeo.
         self.declare_parameter('desfase_maximo_imagen', 0.2)
+        # Oclusión: la cámara y el lidar no están en el mismo lugar, así que
+        # de cerca un punto del lidar detrás de la caja (que la cámara no ve)
+        # cae sobre pixeles rojos de la caja. Un rayo rojo se descarta si otro
+        # rayo a menos de ventana_oclusion_px columnas es más corto por más de
+        # margen_oclusion (m).
+        self.declare_parameter('ventana_oclusion_px', 6.0)
+        self.declare_parameter('margen_oclusion', 0.15)
 
         self.hue_rojo_bajo_1 = self.get_parameter('hue_rojo_bajo_1').value
         self.hue_rojo_alto_1 = self.get_parameter('hue_rojo_alto_1').value
@@ -135,6 +142,8 @@ class DetectorScanColor(Node):
             np.ones((2 * erosion + 1, 2 * erosion + 1), np.uint8) if erosion > 0 else None)
         self.rango_maximo = self.get_parameter('rango_maximo').value
         self.desfase_maximo = self.get_parameter('desfase_maximo_imagen').value
+        self.ventana_oclusion = self.get_parameter('ventana_oclusion_px').value
+        self.margen_oclusion = self.get_parameter('margen_oclusion').value
 
         self.puente = CvBridge()
         self.tf_buffer = tf2_ros.Buffer()
@@ -312,6 +321,7 @@ class DetectorScanColor(Node):
         columnas = u[indices].astype(int)
         filas = v[indices].astype(int)
         es_rojo[indices] = mascara[filas, columnas] > 0
+        es_rojo &= ~self.ocluidos(rangos, u, validos & dentro_de_imagen, es_rojo)
 
         # 10. Lo que no es válido y rojo queda en infinito
         rangos_filtrados = np.where(validos & es_rojo, rangos, math.inf)
@@ -329,6 +339,17 @@ class DetectorScanColor(Node):
         scan_rojo.ranges = rangos_filtrados.tolist()
         self.publisher_.publish(scan_rojo)
 
+    def ocluidos(self, rangos, u, visibles, es_rojo):
+        """Rayos rojos con otro rayo más corto en casi la misma columna de la imagen."""
+        ocluido = np.zeros(len(rangos), dtype=bool)
+        if self.ventana_oclusion <= 0:
+            return ocluido
+        vis = np.where(visibles)[0]
+        for i in np.where(es_rojo & visibles)[0]:
+            cerca = vis[np.abs(u[vis] - u[i]) < self.ventana_oclusion]
+            if np.any(rangos[cerca] < rangos[i] - self.margen_oclusion):
+                ocluido[i] = True
+        return ocluido
 
 
 def main(args=None):

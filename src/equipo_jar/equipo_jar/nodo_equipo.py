@@ -26,6 +26,8 @@ import math
 import numpy as np
 import rclpy
 from action_msgs.msg import GoalStatus
+from lifecycle_msgs.msg import State, Transition
+from lifecycle_msgs.srv import ChangeState, GetState
 from geometry_msgs.msg import (PointStamped, PoseArray, PoseStamped,
                                PoseWithCovarianceStamped, Twist)
 from nav2_msgs.action import NavigateToPose
@@ -102,6 +104,12 @@ class NodoEquipo(Node):
         # abortado), se le pide al lifecycle_manager que lo reinicie.
         self.declare_parameter('espera_nav2_s', 30.0)
         self.declare_parameter('reintentos_nav2', 2)
+        # Nodos de Nav2, en el orden del lifecycle_manager. Si el manager se
+        # cuelga (en Humble espera sin timeout la respuesta de cada nodo), la
+        # misión los configura y activa uno por uno.
+        self.declare_parameter(
+            'nodos_nav2',
+            ['amcl', 'controller_server', 'planner_server', 'behavior_server', 'bt_navigator'])
         # Candidatos: objetos que el lidar ve fuera del mapa (detector_no_mapeados).
         # Se gira la cámara hacia los que estén a menos de distancia_inspeccion
         # y con vista directa, y se mira tiempo_mirar_s para ver si son rojos.
@@ -149,6 +157,17 @@ class NodoEquipo(Node):
         self.t_espera_nav2 = None
         self.gestor_nav2 = self.create_client(
             ManageLifecycleNodes, 'lifecycle_manager/manage_nodes')
+        self.nodos_nav2 = list(self.get_parameter('nodos_nav2').value)
+        self.clientes_estado = {
+            n: (self.create_client(GetState, f'{n}/get_state'),
+                self.create_client(ChangeState, f'{n}/change_state'))
+            for n in self.nodos_nav2}
+        self.arranque_directo = None    # índice del nodo que se está levantando
+        self.rechazos = 0
+        self.reintentar_objetivo = False
+        self.goal_previo = None
+        self.t_nav_caido = None
+        self.t_llamada_directa = None   # instante de la llamada pendiente
 
         self.estado = ESPERANDO_MAPA
         self.mapa = None
@@ -178,7 +197,7 @@ class NodoEquipo(Node):
         self.pose_avance = None
 
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
 
         self.create_subscription(OccupancyGrid, '/map', self.al_recibir_mapa, QOS_MAPA)
         # Solo para contar los reportes que publica juntar_victimas.
@@ -365,11 +384,19 @@ class NodoEquipo(Node):
     def _objetivo_aceptado(self, futuro):
         gh = futuro.result()
         if not gh.accepted:
-            self.get_logger().warn('Nav2 rechazó el objetivo')
+            # bt_navigator rechaza mientras no está activo: se reintenta el
+            # mismo objetivo en el próximo ciclo antes de darlo por fallido.
+            self.rechazos += 1
+            self.get_logger().warn(f'Nav2 rechazó el objetivo ({self.rechazos}/3)')
+            if self.rechazos < 3:
+                self.reintentar_objetivo = True
+                return
             self.navegando = False
             self.al_terminar_objetivo(False)
             return
+        self.rechazos = 0
         self.goal_handle = gh
+        self.goal_previo = None   # Nav2 ya reemplazó el objetivo anterior
         gh.get_result_async().add_done_callback(lambda r: self._objetivo_terminado(gh, r))
 
     def _objetivo_terminado(self, gh, futuro):
@@ -380,9 +407,11 @@ class NodoEquipo(Node):
         self.al_terminar_objetivo(futuro.result().status == GoalStatus.STATUS_SUCCEEDED)
 
     def cancelar(self):
-        if self.goal_handle is not None:
-            self.goal_handle.cancel_goal_async()
+        for gh in (self.goal_handle, self.goal_previo):
+            if gh is not None:
+                gh.cancel_goal_async()
         self.goal_handle = None
+        self.goal_previo = None
         self.navegando = False
 
     def al_terminar_objetivo(self, exito):
@@ -457,6 +486,14 @@ class NodoEquipo(Node):
     # ---------- máquina de estados ----------
 
     def ciclo_de_control(self):
+        # Un error en un ciclo no puede matar la misión: sin el nodo no hay /done.
+        try:
+            self._ciclo_de_control()
+        except Exception as error:   # noqa: B902
+            self.get_logger().error(f'Error en el ciclo de control: {error!r}',
+                                    throttle_duration_sec=2.0)
+
+    def _ciclo_de_control(self):
         if self.estado in (ESPERANDO_MAPA, TERMINADO):
             return  # sin mapa no se mueve ni reporta (§5); al terminar, quieto
         if self.estado == FINALIZANDO:
@@ -478,14 +515,14 @@ class NodoEquipo(Node):
                 return
         pose = self.pose_robot()
         if self.estado == LOCALIZANDO:
-            if not self.nav.server_is_ready():
+            if not self.nav.server_is_ready() or self.arranque_directo is not None:
                 # También mientras se espera a amcl: si el bringup abortó,
                 # amcl tampoco está activo y la localización no avanza.
                 self.quizas_reiniciar_nav2()
             if not self.localizado:
                 self.localizar()
                 return
-            if pose is None or not self.nav.server_is_ready():
+            if pose is None or not self.nav.server_is_ready() or self.arranque_directo is not None:
                 self.get_logger().info(
                     'Esperando ' + ('la tf map -> base_footprint' if pose is None else 'a Nav2'),
                     throttle_duration_sec=5.0)
@@ -498,6 +535,14 @@ class NodoEquipo(Node):
             self.exploracion = Exploracion(self.mapa, self.get_logger(), parametros)
             self.exploracion.planificar(pose)
             self.cambiar_estado(EXPLORANDO)
+
+        if pose is None:
+            self.get_logger().warn('Sin tf map -> base_footprint', throttle_duration_sec=5.0)
+            return
+
+        if self.reintentar_objetivo:
+            self.reintentar_objetivo = False
+            self.ir_a(self.objetivo[0], self.objetivo[1], self.yaw_objetivo)
 
         if self.navegando and self.ahora() - self.ultimo_avance > self.tiempo_sin_avance:
             self.get_logger().warn(
@@ -535,7 +580,9 @@ class NodoEquipo(Node):
                         self.ir_a(*ajustado)
             elif self.cerca_del_punto_de_vista(pose):
                 # Se da por visitado sin frenar: el próximo objetivo reemplaza
-                # a este en Nav2 y el robot sigue de largo.
+                # a este en Nav2 y el robot sigue de largo. Se guarda por si lo
+                # que sigue no es otro objetivo (inspección, vuelta): ahí se cancela.
+                self.goal_previo = self.goal_handle
                 self.goal_handle = None
                 self.navegando = False
                 self.exploracion.objetivo_terminado(True)
@@ -544,8 +591,15 @@ class NodoEquipo(Node):
         elif self.estado == VOLVIENDO and not self.navegando:
             if self.distancia_a_largada() <= self.tolerancia_largada:
                 self.terminar()
+            elif self.ir_a(self.largada[0], self.largada[1], self.largada[2]):
+                self.t_nav_caido = None
             else:
-                self.ir_a(self.largada[0], self.largada[1], self.largada[2])
+                # Nav2 no responde: no se espera para siempre sin /done.
+                if self.t_nav_caido is None:
+                    self.t_nav_caido = self.ahora()
+                elif self.ahora() - self.t_nav_caido > 10.0:
+                    self.get_logger().warn('Nav2 no responde en la vuelta: se termina igual')
+                    self.terminar()
 
     def cerca_del_punto_de_vista(self, pose):
         return (pose is not None and not self.objetivo_es_inspeccion
@@ -579,10 +633,20 @@ class NodoEquipo(Node):
             self.pub_localizado.publish(Empty())
 
     def quizas_reiniciar_nav2(self):
-        """Si Nav2 no arrancó (bringup abortado), pide RESET y STARTUP."""
+        """Si Nav2 no arrancó, levanta los nodos uno por uno y, si no alcanza, RESET y STARTUP."""
         ahora = self.ahora()
         if self.t_espera_nav2 is None:
             self.t_espera_nav2 = ahora
+        if self.arranque_directo is not None:
+            self.paso_arranque_directo()
+            return
+        if ahora - self.t_espera_nav2 >= self.espera_nav2 and self.reinicios_nav2 == 0:
+            self.get_logger().warn('Nav2 no arrancó: se levantan sus nodos desde la misión')
+            self.arranque_directo = 0
+            self.t_llamada_directa = None
+            self.reinicios_nav2 = 1
+            self.t_espera_nav2 = ahora
+            return
         if (ahora - self.t_espera_nav2 < self.espera_nav2
                 or self.reinicios_nav2 >= self.reintentos_nav2
                 or not self.gestor_nav2.service_is_ready()):
@@ -593,6 +657,51 @@ class NodoEquipo(Node):
             f'Nav2 no arrancó: se reinicia (intento {self.reinicios_nav2}/{self.reintentos_nav2})')
         reset = ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.RESET)
         self.gestor_nav2.call_async(reset).add_done_callback(self._arrancar_nav2)
+
+    def paso_arranque_directo(self):
+        """Lleva el nodo actual a 'active' (configure + activate) y pasa al siguiente."""
+        if self.arranque_directo >= len(self.nodos_nav2):
+            self.arranque_directo = None
+            self.get_logger().info('Nodos de Nav2 levantados desde la misión')
+            return
+        if self.t_llamada_directa is not None:
+            if self.ahora() - self.t_llamada_directa < 5.0:
+                return   # esperando respuesta
+            self.get_logger().warn(
+                f'{self.nodos_nav2[self.arranque_directo]} no responde: se reintenta')
+        cliente, _ = self.clientes_estado[self.nodos_nav2[self.arranque_directo]]
+        if not cliente.service_is_ready():
+            return
+        self.t_llamada_directa = self.ahora()
+        indice = self.arranque_directo
+        cliente.call_async(GetState.Request()).add_done_callback(
+            lambda f: self._estado_nodo(indice, f))
+
+    def _estado_nodo(self, indice, futuro):
+        if indice != self.arranque_directo or futuro.result() is None:
+            return
+        nodo = self.nodos_nav2[indice]
+        estado = futuro.result().current_state.id
+        if estado >= 10:
+            # En medio de una transición (configuring, activating, ...): se espera.
+            self.t_llamada_directa = self.ahora() - 4.0
+            return
+        transicion = {State.PRIMARY_STATE_UNCONFIGURED: Transition.TRANSITION_CONFIGURE,
+                      State.PRIMARY_STATE_INACTIVE: Transition.TRANSITION_ACTIVATE}.get(estado)
+        if transicion is None:
+            # Activo (o en un estado del que no se sale con configure/activate).
+            self.arranque_directo += 1
+            self.t_llamada_directa = None
+            return
+        self.get_logger().info(f'{nodo}: transición {transicion}')
+        _, cambio = self.clientes_estado[nodo]
+        pedido = ChangeState.Request()
+        pedido.transition.id = transicion
+        cambio.call_async(pedido).add_done_callback(lambda f: self._transicion_hecha(indice))
+
+    def _transicion_hecha(self, indice):
+        if indice == self.arranque_directo:
+            self.t_llamada_directa = None   # se vuelve a mirar el estado del mismo nodo
 
     def _arrancar_nav2(self, _futuro):
         inicio = ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.STARTUP)
@@ -652,6 +761,7 @@ class NodoEquipo(Node):
         if not visibles:
             return False
         c = min(visibles, key=lambda c: math.hypot(c['x'] - pose[0], c['y'] - pose[1]))
+        self.cancelar()   # el objetivo encadenado anterior no tiene que seguir manejando
         self.inspeccion = {'c': c, 'fase': 'girar', 't': self.ahora()}
         self.get_logger().info(
             f'Inspeccionando candidato en ({c["x"]:.2f}, {c["y"]:.2f}) desde {self.texto_pose()}')
@@ -733,8 +843,10 @@ class NodoEquipo(Node):
         self.cancelar()
         self.inspeccion = None
         self.pub_cmd_vel.publish(Twist())
-        if self.reportes < self.cantidad_victimas:
-            self.pub_vaciar.publish(Empty())
+        if self.reportes >= self.cantidad_victimas:
+            self.publicar_done()   # no hay reportes que gastar: no se espera
+            return
+        self.pub_vaciar.publish(Empty())
         self.t_finalizando = self.ahora()
         self.cambiar_estado(FINALIZANDO)
 

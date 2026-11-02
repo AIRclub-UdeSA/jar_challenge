@@ -59,15 +59,6 @@ def generate_launch_description():
     # declarar_escala_giro = DeclareLaunchArgument(
     #         'escala_giro', default_value='1.0',
     #         description='Escala de correccion sobre el giro de la odometria.')
-    declarar_umbral = DeclareLaunchArgument(
-            'umbral_probabilidad', default_value='101.0',
-            description='101 deja pasar todas las detecciones rojas (semana 10, paso 5).')
-    declarar_racha = DeclareLaunchArgument(
-        'racha_minima', default_value='3',
-        description='Puntos contiguos mínimos para que una racha cuente como objeto.')
-    declarar_distancia = DeclareLaunchArgument(
-        'distancia_minima_valida', default_value='0.25',
-        description='Rango mínimo (m) válido, para filtrar el rebote contra el propio robot.')
     declarar_autostart = DeclareLaunchArgument('autostart', default_value='true')
     # Apagado por defecto: en la corrida oficial el launch corre en un
     # contenedor sin pantalla y RViz no puede abrir ventana.
@@ -78,9 +69,6 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     victimas = LaunchConfiguration('victimas')
-    umbral = LaunchConfiguration('umbral_probabilidad')
-    racha = LaunchConfiguration('racha_minima')
-    distancia = LaunchConfiguration('distancia_minima_valida')
     autostart = LaunchConfiguration('autostart')
 
     equipo = Node(
@@ -126,15 +114,9 @@ def generate_launch_description():
         executable='obstaculos_no_mapeados',
         name='detector_obstaculos',
         output='screen',
-        parameters=[params, {
-            'use_sim_time': use_sim_time,
-            'umbral_probabilidad': ParameterValue(
-                umbral, value_type=float),
-            'racha_minima': ParameterValue(
-                racha, value_type=int),
-            'distancia_minima_valida': ParameterValue(
-                distancia, value_type=float),
-        }],
+        # umbral_probabilidad, racha_minima y distancia_minima_valida están en
+        # params.yaml (detector_obstaculos), así se pueden ajustar en la arena.
+        parameters=[params, {'use_sim_time': use_sim_time}],
     )
 
     # El mismo detector sobre el /scan completo (cualquier color): cada
@@ -176,9 +158,11 @@ def generate_launch_description():
         executable='controller_server',
         name='controller_server',
         output='log',
+        # El dict va último: con varios archivos de parámetros gana el último,
+        # y use_sim_time tiene que venir del launch (false en el robot real).
         parameters=[
-            {'use_sim_time': use_sim_time},
             nav2_params,
+            {'use_sim_time': use_sim_time},
         ],
     )
     lifecycle_nodes.append('controller_server')
@@ -189,9 +173,11 @@ def generate_launch_description():
         executable='planner_server',
         name='planner_server',
         output='log',
+        # El dict va último: con varios archivos de parámetros gana el último,
+        # y use_sim_time tiene que venir del launch (false en el robot real).
         parameters=[
-            {'use_sim_time': use_sim_time},
             nav2_params,
+            {'use_sim_time': use_sim_time},
         ]
     )
     lifecycle_nodes.append('planner_server')
@@ -202,9 +188,11 @@ def generate_launch_description():
         executable='behavior_server',
         name='behavior_server',
         output='screen',
+        # El dict va último: con varios archivos de parámetros gana el último,
+        # y use_sim_time tiene que venir del launch (false en el robot real).
         parameters=[
-            {'use_sim_time': use_sim_time},
             nav2_params,
+            {'use_sim_time': use_sim_time},
         ]
     )
     lifecycle_nodes.append('behavior_server')
@@ -214,9 +202,11 @@ def generate_launch_description():
         executable='bt_navigator',
         name='bt_navigator',
         output='screen',
+        # El dict va último: con varios archivos de parámetros gana el último,
+        # y use_sim_time tiene que venir del launch (false en el robot real).
         parameters=[
-            {'use_sim_time': use_sim_time},
             nav2_params,
+            {'use_sim_time': use_sim_time},
         ]
     )
     lifecycle_nodes.append('bt_navigator')
@@ -261,9 +251,6 @@ def generate_launch_description():
     return LaunchDescription([
         declarar_sim,
         declarar_victimas,
-        declarar_umbral,
-        declarar_racha,
-        declarar_distancia,
         declarar_autostart,
         declarar_rviz,
         equipo,

@@ -5,6 +5,25 @@ y no lancé ROS. Lo que sigue sale de leer el código, el reglamento, el código
 y los forks públicos, más un script offline (numpy/scipy, sin ROS) que corrí sobre los `.pgm` de
 práctica para medir cuántos puntos de vista hacen falta.
 
+## Estado (2/11/2026)
+
+| Punto | Estado |
+| --- | --- |
+| P0, P1, P2, P3, P6, P7 | Hechos. CI en verde salvo `codigo_inscripcion` (lo completa el equipo). |
+| P4a BT propio | Probado y descartado: el BT por defecto anduvo mejor. |
+| P4b destrabe lateral | Hecho (con el scan, en la misión). |
+| P4c encadenar objetivos | Hecho: a 0.3 m de un punto de vista se pasa al próximo (`distancia_encadenar`). |
+| P4d costmap local fino | Hecho: local a 0.025 m, solo lidar (sin static_layer: con el error de amcl el mapa quedaba encima del robot), padding 0.01 local y 0.03 global. |
+| P4e progress checker | Hecho: `PoseProgressChecker`, `failure_tolerance` 0.5. Además DWB sin trayectorias quietas (`min_speed_xy` 0.08, `min_speed_theta` 0.3). |
+| P4f inflación | Hecho (global 0.5 / 4.0). P4g-h sin cambios; P4i MPPI probado y descartado; P4j no hizo falta. |
+| P5a-c, P5g-i | Hechos (12 detecciones, tf al stamp, filtro de giro, dispersión, reportes sobrantes al final, sin nodo `detector`). |
+| P5d-f | Hechos: imagen más cercana al scan (`desfase_maximo_imagen`, negativo lo apaga), rojo a más de 3.5 m no cuenta, erosión de la máscara. |
+| Nuevo: arranque de Nav2 | Si a los 20 s Nav2 no está activo (el `lifecycle_manager` de Humble se puede colgar esperando sin timeout la respuesta de un nodo: pasó en maze_4 y la corrida dio 0), la misión configura y activa cada nodo con `get_state`/`change_state`. |
+| Nuevo: oclusión en `detector_scan` | De cerca, puntos del lidar detrás de la caja caían sobre pixeles rojos (paralaje cámara-lidar) y armaban una víctima falsa a 0.85 m. Un rayo rojo con otro más corto en la misma zona de la imagen se descarta. |
+| Nuevo: rojo pegado a paredes | `margen_pared` 0.08 en `detector_obstaculos`: rayos de una pared que caían sobre pixeles de una caja cercana (desfase imagen-scan al girar) armaban una víctima falsa en maze_1. |
+| Revisión del investigador (2/11) | Hechos: `use_sim_time` de Nav2 ya no lo pisa `nav2_params.yaml` (en el robot real quedaba en true); `umbral_probabilidad`, `racha_minima` y `distancia_minima_valida` del detector rojo pasan a `params.yaml`; tf con `spin_thread`; una excepción en el ciclo no mata la misión; sin pose no se explora; el objetivo encadenado se cancela al inspeccionar o volver; `/done` sin espera si ya están los N reportes; si Nav2 no responde en la vuelta, `/done` igual a los 10 s. Pendientes: grupos rojos débiles como candidatos, segunda pasada, `despeje_giro` y velocidad mínima de giro como parámetros, contador de scans salteados por desfase. Para la arena (solo `params/`): `mitad_caja: 0.09`, HSV, menos muestras de DWB si falta CPU. |
+| P9 | En curso: los 5 mundos con cada cambio. En laberinto_1, V1 y V2 están en bolsillos sin entrada (también en el `.world`): solo se ven por rendijas. |
+
 ## Resumen: plan recomendado hasta el cierre (martes 3/11, 9:00)
 
 1. **Hoy no se puede sumar ningún punto.** `CoberturaMapa` es un `Node` que nadie hace spin, así que su `ActionClient` nunca recibe
