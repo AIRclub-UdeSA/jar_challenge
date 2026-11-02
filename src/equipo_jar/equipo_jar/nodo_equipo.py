@@ -83,6 +83,9 @@ class NodoEquipo(Node):
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
         self.declare_parameter('distancia_encadenar', 0.3)
         self.declare_parameter('inspecciones_maximas', 15)
+        # Segunda pasada: solo si faltan víctimas y sobra este tiempo (s).
+        self.declare_parameter('margen_segunda_pasada_s', 120.0)
+        self.declare_parameter('alcance_segunda_pasada', 1.8)
         # Con un objetivo activo, si la pose en el mapa (amcl) no se mueve 0.10 m
         # ni gira 0.3 rad en este tiempo, se abandona: patinando contra una
         # pared /odom marca movimiento y el watchdog de arriba no salta.
@@ -144,6 +147,9 @@ class NodoEquipo(Node):
         self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
         self.inspecciones_maximas = self.get_parameter('inspecciones_maximas').value
         self.inspecciones_hechas = 0
+        self.margen_segunda_pasada = self.get_parameter('margen_segunda_pasada_s').value
+        self.alcance_segunda_pasada = self.get_parameter('alcance_segunda_pasada').value
+        self.segunda_pasada_hecha = False
         self.tiempo_sin_desplazamiento = self.get_parameter('tiempo_sin_desplazamiento_s').value
         self.ancla = None   # (x, y, yaw, t): última pose desde la que hubo desplazamiento
         self.despeje_giro = self.get_parameter('despeje_giro').value
@@ -578,11 +584,8 @@ class NodoEquipo(Node):
                     throttle_duration_sec=5.0)
                 return
             self.largada = pose
-            parametros = {nombre: self.get_parameter(nombre).value
-                          for nombre in ('alcance_cobertura', 'despeje_punto_vista',
-                                         'despeje_transito', 'despeje_caja',
-                                         'fraccion_cobertura', 'reintentos_punto_vista')}
-            self.exploracion = Exploracion(self.mapa, self.get_logger(), parametros)
+            self.exploracion = Exploracion(
+                self.mapa, self.get_logger(), self.parametros_exploracion())
             self.exploracion.planificar(pose)
             self.cambiar_estado(EXPLORANDO)
 
@@ -622,6 +625,8 @@ class NodoEquipo(Node):
             elif not self.navegando:
                 siguiente = self.exploracion.siguiente(pose)
                 if siguiente is None and self.ir_a_candidato_pendiente(pose):
+                    pass
+                elif siguiente is None and self.quizas_segunda_pasada(pose):
                     pass
                 elif siguiente is None:
                     self.get_logger().info('No quedan objetivos de exploración')
@@ -669,6 +674,35 @@ class NodoEquipo(Node):
             self.ancla = (*pose, ahora)
             return False
         return ahora - t > self.tiempo_sin_desplazamiento
+
+    def parametros_exploracion(self):
+        return {nombre: self.get_parameter(nombre).value
+                for nombre in ('alcance_cobertura', 'despeje_punto_vista',
+                               'despeje_transito', 'despeje_caja',
+                               'fraccion_cobertura', 'reintentos_punto_vista')}
+
+    def quizas_segunda_pasada(self, pose):
+        """Si faltan víctimas y sobra tiempo, otra ruta con alcance corto (más cerca de todo)."""
+        if self.segunda_pasada_hecha or self.reportes >= self.cantidad_victimas:
+            return False
+        sobra = self.limite_exploracion(pose) - self.segundos_de_corrida()
+        if sobra < self.margen_segunda_pasada:
+            return False
+        self.segunda_pasada_hecha = True
+        parametros = self.parametros_exploracion()
+        parametros['alcance_cobertura'] = self.alcance_segunda_pasada
+        nueva = Exploracion(self.mapa, self.get_logger(), parametros)
+        nueva.planificar(pose)
+        # La distancia de vuelta se sigue midiendo a la largada, no a donde se replanificó.
+        nueva.distancias_largada = self.exploracion.distancias_largada
+        nueva.celda_largada = self.exploracion.celda_largada
+        if not nueva.pendientes:
+            return False
+        self.get_logger().info(
+            f'Faltan víctimas y sobran {sobra:.0f} s: segunda pasada con alcance '
+            f'{self.alcance_segunda_pasada:.1f} m')
+        self.exploracion = nueva
+        return True
 
     def cerca_del_punto_de_vista(self, pose):
         return (pose is not None and not self.objetivo_es_inspeccion

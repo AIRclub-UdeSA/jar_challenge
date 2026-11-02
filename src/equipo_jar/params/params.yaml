@@ -17,6 +17,8 @@ nodo_equipo:
     tiempo_sin_desplazamiento_s: 15.0  # s sin moverse en el mapa (amcl) con un objetivo: patina
     distancia_encadenar: 0.3        # m; a esta distancia de un punto de vista se pasa al próximo
     inspecciones_maximas: 15        # tope de candidatos a mirar (un mapa corrido arma muchos falsos)
+    margen_segunda_pasada_s: 120.0  # si faltan víctimas y sobra este tiempo, otra ruta más cerca
+    alcance_segunda_pasada: 1.8     # m de lidar que cuentan como visto en la segunda pasada
     despeje_giro: 0.22              # m libres a la pared para girar en el lugar a mirar un candidato
     giro_minimo_inspeccion: 0.0     # rad/s; subir (~0.4) si el robot real no gira a baja velocidad
     giro_maximo_inspeccion: 0.8     # rad/s
