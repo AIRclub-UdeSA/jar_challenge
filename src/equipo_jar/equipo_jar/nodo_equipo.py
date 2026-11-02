@@ -278,9 +278,25 @@ class NodoEquipo(Node):
 
     def al_objetos_rojos(self, msg):
         for p in msg.poses:
+            x, y = p.position.x, p.position.y
             for c in self.candidatos:
-                if math.hypot(c['x'] - p.position.x, c['y'] - p.position.y) < 0.4:
+                if math.hypot(c['x'] - x, c['y'] - y) < 0.4:
                     c['rojo'] += 1
+                    break
+            else:
+                # Rojo visto de pasada (o por una rendija) donde el lidar todavía
+                # no armó un candidato: también cuenta como candidato, así la
+                # misión va a mirarlo de cerca en vez de dejarlo con pocas
+                # detecciones.
+                if self.estado not in (EXPLORANDO, VOLVIENDO):
+                    continue
+                reportado = any(math.hypot(r[0] - x, r[1] - y) < 0.5 for r in self.reportadas)
+                self.candidatos.append({
+                    'x': x, 'y': y, 'n': 1, 'rojo': 1, 'inspecciones': 0, 'visitas': 0,
+                    'estado': 'REPORTADO' if reportado else 'PENDIENTE'})
+                continue
+            if c['n'] < self.detecciones_candidato:
+                c['n'] += 1
 
     def al_costmap(self, msg):
         costos = np.array(msg.data, dtype=np.int16).reshape(msg.info.height, msg.info.width)
