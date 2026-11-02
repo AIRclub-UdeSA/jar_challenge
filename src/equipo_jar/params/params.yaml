@@ -175,7 +175,11 @@ nodo_mision:
     radio_paso_m: 0.17              # por dónde puede pasar el centro del robot: igual al radio de Nav2
     despeje_meta_m: 0.30            # distancia mínima a un obstáculo de cada meta (m)
     tiempo_regreso_s: 480.0         # a los cuántos segundos se deja de explorar y se vuelve
-    tiempo_max_meta_s: 45.0         # más que esto (s) en una meta: se abandona
+    # Tiempo para llegar a una meta: max(tiempo_max_meta_s, camino / velocidad_min_meta_mps); más
+    # que eso, se abandona. Por camino el robot avanza 0,14 m/s de mediana (tandas del 1/11): 45 s
+    # fijos cortaban metas de 8 a 12 m mientras iba llegando.
+    tiempo_max_meta_s: 45.0         # mínimo (s), también si no se sabe el largo del camino
+    velocidad_min_meta_mps: 0.10    # más lento que esto (m/s) en promedio: algo anda mal
     espera_nav2_s: 25.0             # antes de esto (s) desde el mapa no se considera traba
     distancia_convergencia_m: 0.6   # hay que moverse esto (m) para que AMCL converja...
     espera_convergencia_s: 8.0      # ...y esperar esto (s) antes de confiar en la pose (también percepción)
@@ -358,10 +362,16 @@ global_costmap:
           obstacle_max_range: 2.5
           raytrace_min_range: 0.0
           raytrace_max_range: 3.0
+      # Con 3,0 el costo baja lento y a Smac le salía más barato rodear la punta de una pared
+      # pegado a la zona letal que abrirse: el centro del robot terminaba adentro ("Starting
+      # point in lethal space") en las 103 trabas de las tandas del 1/11, todas en U alrededor de
+      # una punta. Con 8,0 el costo se concentra cerca de la pared y abrirse sale barato; en una
+      # simulación de esas U sobre los mapas, el centro pasa a 0,22-0,28 m en vez de 0,10-0,16 m.
+      # Solo el global (planificación): RPP usa el local, con su inflation_cost_scaling_factor.
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         inflation_radius: 0.55
-        cost_scaling_factor: 3.0
+        cost_scaling_factor: 8.0
 
 # Costmap local: acá sí va la huella real (m). El centro de giro no es el centro del robot.
 local_costmap:

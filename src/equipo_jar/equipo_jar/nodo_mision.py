@@ -5,7 +5,9 @@ deja pasar a /cmd_vel, salvo cuando manda él: mirando un objeto, escapando de u
 terminar. Así dos nodos nunca se pisan el comando.
 
 Cuando el robot se traba, cancela la meta y sale despacio (equipo_jar/escape.py). Reintenta la meta
-una vez; si se vuelve a trabar, la abandona: se pierde esa meta, no la corrida.
+una vez; si se vuelve a trabar, la abandona: se pierde esa meta, no la corrida. También abandona la
+que tarda demasiado: el límite sale del largo del camino (ver cobertura.tiempo_limite_meta), para no
+cortar una meta lejana mientras el robot va llegando.
 
 Lo que el lidar ve y no está en el mapa se va a mirar de cerca (inspección), salvo que la cámara
 ya lo haya visto sin rojo (percepción lo publica en /equipo/vistas_camara, ver memoria_camara.py):
@@ -22,7 +24,7 @@ import math
 import traceback
 
 from action_msgs.msg import GoalStatus
-from equipo_jar.cobertura import Cobertura
+from equipo_jar.cobertura import Cobertura, tiempo_limite_meta
 from equipo_jar.escape import Cuerpo, DetectorTraba, Escape, puntos_en_robot
 from equipo_jar.evasion import normalizar_angulo
 from equipo_jar.memoria_camara import ROJO_VISTO, SIN_ROJO, SIN_VER
@@ -62,6 +64,7 @@ class NodoMision(Node):
         self.declare_parameter('despeje_meta_m', 0.30)
         self.declare_parameter('tiempo_regreso_s', 480.0)
         self.declare_parameter('tiempo_max_meta_s', 45.0)
+        self.declare_parameter('velocidad_min_meta_mps', 0.10)
         self.declare_parameter('espera_nav2_s', 25.0)
         self.declare_parameter('distancia_convergencia_m', 0.6)
         self.declare_parameter('espera_convergencia_s', 8.0)
@@ -126,6 +129,8 @@ class NodoMision(Node):
 
         self.meta = None                # (x, y, yaw, tipo)
         self.k_meta = None              # candidato de cobertura de la meta actual
+        self.distancia_meta = None      # largo del camino hasta la meta al mandarla (m)
+        self.limite_meta = p('tiempo_max_meta_s').value  # más que esto (s) en la meta: se abandona
         self.t_meta = 0.0
         self.trabas_meta = 0
         self.meta_a_retomar = None
@@ -359,18 +364,24 @@ class NodoMision(Node):
 
     # Metas de Nav2
 
-    def ir(self, x, y, yaw, tipo, k=None, objeto=None):
+    def ir(self, x, y, yaw, tipo, k=None, objeto=None, distancia=None):
+        """Manda la meta a Nav2. `distancia`: largo del camino (m), para el tiempo límite."""
         ahora = self.ahora()
         self.meta = (x, y, yaw, tipo)
         self.k_meta = k
         self.objeto_meta = objeto
+        self.distancia_meta = distancia
+        self.limite_meta = tiempo_limite_meta(
+            distancia, self.valor('tiempo_max_meta_s'), self.valor('velocidad_min_meta_mps'))
         self.t_meta = ahora
         self.resultado_meta = None
         self.handle_meta = None
         self.num_meta += 1
+        camino = f'{distancia:.1f} m' if distancia is not None else '?'
         self.get_logger().info(
             f'{tipo} -> ({x:.2f}, {y:.2f}) t={ahora - self.t_inicio:.1f} '
-            f'visto {self.cobertura.porcentaje_visto():.0f}% cajas {len(self.confirmadas)}')
+            f'visto {self.cobertura.porcentaje_visto():.0f}% cajas {len(self.confirmadas)} '
+            f'camino {camino} límite {self.limite_meta:.0f} s')
         destino = PoseStamped()
         destino.header.frame_id = self.frame_mapa
         destino.header.stamp = self.get_clock().now().to_msg()
@@ -406,9 +417,9 @@ class NodoMision(Node):
         self.num_meta += 1
         self.meta = None
 
-    def abandonar_meta(self):
+    def abandonar_meta(self, motivo=''):
         tipo = self.meta[3]
-        self.get_logger().warn(f'falla meta {tipo}')
+        self.get_logger().warn(f'falla meta {tipo}' + (f': {motivo}' if motivo else ''))
         if tipo == COBERTURA:
             self.cobertura.lista_negra.add(self.k_meta)
         self.soltar_meta()
@@ -429,9 +440,9 @@ class NodoMision(Node):
         self.trabas_meta += 1
         self.get_logger().warn(f'traba t={tiempo:.1f}, intento {self.trabas_meta} de esta meta')
         if self.trabas_meta >= self.valor('trabas_por_meta'):
-            self.abandonar_meta()
+            self.abandonar_meta(f'{self.trabas_meta} trabas')
         else:
-            self.meta_a_retomar = (*self.meta, self.k_meta, self.objeto_meta)
+            self.meta_a_retomar = (*self.meta, self.k_meta, self.objeto_meta, self.distancia_meta)
             self.soltar_meta()
         self.traba.reiniciar()
         self.escape = Escape(
@@ -452,11 +463,11 @@ class NodoMision(Node):
         self.traba.reiniciar()
         self.get_logger().info(f'fin del escape t={ahora - self.t_inicio:.1f}')
         if self.meta_a_retomar is not None:
-            x, y, yaw, tipo, k, objeto = self.meta_a_retomar
+            x, y, yaw, tipo, k, objeto, distancia = self.meta_a_retomar
             self.meta_a_retomar = None
             if tipo == INSPECCION and self.motivo_para_no_mirar(objeto):
                 return  # mientras escapaba se supo que no hace falta ir a mirarlo
-            self.ir(x, y, yaw, tipo, k, objeto)
+            self.ir(x, y, yaw, tipo, k, objeto, distancia)
 
     # Máquina de estados
 
@@ -471,13 +482,14 @@ class NodoMision(Node):
             self.inspeccionados.append(objeto)
             meta = self.cobertura.meta_inspeccion(*objeto, distancias)
             if meta is not None:
-                self.ir(*meta, INSPECCION, objeto=objeto)
+                self.ir(*meta, INSPECCION, objeto=objeto,
+                        distancia=self.cobertura.distancia_a(distancias, *meta[:2]))
                 return True
         meta = self.cobertura.meta_cobertura(distancias)
         if meta is None:
             return False
         k, x, y = meta
-        self.ir(x, y, None, COBERTURA, k)
+        self.ir(x, y, None, COBERTURA, k, distancia=self.cobertura.distancia_a(distancias, x, y))
         return True
 
     def planificar(self, ahora):
@@ -493,7 +505,9 @@ class NodoMision(Node):
                 self.get_logger().info(
                     f'/done t={ahora - self.t_inicio:.1f} a {distancia:.2f} de la largada')
                 return
-            self.ir(x, y, None, REGRESO)
+            camino = self.cobertura.distancia_a(
+                self.cobertura.distancias_desde(*self.pose[:2]), x, y)
+            self.ir(x, y, None, REGRESO, distancia=camino)
             return
         if self.elegir_meta():
             return
@@ -542,12 +556,12 @@ class NodoMision(Node):
                 self.soltar_meta()
                 self.trabas_meta = 0
                 return
-        if ahora - self.t_meta > self.valor('tiempo_max_meta_s'):
-            self.abandonar_meta()
+        if ahora - self.t_meta > self.limite_meta:
+            self.abandonar_meta(f'pasaron {self.limite_meta:.0f} s')
         elif self.resultado_meta == GoalStatus.STATUS_SUCCEEDED:
             self.llegar()
         elif self.resultado_meta is not None:
-            self.abandonar_meta()
+            self.abandonar_meta(f'Nav2 terminó con estado {self.resultado_meta}')
 
     def mirar(self, ahora):
         cmd = Twist()

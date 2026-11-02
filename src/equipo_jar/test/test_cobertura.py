@@ -1,7 +1,9 @@
+import math
+
 import numpy as np
 import pytest
 
-from equipo_jar.cobertura import Cobertura
+from equipo_jar.cobertura import Cobertura, tiempo_limite_meta
 from equipo_jar.memoria_camara import ROJO, ROJO_VISTO, SIN_ROJO, SIN_VER
 
 RES = 0.05
@@ -174,3 +176,42 @@ def test_la_camara_viendo_solo_paredes_no_descarta_al_objeto():
 def test_veredicto_de_la_camara_en_los_bordes_del_mapa(x, y):
     c = cobertura(sala())
     assert c.veredicto_camara(x, y, camara_vacia(c), 3, 3) == SIN_VER
+
+
+def sala_con_pared():
+    """Sala de 4 x 3 m con una pared en x = 2, abierta arriba: de un lado al otro, se rodea."""
+    grilla = sala()
+    grilla[:int(2.2 / RES), int(2.0 / RES)] = 100
+    return grilla
+
+
+def test_distancia_por_camino_rodea_la_pared():
+    c = cobertura(sala_con_pared(), largada=(1.0, 1.0))
+    d = c.distancias_desde(1.0, 1.0)
+    assert c.distancia_a(d, 1.0, 1.0) == pytest.approx(0.0)
+    # En línea recta son 2 m; por camino hay que subir hasta pasar la punta y volver a bajar.
+    assert c.distancia_a(d, 3.0, 1.0) > 3.5
+
+
+def test_distancia_a_lo_que_no_se_llega_es_none():
+    c = cobertura(sala_con_pared(), largada=(1.0, 1.0))
+    d = c.distancias_desde(1.0, 1.0)
+    assert c.distancia_a(d, 2.0, 1.0) is None       # adentro de la pared
+
+
+def test_una_meta_cercana_tiene_el_tiempo_minimo():
+    assert tiempo_limite_meta(2.0, 45.0, 0.10) == 45.0
+
+
+def test_una_meta_lejana_tiene_tiempo_segun_su_camino():
+    # Las metas que se cortaban a los 45 s estaban a 8-12 m de camino.
+    assert tiempo_limite_meta(12.0, 45.0, 0.10) == pytest.approx(120.0)
+
+
+@pytest.mark.parametrize('distancia', [None, math.nan, math.inf])
+def test_sin_largo_de_camino_el_limite_es_el_minimo(distancia):
+    assert tiempo_limite_meta(distancia, 45.0, 0.10) == 45.0
+
+
+def test_con_velocidad_invalida_el_limite_es_el_minimo():
+    assert tiempo_limite_meta(12.0, 45.0, 0.0) == 45.0
