@@ -122,7 +122,7 @@ def grupos(img, rangos):
     det = ProcesadorVision(**VISION).extraer_coordenadas_cajas(img, rangos, ANGULOS, R_OL, T_OL, FX, FY, CX, CY)
     cl = DetectionClusterer(RADIO_GRUPO)
     for x, y in np.asarray(det).reshape(-1, 2) @ LASER_R[:2, :2].T + LASER_T[:2]:  # laser_link -> base_footprint
-        cl.add(x, y, 0.0, 0.0)
+        cl.add(x, y)
     return [(np.array(cl.center(g)), len(g['obs'])) for g in cl.groups]
 
 

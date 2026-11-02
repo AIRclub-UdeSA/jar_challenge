@@ -1,8 +1,8 @@
 """La misión de navigator.py en una simulación cinemática del laberinto sintético de test_core, sin ROS.
 
 El robot se mueve con el comando (mecanum: vx, vy y giro; exacto o con motores como los del bag) y el lidar se simula contra el mundo real, que
-puede tener cajas que el mapa no tiene. La percepción se simula con la regla de DetectionClusterer.ready() (observaciones_min = 10): una caja roja
-se reporta tras ~1.4 s en cuadro (10 scans) con 0.2 m de base, o ~2.8 s quieto, y desde el segundo scan aparece en /jar/rojo. Se mide lo que cuesta
+puede tener cajas que el mapa no tiene. La percepción se simula con la regla de DetectionClusterer.ready() (rayos_reporte = 100 en 3 scans): una caja
+roja se reporta tras ~0.8 s en cuadro (lo que tardó en el bag), y desde el segundo scan aparece en /jar/rojo. Se mide lo que cuesta
 puntos o tiempo: chocar, no ver el laberinto, no encontrar una víctima, girar de más, no volver a la largada o volver tarde.
 """
 import math
@@ -10,38 +10,52 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import yaml
 
-from equipo_jar.core import Board, line_of_sight, normalize
-from equipo_jar.navigator import Mission
+from scipy import ndimage
+
+from equipo_jar.core import Board, line_of_sight, nearest_drivable, normalize, visibility
+from equipo_jar.navigator import Mission, detect_boxes
 from test_core import RES, maze
 
 PARAMS = Path(__file__).parents[1] / 'params' / 'params.yaml'
 NAVIGATOR = yaml.safe_load(PARAMS.read_text())['navigator']['ros__parameters']
 P = SimpleNamespace(**NAVIGATOR) # los parámetros del robot (params.yaml del repo), como los atributos del nodo
 START = (0.0, -0.25, 0.0)
-ANG = np.linspace(-math.pi, math.pi, 360, endpoint=False)
+ANG = np.linspace(-math.pi, math.pi, 1080, endpoint=False) # como el lidar del robot y el de Gazebo: un rayo cada 0.33°
 RAY_STEPS = np.arange(0.12, 4.0, RES / 2)
 
 
 def with_box(grid, x, y, side=0.25):
-    """El mismo laberinto con una caja que el mapa no tiene."""
+    """El mismo laberinto con una caja que el mapa no tiene: en las celdas (para medir choques) y como cuadrado exacto para el lidar (boxes)."""
     g = grid.occupied.astype(np.int16) * 100
     i, j = np.mgrid[0:g.shape[0], 0:g.shape[1]]
     cx, cy = grid.to_world(i, j)
     g[(np.abs(cx - x) < side / 2) & (np.abs(cy - y) < side / 2)] = 100
-    return Board(g.ravel(), g.shape[1], g.shape[0], RES, grid.ox, grid.oy)
+    out = Board(g.ravel(), g.shape[1], g.shape[0], RES, grid.ox, grid.oy)
+    out.walls, out.boxes = getattr(grid, 'walls', grid), getattr(grid, 'boxes', []) + [(x, y, side)]
+    return out
 
 
 def lidar(world, x, y):
-    """Puntos (frame map) donde pega cada rayo hasta 4 m."""
+    """Puntos (frame map) donde pega cada rayo hasta 4 m: las paredes del mapa por celdas y las cajas como cuadrados (por celdas, sus caras serían escalones)."""
+    walls = getattr(world, 'walls', world)
     gx, gy = x + np.outer(np.cos(ANG), RAY_STEPS), y + np.outer(np.sin(ANG), RAY_STEPS)
-    i, j = world.to_cell(gx, gy)
-    ok = world.inside(i, j)
-    hit = ~ok | world.occupied[np.where(ok, i, 0), np.where(ok, j, 0)]
-    hits = hit.any(axis=1)
-    r = RAY_STEPS[np.argmax(hit, axis=1)][hits]
-    return np.column_stack([x + r * np.cos(ANG[hits]), y + r * np.sin(ANG[hits])])
+    i, j = walls.to_cell(gx, gy)
+    ok = walls.inside(i, j)
+    hit = ~ok | walls.occupied[np.where(ok, i, 0), np.where(ok, j, 0)]
+    r = np.where(hit.any(axis=1), RAY_STEPS[np.argmax(hit, axis=1)], np.inf)
+    c, s = np.cos(ANG), np.sin(ANG)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        for bx, by, side in getattr(world, 'boxes', []):
+            t1, t2 = (bx - side / 2 - x) / c, (bx + side / 2 - x) / c
+            t3, t4 = (by - side / 2 - y) / s, (by + side / 2 - y) / s
+            t_in = np.maximum(np.minimum(t1, t2), np.minimum(t3, t4))
+            t_out = np.minimum(np.maximum(t1, t2), np.maximum(t3, t4))
+            r = np.where((t_in <= t_out) & (t_in >= RAY_STEPS[0]) & (t_in < r), t_in, r)
+    ok = r < 4.0
+    return np.column_stack([x + r[ok] * c[ok], y + r[ok] * s[ok]])
 
 
 def real_motors(dt=0.2, tau=0.45, tau_turn=0.67, deadband=0.1):
@@ -90,11 +104,10 @@ def simulate(world, grid, p=None, red=(), reports=(), victims=3, t_max=600.0, dt
         traj.append((x, y, yaw))
         turned += abs(w) * dt
         t += dt
-        for box, v in views.items(): # percepción: ~1.4 s en cuadro con 0.2 m de base, o ~2.8 s
+        for box, v in views.items(): # percepción: ~0.8 s en cuadro
             if box in reports or not in_camera(grid, x, y, yaw, *box, m.p): continue
             v.append((x, y))
-            a = np.asarray(v)
-            if (len(v) * dt > 1.4 and np.ptp(a[:, 0]) + np.ptp(a[:, 1]) > 0.2) or len(v) * dt > 2.8: reports.append(box)
+            if len(v) * dt > 0.8: reports.append(box)
     return m, np.array(traj), done, t, reports, math.degrees(turned)
 
 
@@ -103,6 +116,22 @@ def home(traj):
     x, y, yaw = traj[-1]
     c, s = math.cos(yaw), math.sin(yaw)
     return max(math.hypot(x + c * a - s * b - START[0], y + s * a + c * b - START[1]) for a in (-P.wheel_x, P.wheel_x) for b in (-P.wheel_y, P.wheel_y))
+
+
+def come_back(x, y, yaw, motors=None, dt=0.1):
+    """Vuelve desde (x, y, yaw) hasta /done. Returns: (pose al /done, velocidad real con la que venía (frame map), t, metros del camino)."""
+    grid = maze()
+    m = Mission(grid, START[:2], P)
+    m.state = 'returning'
+    t, v, path = 0.0, (0.0, 0.0), m.start_dist[nearest_drivable(grid, m.reachable, x, y)]
+    while t < 30.0:
+        (vx, vy, w), done = m.step(x, y, yaw, t, lidar(grid, x, y))
+        if done: return (x, y, yaw), v, t, path
+        if motors: vx, vy, w = motors(vx, vy, w)
+        c, s = math.cos(yaw), math.sin(yaw)
+        v = (c * vx - s * vy, s * vx + c * vy)
+        x, y, yaw, t = x + v[0] * dt, y + v[1] * dt, normalize(yaw + w * dt), t + dt
+    raise AssertionError('no volvió')
 
 
 def test_covers_maze_with_lidar_and_returns():
@@ -168,8 +197,82 @@ def test_returns_with_real_motors():
     world = with_box(grid, *red)
     m, traj, done, t, reports, _ = simulate(world, grid, red=[red], victims=1, dt=0.1, motors=real_motors(dt=0.1, deadband=0.2))
     assert reports == [red] and done and t < m.p.time_limit
-    assert home(traj) < 0.25  # antes de start_radius y la rampa, con 0.15 m/s se quedaba a 9 cm para siempre
+    assert home(traj) < 0.25  # a max_speed la zona muerta no lo deja trabado antes de la largada
     assert world.distance(traj[:, 0], traj[:, 1]).min() >= 0.15
+
+
+@pytest.mark.parametrize('yaw', [0.0, math.pi / 4, math.pi / 2])
+def test_return_goes_full_speed_until_all_wheels_are_inside(yaw):
+    """Volviendo va a max_speed hasta que la rueda más lejana entra en start_tolerance; en ese ciclo termina y pide frenar."""
+    grid = maze()
+    ds = np.linspace(0.0, 0.4, 4001)
+    reach = [home(np.array([(START[0] + d, START[1], yaw)])) for d in ds]
+    for offset, expected_done in ((0.001, False), (-0.001, True)):
+        m = Mission(grid, START[:2], P)
+        m.state = 'returning'
+        x = START[0] + float(np.interp(P.start_tolerance + offset, reach, ds)) # rueda más lejana a start_tolerance + offset
+        (vx, vy, w), done = m.step(x, START[1], yaw, 1.0, lidar(grid, x, START[1]))
+        assert done == expected_done
+        assert math.hypot(vx, vy) == (0.0 if done else pytest.approx(P.max_speed))
+
+
+@pytest.mark.parametrize('x, y, yaw', [(1.0, -0.25, 0.0), (-1.0, -0.25, math.pi / 2), (0.7, 0.2, math.pi / 4), (-0.7, -0.7, 3.0), (-0.5, 0.25, -2.0)])
+@pytest.mark.parametrize('real', [False, True])
+def test_return_keeps_all_wheels_inside_when_it_brakes(x, y, yaw, real):
+    """
+    Llega desde distintos lados a max_speed (con motores reales, de costado anda más lento y el camino se desvía) y da /done con las cuatro ruedas a
+    menos de start_tolerance. Después siguen en el círculo de 0.25 m si frena en seco, si desliza como en el bag (3-6 cm desde 0.5 m/s: ~0.12 s a la
+    velocidad que traía), el doble de eso, o lo del bag con 30° de derrape.
+    """
+    (x, y, yaw), (vx, vy), t, path = come_back(x, y, yaw, real_motors(dt=0.1) if real else None)
+    assert t < path / P.max_speed + (1.0 if real else 0.1) # los motores reales tardan ~0.45 s en arrancar y de costado andan al 80 %
+    assert home(np.array([(x, y, yaw)])) <= P.start_tolerance
+    for slide, skid in ((0.0, 0.0), (0.12, 0.0), (0.24, 0.0), (0.12, 0.5), (0.12, -0.5)):
+        c, s = math.cos(skid), math.sin(skid)
+        assert home(np.array([(x + slide * (c * vx - s * vy), y + slide * (s * vx + c * vy), yaw)])) < 0.25, (slide, skid)
+
+
+def test_return_at_full_speed_still_avoids_nearby_obstacle():
+    """A max_speed el freno sigue mirando: un obstáculo detrás en el camino a la largada lo frena y se aleja."""
+    grid = maze()
+    m = Mission(grid, START[:2], P)
+    m.state = 'returning'
+    x, y = START[0] + 0.30, START[1]
+    scan = np.vstack([lidar(grid, x, y), (x - P.body_radius - P.stop_margin - 0.02, y)])
+    (vx, vy, _), done = m.step(x, y, 0.0, 1.0, scan)
+    assert not done
+    assert vx > 0 and math.hypot(vx, vy) <= P.retreat_speed + 1e-9
+
+
+def test_node_publishes_done_before_braking():
+    """El nodo publica /done en el ciclo en que entran las ruedas, y recién después el freno."""
+    import rclpy
+    from equipo_jar.navigator import Navigator
+
+    rclpy.init(args=['--ros-args', '--params-file', str(PARAMS), '-p', 'victims:=1'])
+    node = None
+    try:
+        node = Navigator()
+        out = []
+        node.cmd_pub = SimpleNamespace(publish=lambda msg: out.append(('cmd', math.hypot(msg.linear.x, msg.linear.y))))
+        node.done_pub = SimpleNamespace(publish=lambda msg: out.append(('done', None)))
+        grid = maze()
+        node.board, node.start, node.t0 = grid, START[:2], node.get_clock().now()
+        node.mission = Mission(grid, node.start, node)
+        node.mission.state = 'returning'
+        node.pose_at = node.lidar_at = node.get_clock().now()
+        node.lidar = lidar(grid, START[0] + 0.3, START[1])
+        node.pose = lambda: (START[0] + 0.3, START[1], math.pi / 4)
+        node.control()
+        assert out == [('cmd', pytest.approx(P.max_speed))]
+        node.pose = lambda: (START[0] + 0.05, START[1], math.pi / 4)
+        node.control()
+        assert out[1:] == [('done', None), ('cmd', 0.0)] and node.finished
+        node.control()
+        assert len(out) == 3
+    finally:
+        if node is not None: node.destroy_node()
+        rclpy.shutdown()
 
 
 def test_returns_when_noted_obstacles_close_the_way():
@@ -192,8 +295,8 @@ def test_returns_when_noted_obstacles_close_the_way():
 
 
 def test_no_phantom_candidates_when_scan_lags_while_turning():
-    """Girando, el scan llega con la pose de 50 ms antes (3° a 1 rad/s): a 4 m las paredes se corren 20 cm y parecían objetos. Así, girando no se
-    anotan candidatos; quieto el mismo desfase no existe. (En Gazebo, con ese desfase aparecieron 20 candidatos fantasma de golpe.)"""
+    """Girando, el scan llega con la pose de 50 ms antes (3° a 1 rad/s): a 4 m las paredes se corren 20 cm y parecían objetos (en Gazebo aparecieron 20
+    candidatos fantasma de golpe). El detector por forma no las toma por cajas: una pared corrida es una recta larga."""
     grid = maze()
     m = Mission(grid, START[:2], P)
     x, y = 2.0, -0.25 # en el medio del pasillo largo: paredes a hasta 4 m
@@ -206,9 +309,119 @@ def test_no_phantom_candidates_when_scan_lags_while_turning():
     assert m.candidates == []
 
 
+def test_detects_boxes_by_shape():
+    """detect_boxes reconoce una caja por sus caras en un solo scan, suelta o apoyada en una pared (RANSAC separa la cara de la pared), con el centro a
+    menos de 3 cm; sin cajas, o con la pose girada 3° (paredes corridas hasta 20 cm), no ve ninguna."""
+    grid, rng = maze(), np.random.default_rng(0)
+    for box, at in (((1.5, -0.3), (0.0, -0.25)), ((4.33, -1.92), (2.5, -0.25))): # suelta; apoyada en una pared
+        found = detect_boxes(grid, lidar(with_box(grid, *box), *at), *at, P, rng)
+        assert len(found) == 1 and math.dist(found[0], box) < 0.03, found
+    a = 0.05
+    rot = np.array([[math.cos(a), -math.sin(a)], [math.sin(a), math.cos(a)]])
+    for at in ((0.0, -0.25), (2.0, -0.25), (3.5, -0.25)):
+        pts = lidar(grid, *at)
+        assert detect_boxes(grid, pts, *at, P, rng) == []
+        assert detect_boxes(grid, (pts - at) @ rot.T + at, *at, P, rng) == []
+
+
+def test_glimpse_is_not_seen():
+    """Una celda cuenta como vista con lo visible alrededor hasta seen_margin: el borde de una sombra no (ahí una caja muestra pocos puntos), pero el lado
+    de acá de una pared sí (lo que no se ve del otro lado no lo borra)."""
+    grid = maze()
+    m = Mission(grid, START[:2], P)
+    x, y = START[:2]
+    vis, seen = visibility(grid, x, y, P.lidar_range, 720), m._visible(x, y)
+    assert not (seen & ~vis).any() and seen.sum() < vis.sum()
+    cx, cy = grid.to_world(*np.indices(grid.free.shape))
+    by_wall = vis & (grid.dist < 0.08) & (np.hypot(cx - x, cy - y) < 1.5)
+    assert by_wall.any() and seen[by_wall].mean() > 0.8
+
+
+def test_looks_at_unseen_corner_before_returning():
+    """Terminados los puntos de paso y con víctimas por encontrar, antes de volver va a ver el rincón que quedó sin ver (donde entra una caja); visto, vuelve."""
+    grid = maze()
+    m = Mission(grid, START[:2], P)
+    m.k = len(m.points)
+    cx, cy = grid.to_world(*np.indices(grid.free.shape))
+    hidden = m.near_route & grid.free & ~ndimage.binary_dilation(visibility(grid, *START[:2], P.lidar_range, 720), iterations=4)
+    i, j = np.argwhere(hidden)[0]
+    m.seen[:] = True
+    m.seen[hidden & (np.hypot(cx - cx[i, j], cy - cy[i, j]) < 0.15)] = False
+    m.step(*START, 0.0, lidar(grid, *START[:2]), victims=1)
+    assert m.state == 'going' and math.dist(m.goal, (cx[i, j], cy[i, j])) < P.route_distance + 0.15
+    m.seen[:] = True
+    m.step(*START, 0.1, lidar(grid, *START[:2]), victims=1)
+    assert m.state == 'done' # vuelve, y como está en la largada termina
+
+
+def test_looks_at_candidate_from_where_it_is():
+    """Viéndolo entero (centro y esquinas) a menos de look_range y con el lidar pegándole, no se acerca: se queda quieto y gira la cámara hacia el
+    candidato. Si el lidar no ve nada ahí (un fantasma), se acerca: quieto no lo descartaría nunca (_confirm actúa más cerca)."""
+    grid = maze()
+    for world, still in ((with_box(grid, 2.5, -0.3), True), (grid, False)): # a 2.5 m por el pasillo
+        m = Mission(grid, START[:2], P)
+        m.candidates.append({'xy': (2.5, -0.3), 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None})
+        (vx, vy, w), _ = m.step(*START, 0.0, lidar(world, *START[:2]))
+        assert ((vx, vy) == (0.0, 0.0)) == still
+
+
+def test_passes_beside_a_box_in_the_middle_of_a_corridor():
+    """Una caja en el medio de un pasillo de 0.9 m deja 0.325 m a cada lado: el círculo de body_radius no entra, el chasis (0.20 x 0.30) sí, alineado con
+    el paso. Vuelve a la largada, del otro lado de la caja, arrancando cruzado (90°), sin que el chasis toque nada."""
+    g = np.zeros((24, 80), np.int16)
+    g[:3] = g[-3:] = g[:, :2] = g[:, -2:] = 100 # pasillo de 0.9 m de x = -0.4 a 3.4
+    grid = Board(g.ravel(), 80, 24, RES, -0.5, -0.6)
+    world = with_box(grid, 1.5, 0.0)
+    m = Mission(grid, (3.0, 0.0), P)
+    m.state = 'returning'
+    x, y, yaw, t, done, touch = 0.2, 0.0, math.pi / 2, 0.0, False, False
+    edge = np.array([(a, b) for a in np.linspace(-P.body_rear, P.body_front, 7) for b in (-P.body_side, P.body_side)] +
+                    [(a, b) for a in (-P.body_rear, P.body_front) for b in np.linspace(-P.body_side, P.body_side, 5)])
+    while t < 60.0 and not done:
+        (vx, vy, w), done = m.step(x, y, yaw, t, lidar(world, x, y))
+        c, s = math.cos(yaw), math.sin(yaw)
+        x, y, yaw, t = x + (c * vx - s * vy) * 0.1, y + (s * vx + c * vy) * 0.1, normalize(yaw + w * 0.1), t + 0.1
+        c, s = math.cos(yaw), math.sin(yaw)
+        i, j = world.to_cell(x + c * edge[:, 0] - s * edge[:, 1], y + s * edge[:, 0] + c * edge[:, 1])
+        touch |= bool(world.occupied[i, j].any())
+    assert done and not touch
+
+
+def test_little_of_the_box_in_view_is_not_in_frame():
+    """Con menos de media caja a la vista (asomándose detrás de una esquina) no cuenta tiempo en cuadro: si no, la descartaba sin rojo sin que la cámara
+    la viera. Con media caja, sí: un señuelo se descarta tras clear_time."""
+    grid = maze()
+    world = with_box(grid, 1.5, -0.3)
+    m = Mission(grid, START[:2], P)
+    cd = {'xy': (1.5, -0.3), 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None}
+    m.candidates.append(cd)
+    m._in_view = lambda x, y, cx, cy: 2 # el centro y una esquina
+    for k in range(15): m.step(*START, 0.1 * k, lidar(world, *START[:2]))
+    assert cd['time'] == 0.0 and not cd['done']
+    m._in_view = lambda x, y, cx, cy: 3
+    for k in range(15, 30): m.step(*START, 0.1 * k, lidar(world, *START[:2]))
+    assert cd['done'] and cd['why'] == 'sin rojo'
+
+
+def test_keeps_looking_at_candidate_until_resolved():
+    """Elige el candidato más cercano y sigue con él hasta resolverlo, aunque al moverse otro le quede más cerca: si saltara, dejaría uno a medio mirar."""
+    grid = maze()
+    m = Mission(grid, START[:2], P)
+    a, b = ({'xy': xy, 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None} for xy in ((2.0, -0.3), (0.6, -0.3)))
+    m.candidates += [a, b]
+    m.step(1.5, -0.25, 0.0, 0.0, lidar(grid, 1.5, -0.25))
+    assert m.target is a
+    m.step(1.0, -0.25, 0.0, 0.1, lidar(grid, 1.0, -0.25)) # ahora b está más cerca
+    assert m.target is a
+    a['done'] = True
+    m.step(1.0, -0.25, 0.0, 0.2, lidar(grid, 1.0, -0.25))
+    assert m.target is b
+
+
 def test_discards_phantom_candidates_with_lidar():
-    """Un error de pose de unos scans (3°: el localizer corrige y la TF tarda 0.3 s en reflejarlo) deja paredes corridas que parecen objetos a 2-4 m.
-    El robot va hacia ellos y, con línea de vista a menos de 2.5 m y el lidar sin ver nada ahí, los descarta sin gastar los 3.5 s de cámara."""
+    """Un error de pose de unos scans (3°: el localizer corrige y la TF tarda 0.3 s en reflejarlo) corre las paredes hasta 20 cm a 4 m: detect_boxes no
+    las toma por cajas (son rectas largas), pero los vistazos sí parecen objetos a 2-4 m. El robot va hacia ellos y, con línea de vista a menos de 2.5 m y
+    el lidar sin ver nada ahí, los descarta sin gastar los 3.5 s de cámara."""
     grid = maze()
     m = Mission(grid, START[:2], P)
     x, y, yaw, t = 3.5, -0.25, 0.0, 0.0
@@ -262,7 +475,7 @@ def test_reopens_candidate_when_red_shows_up_later():
 def test_box_seen_from_another_side_is_not_a_phantom():
     """
     En Gazebo un señuelo salió como fantasma: el robot giraba hacia él y se contaban fallos. Una caja real no se descarta así:
-    - quieto, aunque el candidato quede corrido 23 cm hacia las caras que el lidar vio primero: en 3 scans se corrige al centro de lo que ve;
+    - quieto, aunque el candidato quede corrido 23 cm hacia las caras que el lidar vio primero: con el primer scan que la muestra pasa al centro de la caja;
     - girando, aunque el scan no la muestre (scan y pose desfasados): girando no se cuentan fallos (solo el primer ciclo, sin giro previo).
     """
     grid = maze()

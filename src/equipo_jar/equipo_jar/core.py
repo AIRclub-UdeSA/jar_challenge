@@ -422,26 +422,26 @@ class DetectionClusterer:
 
     La percepción manda decenas de detecciones (x, y) por segundo por caja, cada una con unos centímetros de error y algunas muy malas. Llegan ya como centros 
     de caja: la percepción corrige media caja (mitad_caja) desde la cara que ve el sensor, que es lo que mide el juez. Esta clase las agrupa por caja, estima
-    el centro con la mediana y solo da por lista una caja vista muchas veces, desde lugares distintos y con poca dispersión: cada reporte equivocado gasta uno de los N.
-    
+    el centro con la mediana y solo da por lista una caja con suficientes rayos rojos en varios scans y poca dispersión: cada reporte equivocado gasta uno de los N.
+
     Atributos:
-        - groups: lista de {'obs': [(x, y, rx, ry), ...], 'reported': bool}. (x, y) es la detección y (rx, ry) dónde estaba el robot. 'reported' lo marca la misión al
+        - groups: lista de {'obs': [(x, y, n), ...], 'reported': bool}. (x, y) es la detección y n cuántos rayos rojos la dieron. 'reported' lo marca la misión al
         publicar en /victimas; la clase no lo toca.
         - radius: a menos de esto del centro de un grupo, la detección es de esa caja (las cajas miden 0,25 m). max_obs: cuántas observaciones guarda por grupo (las últimas).
     """
     def __init__(self, radius, max_obs=300):
         self.radius, self.max_obs = radius, max_obs
-        self.groups = []  # cada uno: {'obs': [(x, y, rx, ry)], 'reported': bool}
+        self.groups = []  # cada uno: {'obs': [(x, y, n)], 'reported': bool}
 
-    def add(self, x, y, rx, ry):
+    def add(self, x, y, n=1):
         for g in self.groups:
             cx, cy = self.center(g)
 
             if math.hypot(x - cx, y - cy) < self.radius:
-                g['obs'] = (g['obs'] + [(x, y, rx, ry)])[-self.max_obs:]
+                g['obs'] = (g['obs'] + [(x, y, n)])[-self.max_obs:]
                 return g
 
-        g = {'obs': [(x, y, rx, ry)], 'reported': False}
+        g = {'obs': [(x, y, n)], 'reported': False}
         self.groups.append(g)
 
         return g
@@ -452,14 +452,11 @@ class DetectionClusterer:
         o = np.asarray(g['obs'])
         return float(np.median(o[:, 0])), float(np.median(o[:, 1]))
 
-    def ready(self, g, n_min, max_spread, min_baseline):
-        """n_min observaciones, con dispersión (MAD, m) menor a max_spread, y vistas desde lugares a más de min_baseline m (o el doble de
-        observaciones si el robot no se movió)."""
+    def ready(self, g, rays_min, n_min, max_spread):
+        """rays_min rayos rojos en total, en n_min observaciones o más, con dispersión (MAD, m) menor a max_spread."""
         o = np.asarray(g['obs'])
-        if len(o) < n_min: return False
+        if len(o) < n_min or o[:, 2].sum() < rays_min: return False
 
         cx, cy = np.median(o[:, 0]), np.median(o[:, 1])
-        mad = 1.4826 * np.median(np.hypot(o[:, 0] - cx, o[:, 1] - cy))
-        baseline = np.ptp(o[:, 2]) + np.ptp(o[:, 3])
 
-        return mad < max_spread and (baseline > min_baseline or len(o) >= 2 * n_min)
+        return 1.4826 * np.median(np.hypot(o[:, 0] - cx, o[:, 1] - cy)) < max_spread

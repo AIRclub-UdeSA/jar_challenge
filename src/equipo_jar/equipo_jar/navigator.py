@@ -20,17 +20,19 @@ from equipo_jar.localizer import MAP_QOS, node_params, yaw_of
 
 # --- Caminos (planificación) ----------------------------------------------
 
-def costs(grid, obstacles, p):
+def costs(grid, obstacles, p, closed=None):
     """
     (drivable, penalty, dist): por dónde entra el chasis, cuánto cuesta cada celda y los metros hasta la pared u obstáculo más cercano.
 
-    drivable: a más de body_radius + drivable_margin de todo. Cada paso cuesta 1 en el medio de un pasillo ancho, hasta 1 + wall_penalty pegado a la pared
-    (desde wall_margin), y close_penalty más a menos de robot_radius: el camino va por el medio cuando hay lugar, pero un paso angosto (una caja cerca de una
-    pared) sigue abierto si es el único.
+    drivable: a más de narrow_side de todo. Cada paso cuesta 1 en el medio de un pasillo ancho, hasta 1 + wall_penalty pegado a la pared (desde
+    wall_margin), close_penalty más a menos de robot_radius y narrow_penalty más a menos de body_radius + drivable_margin (paso angosto: lo cruza alineado,
+    Mission._narrow): el camino va por el medio cuando hay lugar, pero un paso angosto (una caja en el medio de un pasillo) sigue abierto si es el único.
+    closed: celdas de pasos angostos que no pudo cruzar (no son drivable).
     """
     dist = ndimage.distance_transform_edt(~(grid.occupied | obstacles)) * grid.res
-    drivable = grid.free & (dist >= p.body_radius + p.drivable_margin)
-    penalty = 1 + p.wall_penalty * np.clip((p.wall_margin - dist) / p.wall_margin, 0, 1) + p.close_penalty * (dist < p.robot_radius)
+    drivable = grid.free & (dist >= p.narrow_side) & (True if closed is None else ~closed)
+    penalty = 1 + p.wall_penalty * np.clip((p.wall_margin - dist) / p.wall_margin, 0, 1) + p.close_penalty * (dist < p.robot_radius) + \
+              p.narrow_penalty * (dist < p.body_radius + p.drivable_margin)
 
     return drivable, penalty, dist
 
@@ -110,6 +112,92 @@ def lookahead_point(route, x, y, distance):
 
     return route[-1]
 
+# --- Cajas en el scan -----------------------------------------------------
+
+def longest_run(mask):
+    """Índices del tramo más largo de True seguidos."""
+    d = np.diff(np.r_[0, mask.astype(int), 0])
+    starts, ends = np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]
+    if not len(starts): return np.zeros(0, int)
+
+    k = np.argmax(ends - starts)
+
+    return np.arange(starts[k], ends[k])
+
+def ransac_segments(q, p, rng):
+    """
+    Rectas de un grupo de puntos del scan (en el orden de los rayos), con RANSAC secuencial. Cada vuelta prueba detect_iterations rectas por dos puntos al
+    azar, se queda con la que tiene más puntos a menos de detect_tolerance y, de esos, con el tramo de rayos seguidos más largo (dos paredes alineadas a
+    cada lado de algo no se juntan). Termina cuando el tramo tiene menos de detect_points.
+
+    Returns:
+        [(medio (x, y), dirección unitaria, largo (m), índices en q)].
+    """
+    out, left = [], np.arange(len(q))
+    while len(left) >= p.detect_points:
+        i, j = rng.integers(len(left), size=(2, p.detect_iterations))
+        d = q[left[j]] - q[left[i]]
+        length = np.hypot(d[:, 0], d[:, 1])
+        ok = length > 1e-6
+        if not ok.any(): break
+
+        n = np.column_stack([-d[ok, 1], d[ok, 0]]) / length[ok, None]
+        near = np.abs(q[left] @ n.T - np.sum(q[left[i[ok]]] * n, axis=1)) < p.detect_tolerance # (puntos, rectas)
+        run = longest_run(near[:, np.argmax(near.sum(axis=0))])
+        if len(run) < p.detect_points: break
+
+        seg = q[left[run]]
+        mid = seg.mean(axis=0)
+        u = np.linalg.svd(seg - mid)[2][0]
+        along = (seg - mid) @ u
+        out.append((mid + u * (along.max() + along.min()) / 2, u, float(np.ptp(along)), left[run]))
+        left = np.delete(left, run)
+
+    return out
+
+def detect_boxes(grid, pts, x, y, p, rng):
+    """
+    Centros (x, y) de las cajas que muestra un scan, por su forma. pts: el scan en el frame map, en el orden de los rayos; (x, y): desde dónde se midió.
+
+    - El scan se corta en grupos donde la distancia salta más de detect_jump entre rayos vecinos o faltan rayos. Un grupo que es solo pared del mapa (a
+      menos de wall_tolerance) se saltea.
+    - El resto se parte en rectas (ransac_segments). Las que caen sobre una pared del mapa son pared: una caja apoyada en una pared queda en su mismo grupo y
+      RANSAC las separa. Una recta de más de face_max fuera del mapa es una pared corrida (error de pose, scan y pose desfasados): el grupo no sirve.
+    - Una caja es una cara de face_min a face_max, o dos perpendiculares (en L). Si en sus dos puntas termina el grupo y del otro lado hay algo más cerca,
+      es un pedazo de algo tapado (una pared corrida vista por una puerta): no es una caja. Con una punta tapada, es una caja que se asoma detrás de una
+      esquina: al pasar, muchas se ven enteras en un solo scan o en ninguno.
+    - El centro, el medio de la cara más larga corrido medio lado hacia atrás (asomándose, queda corrido hasta medio lado: el próximo scan lo corrige).
+    """
+    if len(pts) < p.detect_points: return []
+
+    r = np.hypot(pts[:, 0] - x, pts[:, 1] - y)
+    da = np.abs(np.diff(np.unwrap(np.arctan2(pts[:, 1] - y, pts[:, 0] - x))))
+    gap = da > 2.5 * np.median(da) # rayos sin eco en el medio: del otro lado no hay nada cerca
+    cut = gap | (np.abs(np.diff(r)) > p.detect_jump)
+    wall = grid.distance(pts[:, 0], pts[:, 1]) < p.wall_tolerance
+    bounds = np.r_[0, np.nonzero(cut)[0] + 1, len(pts)]
+    boxes = []
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        if (~wall[a:b]).sum() < p.detect_points: continue
+
+        segments = [(mid, u, size, idx + a, wall[a + idx].mean() > 0.5) for mid, u, size, idx in ransac_segments(pts[a:b], p, rng)]
+        if any(size > p.face_max and not on_map for *_, size, _, on_map in segments): continue # pared corrida
+
+        faces = [(mid, u, size, idx) for mid, u, size, idx, on_map in segments if not on_map]
+        if not 1 <= len(faces) <= 2 or max(f[2] for f in faces) < p.face_min: continue
+        if len(faces) == 2 and abs(faces[0][1] @ faces[1][1]) > 0.3: continue # dos caras que no son una L
+
+        lo, hi = min(f[3].min() for f in faces), max(f[3].max() for f in faces)
+        if (not wall[a:lo].any() and a > 0 and not gap[a - 1] and r[a - 1] < r[a]) and \
+           (not wall[hi + 1:b].any() and b < len(pts) and not gap[b - 1] and r[b] < r[b - 1]): continue # la tapa algo más cerca de los dos lados
+
+        mid, u, size, _ = max(faces, key=lambda f: f[2])
+        n = np.array([-u[1], u[0]])
+        if (mid - (x, y)) @ n < 0: n = -n # hacia atrás de la cara
+        boxes.append(tuple(map(float, mid + n * size / 2)))
+
+    return boxes
+
 # --- Misión ---------------------------------------------------------------
 
 class Mission:
@@ -117,9 +205,11 @@ class Mission:
     La misión completa sin ROS: el lidar busca y la cámara confirma.
 
     El lidar ve 360°: el robot pasa sin frenar ni girar por puntos que entre todos le muestran el laberinto (viewpoint_tour con lidar_range). Lo que el lidar
-    ve lejos de las paredes del mapa, del tamaño de una caja, es un candidato (víctima, señuelo u otro objeto): el robot gira la cámara hacia el más cercano
+    reconoce como caja fuera de las paredes del mapa (detect_boxes), o lo que asoma unos pocos puntos en varios scans (_mark_glimpses), es un candidato
+    (víctima, señuelo u otro objeto): el robot gira la cámara hacia el más cercano
     mientras avanza (mecanum: hacia dónde va y hacia dónde mira son independientes) y se le acerca hasta que la percepción lo reporta o lo tuvo en cuadro lo
-    suficiente. Sin candidatos no gira. Vuelve cuando se reportaron las N víctimas, cuando ya vio todo o cuando se acaba el tiempo.
+    suficiente. Sin candidatos no gira. Vuelve cuando se reportaron las N víctimas, cuando ya vio todo (los puntos de paso y después los rincones sin ver
+    donde entra una caja) o cuando se acaba el tiempo.
     test_navigator.py la prueba con una simulación cinemática.
 
     p: los parámetros como atributos (p.max_speed, ...). En el robot es el nodo Navigator, que los lee de params.yaml; en los tests, la sección
@@ -135,12 +225,21 @@ class Mission:
         self.start = (float(start[0]), float(start[1]))
         self.points, self.vis, self.reachable = viewpoint_tour(grid, self.start, self.p.robot_radius, self.p.lidar_range, self.p.tour_step, self.p.tour_coverage)
         self.hits = np.zeros(grid.free.shape, np.int16) # veces que el lidar vio algo fuera del mapa en cada celda, hasta obstacle_range (obstáculos)
-        self.found = np.zeros(grid.free.shape, np.int16) # lo mismo hasta lidar_range (candidatos)
+        self.found = np.zeros(grid.free.shape, np.int16) # lo mismo hasta lidar_range, sin girar (vistazos: _mark_glimpses)
         self.obstacles = np.zeros(grid.free.shape, bool)
+        self.closed = np.zeros(grid.free.shape, bool) # pasos angostos que no pudo cruzar
         self.drivable, self.penalty, self.clear = costs(grid, self.obstacles, self.p)
-        self.seen = np.zeros(grid.free.shape, bool) # lo que ya vio el lidar
+        self.seen = np.zeros(grid.free.shape, bool) # lo que ya vio el lidar (con una caja entera a la vista: _visible)
         self.near_route = ndimage.binary_dilation(self.reachable, iterations=int(self.p.route_distance / grid.res)) # el centro de una caja está cerca de donde anda el robot
         self.candidates = [] # {'xy', 'time' (s en cuadro), 'views' [(x, y) del robot], 'done'}
+        self.sightings = [] # cajas vistas en un solo scan, esperando el segundo: {'xy', 'n' (scans), 't'}
+        self.scan = np.zeros((0, 2)) # el último scan que pasó por detect_boxes
+        self.rng = np.random.default_rng(0) # RANSAC: siempre lo mismo con el mismo scan
+        self.pocket = None # el rincón sin ver adonde va al terminar los puntos de paso: (meta, celdas, cuántas sin ver al elegirlo)
+        self.target = None # el candidato que está mirando (el más cercano cuando lo eligió)
+        self.align = None # cruzando un paso angosto: el giro para alinearse con el paso (_narrow)
+        self.passage, self.narrow_blocked = [], 0.0 # sus celdas angostas y cuánto lleva tapado ahí
+        self.given_up = np.zeros(grid.free.shape, bool) # rincones que no vio ni llegando
         self.start_dist = path_dist(grid, self.reachable, [self.start])[0]
         self.k, self.state, self.blocked_since = 0, 'going', None
         self.goal, self.D, self.replan = None, None, False
@@ -149,7 +248,6 @@ class Mission:
         self.is_wall = np.zeros(0, bool) # qué puntos de near son paredes del mapa
         self.blocker = None # el último punto del lidar que lo frenó (frame del robot)
         self.log = [] # mensajes para el log del nodo
-        self.closest = (math.inf, 0.0) # volviendo: (menor distancia a la largada, cuándo se acercó 1 cm más por última vez)
         self.cleared_at = -math.inf # última vez que se olvidaron los obstáculos por quedarse sin camino
 
     def step(self, x, y, yaw, t, lidar=(), reports=(), victims=1, red=()):
@@ -170,12 +268,15 @@ class Mission:
         turning = dt > 0 and abs(normalize(yaw - self.yaw_prev)) / dt > self.p.turning_rate
         self.yaw_prev = yaw
         self._mark_obstacles(x, y, lidar[~self.is_wall])
-        # Girando, un desfase chico entre scan y pose (50 ms a 1 rad/s son 3°) corre 20 cm una pared a 4 m: parece un objeto. Hasta 1.5 m (obstáculos) no
-        if not turning: self._mark_candidates(lidar[~self.is_wall])
-        # Girando tampoco se confirman: el candidato no se corrige (la línea de arriba) y el desfase lo corre; en Gazebo un señuelo salió como fantasma
+        # La caja se reconoce por su forma en el scan: girando también sirve (una pared corrida por el desfase entre scan y pose es una recta larga)
+        self._mark_candidates(x, y, t, lidar)
+        # Los vistazos no: girando, el desfase (50 ms a 1 rad/s son 3°) corre 20 cm una pared a 4 m y parece un objeto
+        if not turning: self._mark_glimpses(lidar[~self.is_wall])
+        # Girando tampoco se confirman: el desfase corre los puntos y en Gazebo un señuelo salió como fantasma
         if not turning: self._confirm(x, y, lidar[~self.is_wall])
-        self._watch(x, y, yaw, dt, reports, red)
-        self.seen |= visibility(self.grid, x, y, self.p.lidar_range, 180)
+        objects = lidar[~self.is_wall]
+        self._watch(x, y, yaw, dt, reports, red, objects)
+        self.seen |= self._visible(x, y)
 
         if self.state != 'returning' and (len(reports) >= victims or t + self._return_time(x, y) > self.p.time_limit):
             self.state = 'returning'
@@ -183,45 +284,54 @@ class Mission:
         target = goal = None
         if self.state == 'going':
             pending = [cd for cd in self.candidates if not cd['done']]
-            if pending: # el candidato más cercano: hacia él va y hacia él mira
-                target = min(pending, key=lambda cd: math.hypot(cd['xy'][0] - x, cd['xy'][1] - y))
+            if pending: # hacia el candidato va y hacia él mira, hasta resolverlo: si saltara al más cercano, dejaría a medio mirar uno que después queda lejos
+                if not any(cd is self.target for cd in pending): self.target = min(pending, key=lambda cd: math.hypot(cd['xy'][0] - x, cd['xy'][1] - y))
+                target = self.target
                 goal = target['xy']
-            else: # sin candidatos, al próximo punto de paso que tenga algo sin ver
+            else: # sin candidatos, al próximo punto de paso que tenga algo sin ver; después, a los rincones que quedaron
                 while self.k < len(self.points) and (self.vis[self.k] & ~self.seen).sum() < self._min_pending():
                     self.k += 1
-                if self.k == len(self.points): self.state = 'returning'
-                else:
+                if self.k < len(self.points):
                     goal = self.points[self.k]
                     if math.hypot(goal[0] - x, goal[1] - y) < self.p.goal_tolerance: self.k += 1
+                else:
+                    goal = self._pocket(x, y)
+                    if goal is None: self.state = 'returning'
 
         if self.state == 'returning':
-            # Termina con las cuatro ruedas cerca de la largada, o trabado cerca (motores con zona muerta: a velocidad baja no se mueven) y sin acercarse
-            # 1 cm en start_stall s
-            dist = math.hypot(self.start[0] - x, self.start[1] - y)
-            if dist < self.closest[0] - 0.01: self.closest = (dist, t)
+            # Termina apenas la rueda más lejana entra en start_tolerance, sin frenar antes: el nodo publica /done y recién después el freno
             wheels = max(math.hypot(x + c * a - s * b - self.start[0], y + s * a + c * b - self.start[1])
                          for a in (-self.p.wheel_x, self.p.wheel_x) for b in (-self.p.wheel_y, self.p.wheel_y))
-            if wheels < self.p.start_tolerance or (dist < self.p.start_radius and t - self.closest[1] > self.p.start_stall):
+            if wheels <= self.p.start_tolerance:
                 self.state = 'done'
                 return (0.0, 0.0, 0.0), True
 
             goal = self.start
 
         w = 0.0
-        if target is not None:
+        if target is not None and float(self._clear_at(x, y)) >= self.p.body_radius + self.p.drivable_margin: # en un paso angosto no gira a mirar
             tx, ty = target['xy']
             w = float(np.clip(self.p.turn_gain * normalize(math.atan2(ty - y, tx - x) - yaw), -self.p.max_turn, self.p.max_turn))
-            if math.hypot(tx - x, ty - y) < self.p.approach and line_of_sight(self.grid, (x, y), (tx, ty)): return (0.0, 0.0, w), False # ya está cerca: solo lo mira
+            # Ya está cerca viéndola (al menos media), o la ve entera a menos de look_range y el lidar le pega: solo la mira. Asomándose detrás de una
+            # esquina se acerca (desde ahí la cámara no la ve); sin lidar en ella también (si es un fantasma, cerca lo descarta _confirm)
+            d, n = math.hypot(tx - x, ty - y), self._in_view(x, y, tx, ty)
+            if (d < self.p.approach and n >= 3) or (d < self.p.look_range and n == 5 and self._hit(objects, tx, ty)): return (0.0, 0.0, w), False
 
+        self.align = None
         cmd = self._go(x, y, yaw, goal, t, dt, final=self.state == 'returning')
+        if self.align is not None: w = self.align # cruzando un paso angosto: el giro es para alinearse con el paso
         if cmd is None: # sin camino o tapado demasiado: el candidato se da por visto, el punto se saltea
             reason = 'tapado' if self.blocked_time > self.p.max_blocked else 'sin camino'
             if target is not None:
                 target['done'], target['why'] = True, reason
                 self.log.append(f'dejo el candidato en ({goal[0]:.2f}, {goal[1]:.2f}): {reason}')
-            else:
+            elif self.k < len(self.points):
                 self.log.append(f'salteo el punto {self.k} ({goal[0]:.2f}, {goal[1]:.2f}): {reason}')
                 self.k += 1
+            elif self.pocket is not None:
+                self.log.append(f'dejo el rincón en ({goal[0]:.2f}, {goal[1]:.2f}): {reason}')
+                self.given_up |= self.pocket[1]
+                self.pocket = None
 
             return (0.0, 0.0, w), False
 
@@ -259,37 +369,111 @@ class Mission:
     def _set_obstacles(self, obstacles):
         """Cambia los obstáculos: recalcula los costos y pide replanear."""
         self.obstacles = obstacles
-        self.drivable, self.penalty, self.clear = costs(self.grid, obstacles, self.p)
+        self.drivable, self.penalty, self.clear = costs(self.grid, obstacles, self.p, self.closed)
         self.replan = True
 
-    def _mark_candidates(self, lidar):
+    def _mark_candidates(self, x, y, t, lidar):
         """
-        Candidatos: lo que el lidar ve lejos de las paredes del mapa (hasta lidar_range), en candidate_scans scans, en manchas del tamaño de una caja. Cada
-        celda suma uno por scan, no por rayo: de cerca, decenas de rayos de un mismo scan caen en la misma celda y un solo scan malo inventaba candidatos.
+        Candidatos: las cajas que reconoce detect_boxes, vistas en candidate_scans scans con el centro a menos de detect_match (el segundo, antes de
+        detect_keep s), dentro del laberinto (_in_maze). Una a menos de candidate_merge de un candidato es ese: le actualiza la posición (al centro de la
+        caja, aunque antes la viera de otro lado o saliera de un vistazo).
+        """
+        if len(lidar) == len(self.scan) and np.array_equal(lidar, self.scan): return # el mismo scan otra vez: el control va más rápido que el lidar
 
-        Una mancha de más de candidate_size es una pared corrida u otro objeto; una en el borde del mapa o a más de route_distance de donde anda el robot,
-        algo afuera del laberinto (visto por una abertura). Una mancha a menos de candidate_merge de un candidato es el mismo: le actualiza la posición (el centro de lo que vio el
-        lidar, sobre las caras que mira: no es el centro de la caja).
+        self.scan = lidar
+        self.sightings = [s for s in self.sightings if t - s['t'] < self.p.detect_keep]
+        for xy in detect_boxes(self.grid, lidar, x, y, self.p, self.rng):
+            if not self._in_maze(xy): continue
+
+            same = [cd for cd in self.candidates if math.hypot(cd['xy'][0] - xy[0], cd['xy'][1] - xy[1]) < self.p.candidate_merge]
+            if same:
+                same[0]['xy'] = xy
+                continue
+
+            s = next((s for s in self.sightings if math.hypot(s['xy'][0] - xy[0], s['xy'][1] - xy[1]) < self.p.detect_match and s['t'] < t), None)
+            if s is None:
+                s = {'xy': xy, 'n': 0, 't': -math.inf}
+                self.sightings.append(s)
+            s.update(xy=xy, n=s['n'] + 1, t=t)
+            if s['n'] >= self.p.candidate_scans:
+                self.sightings.remove(s)
+                self._add_candidate(xy)
+
+    def _mark_glimpses(self, lidar):
+        """
+        Candidatos por vistazos: de lejos o detrás de una esquina, una caja asoma unos pocos puntos y detect_boxes no la reconoce. Lo que el lidar ve lejos de
+        las paredes del mapa (hasta lidar_range), en glimpse_scans scans, en manchas de hasta glimpse_size, es un candidato. Cada celda suma uno por scan, no
+        por rayo: de cerca, decenas de rayos de un mismo scan caen en la misma celda y un solo scan malo inventaba candidatos. Solo agrega: la posición la
+        corrige detect_boxes (el centro de una mancha queda sobre las caras que ve el lidar, no en el de la caja).
         """
         i, j = self.grid.to_cell(lidar[:, 0], lidar[:, 1])
         ok = self.grid.inside(i, j)
         hit = np.zeros(self.found.shape, bool)
         hit[i[ok], j[ok]] = True
         self.found += hit
-        labels, n = ndimage.label(ndimage.binary_dilation(self.found >= self.p.candidate_scans), structure=np.ones((3, 3)))
+        labels, n = ndimage.label(ndimage.binary_dilation(self.found >= self.p.glimpse_scans), structure=np.ones((3, 3)))
         for k in range(1, n + 1):
-            cx, cy = self.grid.to_world(*np.nonzero((labels == k) & (self.found >= self.p.candidate_scans)))
-            if max(np.ptp(cx), np.ptp(cy)) > self.p.candidate_size: continue
-
+            cx, cy = self.grid.to_world(*np.nonzero((labels == k) & (self.found >= self.p.glimpse_scans)))
             xy = (float(np.mean(cx)), float(np.mean(cy)))
-            ci, cj = self.grid.to_cell(*xy)
-            if not (2 <= ci < self.found.shape[0] - 2 and 2 <= cj < self.found.shape[1] - 2 and self.near_route[ci, cj]): continue
+            if max(np.ptp(cx), np.ptp(cy)) > self.p.glimpse_size or not self._in_maze(xy): continue
 
-            same = [cd for cd in self.candidates if math.hypot(cd['xy'][0] - xy[0], cd['xy'][1] - xy[1]) < self.p.candidate_merge]
-            if same: same[0]['xy'] = xy
-            else:
-                self.candidates.append({'xy': xy, 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None})
-                self.log.append(f'candidato en ({xy[0]:.2f}, {xy[1]:.2f})')
+            if all(math.hypot(cd['xy'][0] - xy[0], cd['xy'][1] - xy[1]) >= self.p.candidate_merge for cd in self.candidates): self._add_candidate(xy)
+
+    def _in_maze(self, xy):
+        """False si una caja en xy está en el borde del mapa, sobre una pared o a más de route_distance de donde anda el robot: algo afuera del laberinto (visto
+        por una abertura)."""
+        i, j = self.grid.to_cell(*xy)
+        h, w = self.grid.free.shape
+
+        return bool(2 <= i < h - 2 and 2 <= j < w - 2 and self.near_route[i, j] and self.grid.free[i, j])
+
+    def _add_candidate(self, xy):
+        self.candidates.append({'xy': xy, 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None})
+        self.log.append(f'candidato en ({xy[0]:.2f}, {xy[1]:.2f})')
+
+    def _visible(self, x, y):
+        """
+        Lo que el lidar ve desde (x, y) con una caja entera a la vista: las celdas visibles a más de seen_margin (por lo libre, sin cruzar paredes) de una que
+        no se ve. Por una rendija o en el borde de una sombra una caja muestra pocos puntos y detect_boxes no la reconoce: eso no cuenta como visto.
+        """
+        vis = visibility(self.grid, x, y, self.p.lidar_range, 720) # a 4 m, rayos a menos de una celda
+        hidden = ndimage.binary_dilation(self.grid.free & ~vis, iterations=round(self.p.seen_margin / self.grid.res), mask=self.grid.free)
+
+        return vis & ~hidden
+
+    def _pocket(self, x, y):
+        """
+        Terminados los puntos de paso y con víctimas por encontrar: adónde ir para ver el rincón sin ver más cercano (por camino) donde entra una caja (al menos
+        pending_min celdas seguidas cerca de donde anda el robot). None si no queda ninguno. Con el robot en la meta, si vio parte del rincón elige otra
+        meta para lo que queda (una zona grande se ve de a poco); si no vio nada (lo tapa un obstáculo), lo abandona.
+        """
+        unseen = self.near_route & self.grid.free & ~self.seen & ~self.given_up
+        if self.pocket is not None:
+            goal, cells, before = self.pocket
+            left = (unseen & cells).sum()
+            if left >= self.p.pending_min and math.hypot(goal[0] - x, goal[1] - y) >= self.p.goal_tolerance: return goal
+
+            self.pocket = None
+            if left < self.p.pending_min or left >= before: # ya lo vio, o llegó y no vio nada
+                self.given_up |= cells
+                unseen &= ~cells
+
+        labels, n = ndimage.label(unseen, structure=np.ones((3, 3)))
+        sizes = ndimage.sum(unseen, labels, range(1, n + 1))
+        dist = path_dist(self.grid, self.drivable, [(x, y)])[0] if (sizes >= self.p.pending_min).any() else None # con los obstáculos anotados
+        best = None
+        for k in np.nonzero(sizes >= self.p.pending_min)[0] + 1:
+            cells = labels == k
+            d = np.where(ndimage.binary_dilation(cells, iterations=int(self.p.route_distance / self.grid.res) + 1), dist, np.inf)
+            i, j = np.unravel_index(np.argmin(d), d.shape) # desde dónde se ve: lo transitable más cerca del rincón
+            if np.isfinite(d[i, j]) and (best is None or d[i, j] < best[0]): best = (d[i, j], (i, j), cells)
+        if best is None: return None
+
+        goal = tuple(map(float, self.grid.to_world(*best[1])))
+        self.pocket = (goal, best[2], int((unseen & best[2]).sum()))
+        self.log.append(f'rincón sin ver: voy a ({goal[0]:.2f}, {goal[1]:.2f})')
+
+        return goal
 
     def _confirm(self, x, y, lidar):
         """
@@ -315,10 +499,12 @@ class Mission:
                 cd['done'], cd['why'] = True, 'fantasma'
                 self.log.append(f'candidato en ({cx:.2f}, {cy:.2f}): fantasma, el lidar no ve nada ahí')
 
-    def _watch(self, x, y, yaw, dt, reports, red):
+    def _watch(self, x, y, yaw, dt, reports, red, lidar):
         """
-        Decide qué es cada candidato con lo que dice la percepción mientras lo mira: a menos de camera_range, en la fracción view_fraction central de la foto
-        y con línea de vista.
+        Decide qué es cada candidato con lo que dice la percepción mientras lo mira: a menos de camera_range, en la fracción view_fraction central de la foto,
+        con al menos media caja a la vista (_in_view: el centro y dos esquinas) y el lidar pegándole en este scan (detect_points puntos fuera de las paredes
+        a menos de confirm_radius). Con solo el centro a la vista, o con el candidato corrido unos centímetros (visto de lejos, asomándose), la cámara casi
+        no la ve: contarlo como en cuadro descartaba víctimas sin rojo. lidar: los puntos del scan que no son paredes del mapa.
 
         - Un reporte a menos de match_radius: era una víctima.
         - clear_time en cuadro sin rojo cerca (red: grupos rojos que la percepción todavía no reportó): no lo es. Si después aparece rojo cerca de uno
@@ -341,7 +527,8 @@ class Mission:
                 continue
 
             bearing = abs(normalize(math.atan2(cy - y, cx - x) - yaw))
-            if math.hypot(cx - x, cy - y) > self.p.camera_range or bearing > 0.5 * self.p.view_fraction * self.p.camera_fov or not line_of_sight(self.grid, (x, y), (cx, cy)): continue
+            if math.hypot(cx - x, cy - y) > self.p.camera_range or bearing > 0.5 * self.p.view_fraction * self.p.camera_fov or self._in_view(x, y, cx, cy) < 3: continue
+            if not self._hit(lidar, cx, cy): continue
 
             cd['time'] += dt
             cd['views'].append((x, y))
@@ -352,6 +539,16 @@ class Mission:
             elif cd['time'] > self.p.watch_still * self.p.watch_time or (cd['time'] > self.p.watch_time and np.ptp(v[:, 0]) + np.ptp(v[:, 1]) > self.p.watch_baseline):
                 cd['done'], cd['why'] = True, 'rojo sin reporte'
                 self.log.append(f'candidato en ({cx:.2f}, {cy:.2f}): rojo pero sin reporte, lo dejo')
+
+    def _hit(self, objects, cx, cy):
+        """True si el lidar le pega en este scan a lo que hay en (cx, cy): detect_points puntos que no son pared a menos de confirm_radius."""
+        return bool((np.hypot(objects[:, 0] - cx, objects[:, 1] - cy) < self.p.confirm_radius).sum() >= self.p.detect_points)
+
+    def _in_view(self, x, y, cx, cy):
+        """Cuántos de 5 puntos de una caja en (cx, cy) (el centro y las esquinas a look_margin) ve desde (x, y), sin una pared del mapa en el medio."""
+        m = self.p.look_margin
+
+        return sum(line_of_sight(self.grid, (x, y), (cx + a, cy + b)) for a, b in ((0, 0), (m, m), (m, -m), (-m, m), (-m, -m)))
 
     def _clear_at(self, x, y):
         """Metros hasta la pared u obstáculo más cercano en (x, y); 0 fuera del mapa."""
@@ -379,6 +576,78 @@ class Mission:
 
         return not blocking.any()
 
+    def _narrow(self, x, y, yaw, route):
+        """
+        (vx, vy) para cruzar un paso angosto en los próximos narrow_ahead m del camino (celdas a menos de body_radius + drivable_margin de algo: una caja en
+        el medio de un pasillo), o None si no hay. El círculo de body_radius no entra, pero el chasis (0.20 x 0.30) sí, alineado y centrado:
+        - gira hasta tener el lado largo en la dirección del paso (self.align, que step usa en vez de mirar candidatos). Sin alinear no entra: a
+          body_front + 5 cm del paso se queda girando en el lugar (afuera hay lugar para girar);
+        - lejos de la entrada sigue el camino a narrow_speed; a menos de narrow_line, corrido de la línea del paso, primero se pone en ella de costado
+          (mecanum): en diagonal, el chasis barre la esquina de lo que angosta el paso;
+        - en la línea, y adentro, avanza a lo largo del paso a narrow_speed, corrigiendo hacia el camino de costado; saliendo, sigue el camino sin girar.
+        self.passage: sus celdas angostas, para cerrarlo si no lo puede cruzar.
+        """
+        tight = self.p.body_radius + self.p.drivable_margin
+        pts = np.asarray(route)
+        along = np.r_[0.0, np.cumsum(np.hypot(*np.diff(pts, axis=0).T))]
+        ahead = pts[along <= self.p.narrow_ahead]
+        idx = np.nonzero(self._clear_at(ahead[:, 0], ahead[:, 1]) < tight)[0]
+        inside = float(self._clear_at(x, y)) < tight
+        if not len(idx) and not inside: return None
+
+        self.passage = [tuple(q) for q in ahead[idx]] + ([(x, y)] if inside else [])
+
+        ax, ay = lookahead_point(route, x, y, self.p.lookahead_min)
+        if inside and len(idx) < 3: # saliendo: sin girar (las esquinas barren el paso) y por el camino
+            self.align = 0.0
+            a = normalize(math.atan2(ay - y, ax - x) - yaw)
+            return self.p.narrow_speed * math.cos(a), self.p.narrow_speed * math.sin(a)
+
+        # La línea del paso (u): la recta de sus celdas angostas adelante
+        seg = ahead[idx] if len(idx) >= 3 else np.vstack([(x, y), ahead[min(len(ahead) - 1, 4)]])
+        u = np.linalg.svd(seg - seg.mean(axis=0))[2][0]
+        u = -u if (seg[-1] - seg[0]) @ u < 0 else u
+        n = np.array([-u[1], u[0]])
+        err = normalize(math.atan2(u[1], u[0]) - yaw)
+        err = normalize(err - math.pi) if abs(err) > math.pi / 2 else err # de frente o de cola, el que esté más cerca
+        self.align = float(np.clip(self.p.turn_gain * err, -self.p.max_turn, self.p.max_turn))
+        if not inside and abs(err) > self.p.narrow_align and len(idx) and along[idx[0]] < self.p.body_front + 0.05: return 0.0, 0.0
+
+        rel = seg[0] - (x, y)
+        if not inside and rel @ u > self.p.narrow_line: # lejos de la entrada: por el camino
+            a = normalize(math.atan2(ay - y, ax - x) - yaw)
+            return self.p.narrow_speed * math.cos(a), self.p.narrow_speed * math.sin(a)
+
+        e = float((rel if not inside else np.array([ax - x, ay - y])) @ n) # corrido de la línea del paso
+        if not inside and abs(e) > self.p.narrow_center: v = n * math.copysign(min(self.p.narrow_speed, max(0.05, 2 * abs(e))), e)
+        else: v = u * self.p.narrow_speed + n * float(np.clip(2 * e, -0.05, 0.05))
+        c, s = math.cos(yaw), math.sin(yaw)
+
+        return float(v @ (c, s)), float(v @ (-s, c))
+
+    def _clear_box(self, vx, vy):
+        """
+        Como _clear_ahead, con el rectángulo del chasis (body_front adelante, body_rear atrás, body_side + narrow_margin a cada lado) en vez del círculo:
+        en un paso angosto lo que tiene al costado está a pocos cm y solo frena si se acerca. Avanzando d, un punto queda en pts - d u (frame del robot):
+        entra al rectángulo en d_in y sale en d_out (por cada eje, entre sus dos lados).
+        """
+        v = math.hypot(vx, vy)
+        if v < 1e-3 or not len(self.near): return True
+
+        u = np.array([vx, vy]) / v
+        far = np.hypot(*self.near.T) > self.p.self_radius # lo más cerca es el propio robot
+        pts = self.near[far]
+        reach = np.where(self.is_wall[far], self.p.wall_stop, self.p.stop_margin + self.p.stop_time * v)
+        side = self.p.body_side + self.p.narrow_margin
+        lo, hi = np.array([-self.p.body_rear, -side]), np.array([self.p.body_front, side])
+        step = np.where(np.abs(u) < 1e-9, 1e-9, u)
+        t1, t2 = (pts - hi) / step, (pts - lo) / step
+        d_in, d_out = np.minimum(t1, t2).max(axis=1), np.maximum(t1, t2).min(axis=1)
+        blocking = (pts @ u > 0) & (d_in <= d_out) & (d_out > 0) & (d_in < reach)
+        if blocking.any(): self.blocker = pts[blocking][np.argmin(d_in[blocking])] # para el log: qué lo frenó
+
+        return not blocking.any()
+
     def _go(self, x, y, yaw, goal, t, dt, final=False):
         """
         Velocidad (vx, vy) en el frame del robot para avanzar hacia goal por el camino más corto. None si no hay camino o estuvo tapado demasiado.
@@ -402,15 +671,33 @@ class Mission:
         if route is None: return None
 
         route.append(goal)
+        cmd = self._narrow(x, y, yaw, route)
+        if cmd is None: self.narrow_blocked = 0.0 # tapado en total en este paso angosto: frenar y alejarse alternan
+        elif self._clear_box(*cmd):
+            self.blocked_since = None
+            return cmd
+        else:
+            self.narrow_blocked += dt
+            if self.narrow_blocked > self.p.narrow_blocked:
+                # No lo puede cruzar (más angosto de lo que dice el mapa, mal alineado): se cierra ese paso y se replanea por otro lado, como antes de
+                # poder pasar por pasos angostos
+                i, j = self.grid.to_cell(*np.asarray(self.passage).T)
+                self.closed[i, j] = True
+                self.closed = ndimage.binary_dilation(self.closed, iterations=2) & (self.clear < self.p.body_radius + self.p.drivable_margin)
+                self.narrow_blocked = 0.0
+                self.log.append(f'no paso por el paso angosto en ({x:.2f}, {y:.2f}): lo cierro')
+                self._set_obstacles(self.obstacles)
+
+                return 0.0, 0.0
+
         dist = math.hypot(goal[0] - x, goal[1] - y)
-        # Frena al llegar (speed_gain por metro que falta). Volviendo, si no se acerca (zona muerta de los motores) pide cada vez más: return_ramp m/s por
-        # segundo sin acercarse 1 cm
-        v = min(self.p.max_speed, self.p.speed_gain * dist + (self.p.return_min_speed + self.p.return_ramp * (t - self.closest[1]) if final else self.p.min_speed))
+        # Buscando, frena al llegar (speed_gain por metro que falta). Volviendo, a max_speed hasta el /done
+        v = self.p.max_speed if final else min(self.p.max_speed, self.p.speed_gain * dist + self.p.min_speed)
 
         # Apunta adelante sobre el camino; si la recta hasta ahí pasa pegada a una pared o a un obstáculo (una esquina, una caja), prueba más cerca:
         # el camino va lejos de las paredes, así que su próximo tramo suele estar libre.
         margin = min(self.p.robot_radius, float(self._clear_at(x, y))) - 0.01
-        for distance in (self.p.lookahead, self.p.lookahead_short, self.p.lookahead_min):
+        for distance in ((self.p.lookahead, self.p.lookahead_short, self.p.lookahead_min) if cmd is None else ()): # tapado en el paso angosto: no prueba otra cosa
             ax, ay = lookahead_point(route, x, y, distance)
             s = np.linspace(0.2, 1.0, 5)
             if distance > self.p.lookahead_min and self._clear_at(x + s * (ax - x), y + s * (ay - y)).min() < margin: continue
@@ -476,6 +763,18 @@ class Navigator(Node):
         self.lookahead = p['lookahead']
         self.lookahead_short = p['lookahead_short']
         self.lookahead_min = p['lookahead_min']
+        self.body_front = p['body_front']
+        self.body_rear = p['body_rear']
+        self.body_side = p['body_side']
+        self.narrow_side = p['narrow_side']
+        self.narrow_penalty = p['narrow_penalty']
+        self.narrow_ahead = p['narrow_ahead']
+        self.narrow_align = p['narrow_align']
+        self.narrow_speed = p['narrow_speed']
+        self.narrow_margin = p['narrow_margin']
+        self.narrow_blocked = p['narrow_blocked']
+        self.narrow_line = p['narrow_line']
+        self.narrow_center = p['narrow_center']
 
         # Frenado, obstáculos y destrabe
         self.wall_tolerance = p['wall_tolerance']
@@ -496,10 +795,20 @@ class Navigator(Node):
         self.goal_tolerance = p['goal_tolerance']
         self.pending_fraction = p['pending_fraction']
         self.pending_min = int(p['pending_min'])
+        self.seen_margin = p['seen_margin']
 
         # Candidatos
+        self.detect_jump = p['detect_jump']
+        self.detect_tolerance = p['detect_tolerance']
+        self.detect_points = int(p['detect_points'])
+        self.detect_iterations = int(p['detect_iterations'])
+        self.face_min = p['face_min']
+        self.face_max = p['face_max']
         self.candidate_scans = int(p['candidate_scans'])
-        self.candidate_size = p['candidate_size']
+        self.detect_match = p['detect_match']
+        self.detect_keep = p['detect_keep']
+        self.glimpse_scans = int(p['glimpse_scans'])
+        self.glimpse_size = p['glimpse_size']
         self.candidate_merge = p['candidate_merge']
         self.route_distance = p['route_distance']
         self.turning_rate = p['turning_rate']
@@ -513,6 +822,8 @@ class Navigator(Node):
         self.camera_fov = p['camera_fov']
         self.view_fraction = p['view_fraction']
         self.approach = p['approach']
+        self.look_range = p['look_range']
+        self.look_margin = p['look_margin']
         self.match_radius = p['match_radius']
         self.clear_time = p['clear_time']
         self.watch_time = p['watch_time']
@@ -524,10 +835,6 @@ class Navigator(Node):
         self.return_pace = p['return_pace']
         self.return_margin = p['return_margin']
         self.start_tolerance = p['start_tolerance']
-        self.start_radius = p['start_radius']
-        self.start_stall = p['start_stall']
-        self.return_min_speed = p['return_min_speed']
-        self.return_ramp = p['return_ramp']
         self.return_max_blocked = p['return_max_blocked']
 
         # Nodo
@@ -659,14 +966,14 @@ class Navigator(Node):
                     f'({mx:.2f}, {my:.2f}) del mapa, a {float(self.board.distance(mx, my)):.2f} m de una pared del mapa; desde t={self.mission.blocked_since:.0f} s',
                     throttle_duration_sec=1.0)
 
-            cmd = Twist()
-            cmd.linear.x, cmd.linear.y, cmd.angular.z = float(vx), float(vy), float(w)
-            self.cmd_pub.publish(cmd)
-
-            if done:
+            if done: # primero /done, con las ruedas adentro; después el freno
                 self.done_pub.publish(Empty())
                 self.finished = True
                 self.get_logger().info(f'/done en ({pose[0]:.2f}, {pose[1]:.2f}), t={t:.0f} s')
+
+            cmd = Twist()
+            cmd.linear.x, cmd.linear.y, cmd.angular.z = float(vx), float(vy), float(w)
+            self.cmd_pub.publish(cmd)
         except Exception as e:
             self.cmd_pub.publish(Twist())
             self.get_logger().error(f'control: {e!r}', throttle_duration_sec=1.0)

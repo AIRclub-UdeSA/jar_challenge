@@ -88,13 +88,35 @@ def test_clusterer_uses_median():
         x, y = 1.0 + rng.normal(0, 0.03), 2.0 + rng.normal(0, 0.03)
         if k % 10 == 0:
             x += 0.25  # observación mala (el robot giraba)
-        g = a.add(x, y, 0.01 * k, 0.0)
+        g = a.add(x, y, 30)
     assert len(a.groups) == 1
     cx, cy = a.center(g)
     assert math.hypot(cx - 1.0, cy - 2.0) < 0.03
-    assert a.ready(g, NODO.observaciones_min, NODO.dispersion_max, NODO.base_min)
-    a.add(3.0, 3.0, 0.0, 0.0)
-    assert len(a.groups) == 2 and not a.ready(a.groups[1], NODO.observaciones_min, NODO.dispersion_max, NODO.base_min)
+    assert a.ready(g, NODO.rayos_reporte, NODO.observaciones_min, NODO.dispersion_max)
+    a.add(3.0, 3.0, 30)
+    assert len(a.groups) == 2 and not a.ready(a.groups[1], NODO.rayos_reporte, NODO.observaciones_min, NODO.dispersion_max)
+
+
+def test_report_needs_rays_in_several_scans():
+    """Reporta con rayos_reporte rayos rojos en observaciones_min scans o más, sin importar si el robot se movió; una foto con muchos rayos sola no."""
+    a = DetectionClusterer(NODO.radio_grupo)
+    g = a.add(1.0, 2.0, 10 * NODO.rayos_reporte)
+    ok = lambda: a.ready(g, NODO.rayos_reporte, NODO.observaciones_min, NODO.dispersion_max)
+    for _ in range(NODO.observaciones_min - 2):
+        a.add(1.0, 2.0, 10 * NODO.rayos_reporte)
+    assert not ok() # le falta un scan
+    a.add(1.0, 2.0, 1)
+    assert ok()
+    a = DetectionClusterer(NODO.radio_grupo)
+    for k in range(NODO.observaciones_min + 2):
+        g = a.add(1.0, 2.0, NODO.rayos_reporte // (NODO.observaciones_min + 3)) # pocos rayos (lejos): hacen falta más scans
+    assert not ok()
+    a.add(1.0, 2.0, NODO.rayos_reporte)
+    assert ok()
+    a = DetectionClusterer(NODO.radio_grupo)
+    for k in range(NODO.observaciones_min + 4):
+        g = a.add(1.0 + 0.15 * (k % 3 - 1), 2.0, NODO.rayos_reporte) # tres posiciones a 15 cm: muy disperso
+    assert not ok()
 
 
 def test_segments_split_on_jumps_and_gaps():

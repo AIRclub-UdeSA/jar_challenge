@@ -31,9 +31,9 @@ class NodoEquipo(Node):
         self.procesador_vision = ProcesadorVision(**{k: float(p[k]) for k in UMBRALES})
         self.deskew = p['deskew'] # orden temporal de los rayos, como en el localizer; 0: todos en el instante medio
         self.pared_min = p['pared_min'] # m: un rayo que pegó a esto o menos de una pared del mapa es pared, no caja (0: en una celda de pared)
-        self.observaciones_min = int(p['observaciones_min']) # scans con la caja para reportarla (el doble si el robot no se movió)
+        self.rayos_reporte = int(p['rayos_reporte']) # rayos rojos sumados para reportar una caja
+        self.observaciones_min = int(p['observaciones_min']) # en al menos estos scans
         self.dispersion_max = p['dispersion_max'] # m: grupos más dispersos no se reportan
-        self.base_min = p['base_min'] # m: lo que tiene que moverse el robot mientras la ve (si no, el doble de observaciones)
         self.observaciones_rojo = int(p['observaciones_rojo']) # para avisarle al navegador que ahí hay rojo (/jar/rojo)
         self.desfase_foto_max = p['desfase_foto_max'] # s: sin foto tan cerca del scan, el scan no se usa
 
@@ -121,10 +121,10 @@ class NodoEquipo(Node):
         centros, golpes = (pts @ rot.T + (m.translation.x, m.translation.y) for pts in (centros, golpes))
         centros = centros[self.mapa.distance(golpes[:, 0], golpes[:, 1]) > self.pared_min]
 
-        # Una observación por caja y por scan (la mediana de sus rayos): así ready() cuenta scans y no rayos
+        # Una observación por caja y por scan (la mediana de sus rayos) con cuántos rayos tuvo: ready() pide rayos y scans
         en_scan = DetectionClusterer(self.clusterer.radius)
-        for x, y in centros: en_scan.add(x, y, 0.0, 0.0)
-        for g in en_scan.groups: self.clusterer.add(*en_scan.center(g), m.translation.x, m.translation.y)
+        for x, y in centros: en_scan.add(x, y)
+        for g in en_scan.groups: self.clusterer.add(*en_scan.center(g), len(g['obs']))
 
         self.reportar_listas()
 
@@ -132,12 +132,13 @@ class NodoEquipo(Node):
         """Reporta cada caja que ready() da por buena y no se reportó, mientras queden reportes. Cada reporte gasta uno de los N (§7.2)."""
         for g in self.clusterer.groups:
             if self.reportes >= self.cantidad_victimas: return
-            if g['reported'] or not self.clusterer.ready(g, self.observaciones_min, self.dispersion_max, self.base_min): continue
+            if g['reported'] or not self.clusterer.ready(g, self.rayos_reporte, self.observaciones_min, self.dispersion_max): continue
 
             x, y = self.clusterer.center(g)
             self.pub_victimas.publish(armar_reporte(x, y, self.get_clock().now().to_msg()))
             g['reported'], self.reportes = True, self.reportes + 1
-            self.get_logger().info(f'víctima {self.reportes}/{self.cantidad_victimas} en ({x:.2f}, {y:.2f}): {len(g["obs"])} observaciones')
+            self.get_logger().info(f'víctima {self.reportes}/{self.cantidad_victimas} en ({x:.2f}, {y:.2f}): {len(g["obs"])} observaciones, '
+                                   f'{sum(o[2] for o in g["obs"])} rayos rojos')
 
     def publicar_rojo(self):
         """

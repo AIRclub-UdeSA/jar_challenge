@@ -31,9 +31,9 @@ nodo_equipo:
 
     # Cuándo reportar (cada reporte gasta uno de los N)
     radio_grupo: 0.35               # m: una detección a menos de esto del centro de un grupo es esa caja
-    observaciones_min: 10           # scans con la caja para reportarla (el doble si el robot no se movió); en el bag, con 10 o 15 los reportes quedan a < 4 cm
+    rayos_reporte: 100              # rayos rojos sumados para reportar una caja; en el bag se juntan en 0.8 s y los reportes quedan a < 6 cm (juez: 100 puntos a 0.25 m)
+    observaciones_min: 3            # en al menos estos scans: una foto mala sola no alcanza
     dispersion_max: 0.08            # m: grupos más dispersos (MAD de sus detecciones) no se reportan
-    base_min: 0.20                  # m que se tiene que mover el robot mientras la ve; si no, el doble de observaciones
     observaciones_rojo: 2           # con esto, el grupo sin reportar va a /jar/rojo: el navegador sigue mirando ese candidato
 
 localizer:
@@ -94,7 +94,7 @@ navigator:
     max_turn: 1.0             # rad/s
     turn_lead: 0.3            # s: girando mientras avanza, se pide la velocidad para el rumbo que va a tener (los motores tardan); calibrar en pista
     turn_gain: 1.5            # rad/s por rad de error al girar hacia un candidato
-    speed_gain: 0.8           # m/s por m que falta a la meta: frena al llegar
+    speed_gain: 0.8           # m/s por m que falta a una meta de búsqueda: frena al llegar (volviendo va a max_speed)
     min_speed: 0.08           # m/s: lo mínimo que pide yendo a una meta
 
     # Cuerpo y camino
@@ -110,6 +110,20 @@ navigator:
     lookahead: 0.35           # m: punto del camino al que apunta (pure pursuit)
     lookahead_short: 0.2      # m: si la recta al de lookahead pasa pegada a una pared u obstáculo (una esquina), prueba con este
     lookahead_min: 0.08       # m: y si no, con este, sin revisar la recta
+
+    # Paso angosto (una caja en el medio de un pasillo deja ~0.33 m a cada lado: el chasis, 0.20 x 0.30, entra alineado con el paso)
+    body_front: 0.12          # m: el chasis es un rectángulo: hasta acá adelante del centro (URDF del X3: 0.119)
+    body_rear: 0.18           # m: hasta acá atrás (URDF: 0.181)
+    body_side: 0.10           # m: hasta acá a cada lado (URDF: 0.0997)
+    narrow_side: 0.13         # m: por un paso angosto el centro pasa a esto de lo que tiene al costado (body_side + 3 cm)
+    narrow_penalty: 30.0      # costo extra de una celda angosta (a menos de body_radius + drivable_margin): solo si no hay otro camino razonable
+    narrow_ahead: 0.8         # m de camino adelante en los que busca un paso angosto, para alinearse antes de entrar (afuera hay lugar para girar)
+    narrow_align: 0.15        # rad: más desalineado que esto no entra; gira en el lugar
+    narrow_speed: 0.15        # m/s por el paso angosto
+    narrow_margin: 0.01       # m: al costado del rectángulo del chasis, para frenar en el paso angosto (una pared paralela no frena)
+    narrow_blocked: 3.0       # s tapado en un paso angosto antes de cerrarlo y buscar otro camino
+    narrow_line: 0.5          # m antes de la entrada en los que se pone en la línea del paso (el chasis entero queda afuera)
+    narrow_center: 0.02       # m: corrido más que esto de la línea del paso, se centra de costado antes de entrar
 
     # Frenado, obstáculos y destrabe
     wall_tolerance: 0.15      # m: un punto del lidar a menos de esto de una pared del mapa es esa pared (error de pose y paredes reales corridas)
@@ -129,14 +143,24 @@ navigator:
     tour_coverage: 0.98       # fracción del laberinto que tienen que ver los puntos de paso
     goal_tolerance: 0.4       # m: pasó por un punto de paso (el lidar ve 360°: no hace falta llegar justo)
     pending_fraction: 0.05    # un punto de paso con menos de esto sin ver (de lo que le toca) se saltea
-    pending_min: 8            # y al menos estas celdas
+    pending_min: 8            # y al menos estas celdas (terminados los puntos de paso, va a los rincones sin ver de este tamaño)
+    seen_margin: 0.10         # m: una celda cuenta como vista con lo visible alrededor hasta acá (por una rendija, una caja no se reconoce)
 
-    # Candidatos (lo que el lidar ve fuera del mapa, del tamaño de una caja)
-    candidate_scans: 3        # scans que lo tienen que ver
-    candidate_size: 0.6       # m: una mancha más grande es una pared corrida u otro objeto
-    candidate_merge: 0.35     # m: una mancha más cerca que esto de un candidato es el mismo
+    # Candidatos (cajas que el lidar reconoce por su forma: detect_boxes, con RANSAC)
+    detect_jump: 0.10         # m: un salto mayor de distancia entre rayos vecinos separa dos cosas
+    detect_tolerance: 0.025   # m: un punto a menos de esto de una recta es de esa recta
+    detect_points: 6          # puntos mínimos de una recta (una cara de 0.25 m a 4 m tiene ~11 con rayos cada 0.33°)
+    detect_iterations: 40     # rectas que prueba RANSAC por vuelta
+    face_min: 0.12            # m: la cara más larga de una caja mide al menos esto (las del bag, 0.18)
+    face_max: 0.32            # m: y no más (en el simulador, 0.25); más larga y fuera del mapa es una pared corrida
+    candidate_scans: 1        # scans que la tienen que ver: al pasar, muchas cajas se ven enteras en uno solo; lo que no es lo descartan el lidar y la cámara
+    detect_match: 0.10        # m: con el centro a menos de esto de un scan al otro
+    detect_keep: 1.0          # s que espera el segundo scan
+    glimpse_scans: 3          # vistazos (lo que asoma pocos puntos para detect_boxes): scans que ven algo fuera del mapa en la misma celda
+    glimpse_size: 0.6         # m: una mancha de vistazos más grande es una pared corrida u otro objeto
+    candidate_merge: 0.35     # m: una caja más cerca que esto de un candidato es el mismo
     route_distance: 0.3       # m: más lejos de donde anda el robot, es algo afuera del laberinto
-    turning_rate: 0.3         # rad/s: girando más rápido no se anotan candidatos ni fantasmas (scan y pose desfasados)
+    turning_rate: 0.3         # rad/s: girando más rápido no se descartan fantasmas (scan y pose desfasados)
     confirm_range: 2.5        # m: hasta acá el lidar confirma que el candidato sigue ahí
     confirm_radius: 0.25      # m: el lidar ve algo a menos de esto del candidato
     confirm_misses: 5         # ciclos seguidos sin verlo: era un fantasma
@@ -147,6 +171,8 @@ navigator:
     camera_fov: 1.06          # rad: 61° de la cámara
     view_fraction: 0.8        # parte central de la foto en la que un candidato cuenta como en cuadro
     approach: 0.6             # m: hasta acá se acerca a un candidato; después solo lo mira
+    look_range: 3.0           # m: viéndolo entero a menos de esto (camera_range), no se acerca: lo mira desde donde está (acercándose, el camino podía rodear una pared y perderlo)
+    look_margin: 0.12         # m: las esquinas de la caja a la vista: entera, centro y las 4; media (para contar tiempo en cuadro), centro y 2 (caja de 0.25)
     match_radius: 0.4         # m: un reporte o un grupo rojo a menos de esto de un candidato es ese candidato
     clear_time: 1.0           # s en cuadro sin que la percepción vea rojo cerca (/jar/rojo) para descartar un candidato
     watch_time: 3.5           # s en cuadro, moviéndose, para dejar un candidato con rojo que no llega a reportarse (la percepción decide en ~1.5 s)
@@ -157,9 +183,5 @@ navigator:
     time_limit: 560.0         # s desde /map para estar de vuelta (la corrida se corta a los 600)
     return_pace: 0.5          # para estimar la vuelta se supone esta fracción de max_speed
     return_margin: 15.0       # s de margen sobre esa estimación
-    start_tolerance: 0.20     # m: /done con el centro de las cuatro ruedas a menos de esto de la largada (bono: círculo de 0.25 m)
-    start_radius: 0.10        # m: trabado más cerca que esto (zona muerta de los motores), termina igual; la rueda más lejana está a 0.15 m del centro
-    start_stall: 3.0          # s sin acercarse 1 cm para darse por trabado
-    return_min_speed: 0.03    # m/s: lo mínimo que pide volviendo
-    return_ramp: 0.05         # m/s que suma por segundo sin acercarse (zona muerta de los motores)
+    start_tolerance: 0.20     # m: /done apenas la rueda más lejana está a menos de esto de la largada, sin frenar antes (bono: las cuatro en 0.25 m)
     return_max_blocked: 18.0  # s tapado volviendo antes de olvidar los obstáculos anotados (no hay punto que saltear)

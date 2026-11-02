@@ -60,8 +60,11 @@ def first_motion(path):
         p0 = p0 or (p.x, p.y)
         if math.hypot(p.x - p0[0], p.y - p0[1]) > 0.01: return t
 
-def replay(imu=lambda m: m):
-    """(víctimas, distractores, reportes, clusterer) de una pasada del bag por Localizer y NodoEquipo. imu: cambia cada /imu/data (None: no llega)."""
+def replay(imu=lambda m: m, on_scan=None):
+    """
+    (víctimas, distractores, reportes, clusterer) de una pasada del bag por Localizer y NodoEquipo. imu: cambia cada /imu/data (None: no llega).
+    on_scan(scan, tf_buffer, mapa): se llama con cada scan ya localizado.
+    """
     import rclpy
     from geometry_msgs.msg import TransformStamped
     from rclpy.duration import Duration
@@ -105,6 +108,7 @@ def replay(imu=lambda m: m):
                 tr.transform.rotation.z, tr.transform.rotation.w = math.sin(th / 2), math.cos(th / 2)
                 if localizer.pf is not None: node.tf_buffer.set_transform(tr, 'localizer')
                 node.al_recibir_scan(msg)
+                if on_scan and localizer.pf is not None: on_scan(msg, node.tf_buffer, node.mapa)
 
         return victims, np.reshape(boxes['distractores'], (-1, 2)), reports, node.clusterer
     finally:
@@ -134,6 +138,40 @@ def test_no_group_on_the_distractor(run):
     for g in clusterer.groups:
         assert min(math.dist(d, clusterer.center(g)) for d in distractors) > 0.3, f'grupo en un distractor: {clusterer.center(g)}'
 
+def test_lidar_finds_boxes_by_shape():
+    """
+    detect_boxes (navigator) con los scans del robot real: cada caja (las dos rojas y la de otro color, de 0.18 m) sale en varios scans con el centro a
+    menos de 15 cm, y nada lejos de una caja sale como caja (ninguna pared del bag). Asomándose detrás de otra, el centro sale corrido hasta ~0.5 m.
+    """
+    if not (BAG.exists() and (ARENA / 'cajas.yaml').exists()): pytest.skip(f'sin el bag {BAG} o la arena {ARENA}')
+
+    from rclpy.duration import Duration
+    from rclpy.time import Time
+
+    from equipo_jar.localizer import yaw_of
+    from equipo_jar.navigator import detect_boxes
+
+    nav = SimpleNamespace(**yaml.safe_load(PARAMS.read_text())['navigator']['ros__parameters'])
+    rng, found = np.random.default_rng(0), []
+
+    def on_scan(msg, tf, grid):
+        t = Time.from_msg(msg.header.stamp) + Duration(seconds=msg.time_increment * (len(msg.ranges) - 1) / 2)
+        try: tr = tf.lookup_transform('map', msg.header.frame_id, t).transform
+        except Exception: return # como el navigator: sin la TF del instante del scan, no se usa
+
+        r = np.asarray(msg.ranges)
+        a = msg.angle_min + np.arange(len(r)) * msg.angle_increment
+        ok = np.isfinite(r) & (r > nav.self_radius) & (r < nav.lidar_range)
+        th, x, y = yaw_of(tr.rotation), tr.translation.x, tr.translation.y
+        px, py = r[ok] * np.cos(a[ok]), r[ok] * np.sin(a[ok])
+        found.extend(detect_boxes(grid, np.column_stack([x + math.cos(th) * px - math.sin(th) * py, y + math.sin(th) * px + math.cos(th) * py]), x, y, nav, rng))
+
+    victims, distractors, _, _ = replay(on_scan=on_scan)
+    boxes = np.vstack([victims, distractors])
+    d = np.hypot(*(np.asarray(found)[:, None, :] - boxes[None]).transpose(2, 0, 1)) # (detecciones, cajas)
+    assert all(((d.argmin(axis=1) == b) & (d.min(axis=1) < 0.15)).sum() >= nav.candidate_scans for b in range(len(boxes)))
+    assert d.min(axis=1).max() < 0.5
+
 if __name__ == '__main__':
     victims, distractors, reports, clusterer = replay()
     print('víctimas', victims.tolist(), '| distractores', distractors.tolist())
@@ -141,6 +179,6 @@ if __name__ == '__main__':
         c = clusterer.center(g)
         o = np.asarray(g['obs'])
         print(f'grupo ({c[0]:+.3f}, {c[1]:+.3f}): {len(o)} obs, a {min(math.dist(c, v) for v in victims):.3f} m de una víctima, '
-              f'listo {clusterer.ready(g, NODO["observaciones_min"], NODO["dispersion_max"], NODO["base_min"])}, reportado {g["reported"]}')
+              f'listo {clusterer.ready(g, NODO["rayos_reporte"], NODO["observaciones_min"], NODO["dispersion_max"])}, reportado {g["reported"]}')
     for r in reports:
         print(f'reporte ({r[0]:+.3f}, {r[1]:+.3f}): a {min(math.dist(r, v) for v in victims):.3f} m de una víctima')
