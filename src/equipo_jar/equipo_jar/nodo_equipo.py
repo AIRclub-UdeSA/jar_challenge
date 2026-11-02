@@ -22,6 +22,7 @@ Máquina de estados:
 Los reportes los publica juntar_victimas; acá solo se cuentan.
 """
 import math
+import time
 
 import numpy as np
 import rclpy
@@ -81,6 +82,7 @@ class NodoEquipo(Node):
         # abandona ese objetivo (el juez corta la corrida a los 60 s quieto).
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
         self.declare_parameter('distancia_encadenar', 0.3)
+        self.declare_parameter('inspecciones_maximas', 15)
         # Con un objetivo activo, si la pose en el mapa (amcl) no se mueve 0.10 m
         # ni gira 0.3 rad en este tiempo, se abandona: patinando contra una
         # pared /odom marca movimiento y el watchdog de arriba no salta.
@@ -140,6 +142,8 @@ class NodoEquipo(Node):
         self.intentos_vuelta = self.get_parameter('intentos_vuelta').value
         self.tiempo_sin_avance = self.get_parameter('tiempo_sin_avance_s').value
         self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
+        self.inspecciones_maximas = self.get_parameter('inspecciones_maximas').value
+        self.inspecciones_hechas = 0
         self.tiempo_sin_desplazamiento = self.get_parameter('tiempo_sin_desplazamiento_s').value
         self.ancla = None   # (x, y, yaw, t): última pose desde la que hubo desplazamiento
         self.despeje_giro = self.get_parameter('despeje_giro').value
@@ -249,6 +253,7 @@ class NodoEquipo(Node):
             return
         self.mapa = mapa
         self.t_mapa = self.ahora()
+        self.t_mapa_pared = time.monotonic()
         self.get_logger().info(
             f'Mapa recibido: {mapa.info.width}x{mapa.info.height} celdas, '
             f'resolución {mapa.info.resolution:.3f} m')
@@ -330,7 +335,9 @@ class NodoEquipo(Node):
         return self.get_clock().now().nanoseconds * 1e-9
 
     def segundos_de_corrida(self):
-        return 0.0 if self.t_mapa is None else self.ahora() - self.t_mapa
+        # Reloj de pared, como el juez (el límite de 10 min, el bono de 5 y los
+        # 60 s quieto). En el sim el tiempo simulado corre más lento.
+        return 0.0 if self.t_mapa is None else time.monotonic() - self.t_mapa_pared
 
     def pose_robot(self):
         """(x, y, yaw) del robot en `map`, o None si todavía no hay tf."""
@@ -809,6 +816,8 @@ class NodoEquipo(Node):
     # ---------- candidatos ----------
 
     def pendientes(self):
+        if self.inspecciones_hechas >= self.inspecciones_maximas:
+            return []   # con un mapa corrido puede haber muchos candidatos falsos
         return [c for c in self.candidatos
                 if c['estado'] == 'PENDIENTE' and c['n'] >= self.detecciones_candidato
                 and c['inspecciones'] < 2]
@@ -824,6 +833,7 @@ class NodoEquipo(Node):
             return False
         c = min(visibles, key=lambda c: math.hypot(c['x'] - pose[0], c['y'] - pose[1]))
         self.cancelar()   # el objetivo encadenado anterior no tiene que seguir manejando
+        self.inspecciones_hechas += 1
         self.inspeccion = {'c': c, 'fase': 'girar', 't': self.ahora()}
         self.get_logger().info(
             f'Inspeccionando candidato en ({c["x"]:.2f}, {c["y"]:.2f}) desde {self.texto_pose()}')
@@ -876,6 +886,7 @@ class NodoEquipo(Node):
             if c['visitas'] >= 1:
                 continue
             c['visitas'] += 1
+            self.inspecciones_hechas += 1
             p = self.exploracion.punto_de_inspeccion((c['x'], c['y']), pose[:2])
             if p is None:
                 continue
