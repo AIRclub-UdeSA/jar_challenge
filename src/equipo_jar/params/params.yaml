@@ -98,7 +98,7 @@ navigator:
     min_speed: 0.08           # m/s: lo mínimo que pide yendo a una meta
 
     # Cuerpo y camino
-    robot_radius: 0.20        # m: el centro del robot no se acerca más que esto a una pared
+    robot_radius: 0.25        # m: el centro del robot no se acerca más que esto a una pared
     wheel_x: 0.08             # m: centro de las ruedas adelante/atrás del centro del robot (URDF del X3)
     wheel_y: 0.0845           # m: centro de las ruedas a los costados (separación 0.169)
     body_radius: 0.15         # m: el chasis; lo que entre acá adelante es un choque
