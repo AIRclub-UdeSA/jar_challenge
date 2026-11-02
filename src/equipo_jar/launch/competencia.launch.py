@@ -106,24 +106,17 @@ def generate_launch_description():
     #     }.items(),
     # )
 
-    detector = Node(
-        package='deteccion_color',
-        executable='detector',
-        name='detector',
-        output='screen',
-        parameters=[
-            {'use_sim_time': use_sim_time}
-        ],
-    )
-
+    # El nodo `detector` de deteccion_color no se lanza: solo publica la
+    # máscara /mascara_rojo para mirar en RViz y consume CPU que hace falta
+    # para amcl, DWB y detector_scan. detector_scan arma su propia máscara.
     detector_scan = Node(
         package='deteccion_color',
         executable='detector_scan',
         name='detector_scan',
         output='screen',
-        parameters=[
-            {'use_sim_time': use_sim_time}
-        ],
+        # Rangos HSV del rojo en params.yaml: en la arena real hay que
+        # recalibrarlos con la iluminación del lugar.
+        parameters=[params, {'use_sim_time': use_sim_time}],
     )
 
     # Hasta que localizador publique la primera map → odom, este nodo avisa
@@ -258,7 +251,6 @@ def generate_launch_description():
         equipo,
         # Acá se agregan el resto de los nodos del equipo (localización,
         # navegación, percepción...). Todos con el mismo `parameters=[params, ...]`.
-        detector,
         detector_scan,
         detector_obstaculos,
         juntar_victimas,
