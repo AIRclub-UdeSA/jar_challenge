@@ -11,7 +11,7 @@ import time
 
 from lifecycle_msgs.msg import State, Transition
 from lifecycle_msgs.srv import ChangeState, GetState
-import rclpy
+from equipo_jar.ejecucion import main_de
 from rclpy.node import Node
 
 TRANSICION_PARA_ESTADO = {
@@ -94,15 +94,7 @@ class NodoArranque(Node):
 
 
 def main():
-    rclpy.init()
-    nodo = NodoArranque()
-    try:
-        rclpy.spin(nodo)
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
-        pass
-    finally:
-        nodo.destroy_node()
-        rclpy.try_shutdown()
+    main_de(NodoArranque)  # una excepción en un callback no mata el nodo (ver ejecucion.py)
 
 
 if __name__ == '__main__':

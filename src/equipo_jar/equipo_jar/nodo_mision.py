@@ -25,6 +25,7 @@ import traceback
 
 from action_msgs.msg import GoalStatus
 from equipo_jar.cobertura import Cobertura, tiempo_limite_meta
+from equipo_jar.ejecucion import main_de
 from equipo_jar.escape import Cuerpo, DetectorTraba, Escape, puntos_en_robot
 from equipo_jar.evasion import normalizar_angulo
 from equipo_jar.memoria_camara import ROJO_VISTO, SIN_ROJO, SIN_VER
@@ -33,7 +34,6 @@ from geometry_msgs.msg import PointStamped, PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid
 import numpy as np
-import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import (
@@ -46,6 +46,7 @@ from tf2_ros import Buffer, TransformListener
 COBERTURA, INSPECCION, REGRESO = 'COBERTURA', 'INSPECCION', 'REGRESO'
 TOPIC_CONVERGENCIA = '/equipo/amcl_convergido'  # interno: lo escucha nodo_percepcion
 TOPIC_VISTAS = '/equipo/vistas_camara'          # interno: qué miró la cámara (nodo_percepcion)
+SEGUNDOS_CON_ERROR = 2.0  # tanto tiempo fallando en cada ciclo: se resetea (resetear_por_errores)
 
 
 def yaw_de(q):
@@ -103,6 +104,9 @@ class NodoMision(Node):
             p('frente_robot_m').value, p('atras_robot_m').value, p('semiancho_robot_m').value)
 
         self.cobertura = None
+        self.mensaje_mapa = None        # el /map, hasta que paso() arma la cobertura
+        self.ciclos_con_error = 0       # ciclos seguidos que terminaron en excepción
+        self.ciclos_para_resetear = max(1, round(SEGUNDOS_CON_ERROR * p('frecuencia_hz').value))
         self.scan = None
         self.lidar = None
         self.pose = None
@@ -180,8 +184,13 @@ class NodoMision(Node):
     # Callbacks: solo guardan el dato. La lógica va en ciclo().
 
     def al_recibir_mapa(self, mapa):
-        if self.cobertura is not None:
-            return
+        if self.cobertura is None:
+            self.mensaje_mapa = mapa
+
+    def armar_cobertura(self, mapa):
+        """Arma la cobertura con el /map. Va en paso() y no en el callback: /map llega una sola
+        vez, así que si esto falla adentro del callback no hay segunda oportunidad. En paso(), el
+        error lo atrapa ciclo() y se vuelve a intentar en el ciclo siguiente."""
         grilla = np.array(mapa.data, dtype=np.int16).reshape(mapa.info.height, mapa.info.width)
         origen = mapa.info.origin.position
         pose = self.leer_tf(self.frame_mapa, self.frame_robot)
@@ -394,7 +403,18 @@ class NodoMision(Node):
         self.nav.send_goal_async(objetivo).add_done_callback(lambda f: self.al_aceptar(f, num))
 
     def al_aceptar(self, futuro, num):
-        handle = futuro.result()
+        try:
+            handle = futuro.result()
+        except Exception:  # a propósito: cualquier error
+            self.get_logger().error(
+                f'Nav2 no respondió la meta, la trato como rechazada:\n{traceback.format_exc()}',
+                throttle_duration_sec=5.0)
+            handle = None
+        if handle is None:
+            # Como un rechazo: supervisar_meta la suelta y vuelve a planificar en 1 s.
+            if num == self.num_meta:
+                self.meta_rechazada = True
+            return
         if num != self.num_meta:
             if handle.accepted:
                 handle.cancel_goal_async()
@@ -406,8 +426,17 @@ class NodoMision(Node):
         handle.get_result_async().add_done_callback(lambda f: self.al_terminar(f, num))
 
     def al_terminar(self, futuro, num):
-        if num == self.num_meta:
+        if num != self.num_meta:
+            return
+        try:
             self.resultado_meta = futuro.result().status
+        except Exception:  # a propósito: cualquier error
+            # Sin resultado no se sabe si llegó: supervisar_meta la abandona en vez de esperar
+            # el tiempo límite con el robot quieto.
+            self.get_logger().error(
+                f'Nav2 no dio el resultado de la meta:\n{traceback.format_exc()}',
+                throttle_duration_sec=5.0)
+            self.resultado_meta = GoalStatus.STATUS_UNKNOWN
 
     def soltar_meta(self):
         """Cancela la meta actual; lo que Nav2 responda sobre ella ya no cuenta."""
@@ -584,18 +613,49 @@ class NodoMision(Node):
     def ciclo(self):
         """Un error en un ciclo no puede matar el nodo: sin misión, el robot queda parado y se pierde
         el resto de la corrida. Se frena, se loguea (con el traceback, para arreglarlo) y se
-        reintenta en el ciclo siguiente."""
+        reintenta en el ciclo siguiente. Si el error se repite SEGUNDOS_CON_ERROR seguidos, se
+        resetea lo que puede haber quedado inconsistente (resetear_por_errores)."""
         try:
             self.paso()
+            self.ciclos_con_error = 0
         except Exception:  # a propósito: cualquier error
             self.pub_cmd.publish(Twist())
             self.get_logger().error(
                 f'Error en el ciclo de la misión, sigo con el próximo:\n{traceback.format_exc()}',
                 throttle_duration_sec=5.0)
+            self.ciclos_con_error += 1
+            if self.ciclos_con_error >= self.ciclos_para_resetear:
+                self.ciclos_con_error = 0
+                self.resetear_por_errores()
+
+    def resetear_por_errores(self):
+        """Un error que viene del estado se repite en cada ciclo: el nodo sigue vivo pero el robot
+        queda quieto, o con una meta activa avanza a los tirones (Nav2 manda y ciclo() frena) sin
+        que nadie la supervise. Se suelta lo que puede estar inconsistente: la meta (si era de
+        cobertura, a la lista negra, para no volver a elegirla), el escape y la inspección."""
+        self.get_logger().warn(
+            f'{SEGUNDOS_CON_ERROR:.0f} s seguidos con error en el ciclo: suelto la meta, el escape '
+            'y la inspección, y vuelvo a planificar')
+        if self.meta is not None and self.meta[3] == COBERTURA and self.cobertura is not None:
+            self.cobertura.lista_negra.add(self.k_meta)
+        try:
+            self.soltar_meta()
+        except Exception:  # a propósito: si cancelar en Nav2 falla, igual se suelta
+            self.handle_meta = None
+            self.num_meta += 1
+            self.meta = None
+        self.meta_a_retomar = None
+        self.trabas_meta = 0
+        self.escape = None
+        self.t_mirar_hasta = 0.0
+        self.objeto_mirando = None
+        self.traba.reiniciar()
 
     def paso(self):
         if self.cobertura is None:
-            return
+            if self.mensaje_mapa is None:
+                return  # nada antes de /map
+            self.armar_cobertura(self.mensaje_mapa)
         self.pose = self.leer_tf(self.frame_mapa, self.frame_robot)
         if self.pose is None:
             return
@@ -641,20 +701,7 @@ class NodoMision(Node):
 
 
 def main():
-    rclpy.init()
-    nodo = NodoMision()
-    try:
-        rclpy.spin(nodo)
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
-        pass
-    except Exception:
-        # Si la señal de apagado corta el spin a mitad de camino, rclpy tira RCLError: no es un
-        # error de la corrida. Con ROS funcionando sí lo es: que se vea.
-        if rclpy.ok():
-            raise
-    finally:
-        nodo.destroy_node()
-        rclpy.try_shutdown()
+    main_de(NodoMision)  # una excepción en un callback no mata el nodo (ver ejecucion.py)
 
 
 if __name__ == '__main__':

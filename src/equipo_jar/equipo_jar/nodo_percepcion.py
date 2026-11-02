@@ -36,12 +36,10 @@ import traceback
 from array import array
 from dataclasses import fields
 
-import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 import numpy as np
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
@@ -55,6 +53,7 @@ from equipo_jar.deteccion import (
     coinciden, distancia_por_altura, frente_del_lidar, hay_algo_delante, hay_rojo_en_rayos,
     mascara_rojo, mediana_del_tramo, profundidad, rayos_en_la_imagen, tramo_del_lidar,
     yaw_de_cuaternion)
+from equipo_jar.ejecucion import main_de
 from equipo_jar.evasion import normalizar_angulo
 from equipo_jar.geometria import componer, de_robot_a_mapa
 from equipo_jar.mapa import GrillaMapa
@@ -215,7 +214,16 @@ class NodoPercepcion(Node):
         self.scan = scan
 
     def al_recibir_imagen(self, msg):
-        self.imagen = self.puente.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        # Un frame raro (encoding inesperado, datos cortados) no puede dejar sin percepción el
+        # resto de la corrida: se descarta y se sigue con el próximo.
+        try:
+            imagen = self.puente.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        except Exception:  # a propósito: cualquier error (CvBridgeError, TypeError, ...)
+            self.get_logger().error(
+                f'No pude convertir la imagen ({msg.encoding}, {msg.width}x{msg.height}), la '
+                f'descarto:\n{traceback.format_exc()}', throttle_duration_sec=5.0)
+            return
+        self.imagen = imagen
         self.stamp_imagen = msg.header.stamp
 
     def al_recibir_info(self, info):
@@ -534,17 +542,8 @@ class NodoPercepcion(Node):
         self.pub_cajas.publish(msg)
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    nodo = NodoPercepcion()
-    try:
-        rclpy.spin(nodo)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        nodo.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+def main():
+    main_de(NodoPercepcion)  # una excepción en un callback no mata el nodo (ver ejecucion.py)
 
 
 if __name__ == '__main__':

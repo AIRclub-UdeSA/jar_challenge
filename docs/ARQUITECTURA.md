@@ -129,6 +129,24 @@ fantasmas, pero también cajas contra una pared, y el reglamento no dice que no 
 **Pendiente:** cuando AMCL se pierde, se lo podría reinicializar por `/initialpose` con la pose
 del respaldo (es tema de localización).
 
+### Errores durante la corrida
+
+El reglamento no deja reiniciar el software (§11.4): un nodo que se muere queda muerto hasta el
+final. Por eso los cuatro nodos (`nodo_mision`, `nodo_percepcion`, `nodo_pose_inicial`,
+`nodo_arranque`) corren con `ejecucion.correr()`: si una excepción sale de cualquier callback
+(suscripción, timer, servicio o future), se loguea con su traceback y se vuelve a girar con el
+mismo nodo, que conserva su estado. Lo que se pierde es el mensaje de ese callback, así que los
+que importan se manejan además en el nodo:
+
+- **`/map` en misión:** el callback solo guarda el mensaje y `paso()` arma la cobertura. `/map`
+  llega una sola vez: si fallara en el callback, no habría otra oportunidad. Si falla en `paso()`,
+  se reintenta en el ciclo siguiente.
+- **Imagen en percepción:** un frame que `cv_bridge` no puede convertir se descarta.
+- **Futures de Nav2:** si la meta no tiene respuesta, cuenta como rechazada (se reintenta en 1 s);
+  si no tiene resultado, se abandona en vez de esperar el tiempo límite.
+- **Error repetido en misión:** si `ciclo()` falla 2 s seguidos, se sueltan la meta (si era de
+  cobertura, a la lista negra), el escape y la inspección, y se vuelve a planificar.
+
 ## 1. Módulos
 
 La misión (§1 del reglamento) se parte en cuatro problemas casi independientes:

@@ -17,16 +17,15 @@ quedó corrida esos 0,29 m hasta que el robot avanzó; con esto, se corrige ante
 """
 import math
 
-import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener
 
+from equipo_jar.ejecucion import main_de
 from equipo_jar.localizacion import covarianza_pose_inicial, cuaternion_de_yaw
 
 # /map lo publica el juez con esta QoS (docs/QOS.md).
@@ -103,17 +102,8 @@ class NodoPoseInicial(Node):
         return msg
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    nodo = NodoPoseInicial()
-    try:
-        rclpy.spin(nodo)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        nodo.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+def main():
+    main_de(NodoPoseInicial)  # una excepción en un callback no mata el nodo (ver ejecucion.py)
 
 
 if __name__ == '__main__':
