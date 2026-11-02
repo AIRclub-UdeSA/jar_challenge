@@ -175,7 +175,11 @@ nodo_mision:
     radio_paso_m: 0.17              # por dónde puede pasar el centro del robot: igual al radio de Nav2
     despeje_meta_m: 0.30            # distancia mínima a un obstáculo de cada meta (m)
     tiempo_regreso_s: 480.0         # a los cuántos segundos se deja de explorar y se vuelve
-    tiempo_max_meta_s: 45.0         # más que esto (s) en una meta: se abandona
+    # Tiempo para llegar a una meta: max(tiempo_max_meta_s, camino / velocidad_min_meta_mps); más
+    # que eso, se abandona. Por camino el robot avanza 0,14 m/s de mediana (tandas del 1/11): 45 s
+    # fijos cortaban metas de 8 a 12 m mientras iba llegando.
+    tiempo_max_meta_s: 45.0         # mínimo (s), también si no se sabe el largo del camino
+    velocidad_min_meta_mps: 0.10    # más lento que esto (m/s) en promedio: algo anda mal
     espera_nav2_s: 25.0             # antes de esto (s) desde el mapa no se considera traba
     distancia_convergencia_m: 0.6   # hay que moverse esto (m) para que AMCL converja...
     espera_convergencia_s: 8.0      # ...y esperar esto (s) antes de confiar en la pose (también percepción)

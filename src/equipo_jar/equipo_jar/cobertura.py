@@ -18,6 +18,18 @@ PASO_GRILLA = 2             # el Dijkstra usa una celda de cada dos: alcanza y e
 SECTORES_VISTA = 8          # un objeto se confirma visto desde dos de estos sectores
 
 
+def tiempo_limite_meta(distancia_m, minimo_s, velocidad_mps):
+    """Cuánto se le da al robot para llegar a una meta que está a `distancia_m` de camino.
+
+    Lo que tardaría a `velocidad_mps`, pero nunca menos que `minimo_s`. Un límite fijo cortaba las
+    metas lejanas mientras el robot iba llegando: en las tandas del 1/11, las 13 metas abandonadas
+    a los 45 s estaban a 8-12 m y habían avanzado 7-8 m. Sin distancia conocida, `minimo_s`.
+    """
+    if distancia_m is None or not math.isfinite(distancia_m) or velocidad_mps <= 0:
+        return minimo_s
+    return max(minimo_s, distancia_m / velocidad_mps)
+
+
 class Cobertura:
     def __init__(self, grilla, resolucion, origen_x, origen_y, largada, radio_paso_m,
                  despeje_meta_m, alcance_vista_m=3.0, alcance_vista_fino_m=1.8,
@@ -213,6 +225,13 @@ class Cobertura:
                         distancias[(ni, nj)] = nueva
                         heapq.heappush(cola, (nueva, (ni, nj)))
         return distancias
+
+    def distancia_a(self, distancias, x, y):
+        """Largo del camino (m) hasta (x, y), según lo que dio distancias_desde(); None si no se
+        llega. Sirve para las metas que eligen meta_cobertura y meta_inspeccion, que caen en
+        celdas de la grilla del Dijkstra."""
+        i, j = self.celda(x, y)
+        return distancias.get((i - i % PASO_GRILLA, j - j % PASO_GRILLA))
 
     def meta_inspeccion(self, cx, cy, distancias):
         """Punto desde donde mirar el objeto (cx, cy): (x, y, yaw) o None si no hay ninguno."""
