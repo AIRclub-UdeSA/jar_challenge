@@ -19,6 +19,7 @@ Argumentos:
                  false: 5 s después del primer /scan
   libre          true: el juez no corta por tiempo ni por robot quieto (para teleoperar)
   evasor         false: no levanta el evasor, para teleoperar
+  rviz_gpu       true: RViz dibuja con la placa de video (con la Intel se colgaba)
   cloud_decimation  1 de cada N píxeles en la nube de profundidad del simulador (4 por defecto).
                  El equipo no la usa, pero el simulador la arma igual y era lo más caro después de
                  Gazebo. Con 1 queda como en el robot.
@@ -91,6 +92,10 @@ def armar(context):
             package='rviz2', executable='rviz2', name='rviz2', output='log',
             arguments=['-d', str(RAIZ / 'dev' / 'equipo.rviz')],
             parameters=[{'use_sim_time': True}],
+            # RViz dibuja con OpenGL por software. Con el driver de la placa Intel (Mesa) RViz se colgaba
+            # a los pocos segundos de recibir datos; por software anda y usa ~10 % de CPU.
+            # rviz_gpu:=true vuelve a usar la placa.
+            additional_env={'LIBGL_ALWAYS_SOFTWARE': '0' if es_true(context, 'rviz_gpu') else '1'},
         ))
 
     if es_true(context, 'equipo'):
@@ -110,7 +115,7 @@ def generate_launch_description():
         ('motion_profile', 'ideal'), ('motion_bias', 'false'),
         ('gui', 'false'), ('rviz', 'true'), ('equipo', 'true'),
         ('manual', 'true'), ('libre', 'true'), ('evasor', 'true'),
-        ('cloud_decimation', '4'),
+        ('cloud_decimation', '4'), ('rviz_gpu', 'false'),
     ]
     return LaunchDescription(
         [DeclareLaunchArgument(nombre, default_value=valor) for nombre, valor in argumentos]

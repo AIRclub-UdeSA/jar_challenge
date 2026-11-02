@@ -42,12 +42,19 @@ localizador:
     piso_probabilidad: 5.0          # (0-100) aporte mínimo de cada punto del scan al peso
     actualizar_distancia_min: 0.05  # m: no corregir si el robot casi no se movió
     actualizar_angulo_min: 0.05     # rad
-    umbral_calidad: 30.0            # (0-100) campo mínimo para contar un punto como "sobre pared"
+    umbral_calidad: 85.0            # (0-100) campo mínimo para contar un punto como "sobre pared"
     periodo_debug: 0.5              # s entre publicaciones de partículas y caminos
     max_poses_camino: 1000
     usar_imu: true                  # giro del modelo de movimiento: IMU (true) o ruedas (false)
     imu_vencimiento: 0.5            # s sin IMU antes de volver a las ruedas
     escala_avance: 1.0              # avance real / avance según /odom (calibrar con el bag)
+
+detector_obstaculos:
+  ros__parameters:
+    # (0-100) Un punto del scan es "no mapeado" si el campo de verosimilitud ahí es menor que
+    # esto. 80 = a más de ~0,13 m de una pared (con sigma_sensor 0,2). Con 25 (~0,33 m), en el
+    # bag del mini laberinto ninguna caja contaba: todas estaban a menos de 33 cm de una pared.
+    umbral_probabilidad: 80.0
 
 gestor_victimas:
   ros__parameters:

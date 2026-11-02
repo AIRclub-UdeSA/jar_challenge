@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import rclpy
 import tf2_ros
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
@@ -118,6 +119,12 @@ class DetectorScanColor(Node):
         self.publisher_ = self.create_publisher(
             LaserScan, 'scan_rojo', 10
         )
+        # Máscara de rojo como imagen, para calibrar el HSV en RViz. Solo se arma si alguien
+        # está suscripto, así que en la corrida no cuesta nada.
+        self.pub_mascara = self.create_publisher(Image, 'mascara_rojo', 10)
+        # Los umbrales de color y giro_maximo se pueden cambiar en vivo para calibrar, p. ej.:
+        #   ros2 param set /detector_scan saturacion_min 90.0
+        self.add_on_set_parameters_callback(self.cambiar_parametros)
 
     def recibir_imagen(self, msg: Image):
         # Se guarda el mensaje crudo y se convierte recién en recibir_scan: la cámara publica a
@@ -203,6 +210,10 @@ class DetectorScanColor(Node):
             self.saturacion_min,
             self.valor_min
             )
+        if self.pub_mascara.get_subscription_count() > 0:
+            imagen_mascara = self.puente.cv2_to_imgmsg(mask, encoding='mono8')
+            imagen_mascara.header = self.ultima_imagen.header
+            self.pub_mascara.publish(imagen_mascara)
 
         # 9)
         idx_dentro_imagen = np.where(dentro_de_imagen)[0]
@@ -216,6 +227,15 @@ class DetectorScanColor(Node):
 
         # 11)
         self.publicar_rojo(msg, rangos_filtrados)
+
+    def cambiar_parametros(self, parametros):
+        calibrables = ('hue_rojo_bajo_1', 'hue_rojo_alto_1', 'hue_rojo_bajo_2',
+                       'hue_rojo_alto_2', 'saturacion_min', 'valor_min', 'giro_maximo')
+        for p in parametros:
+            if p.name in calibrables:
+                setattr(self, p.name, float(p.value))
+                self.get_logger().info(f'{p.name} = {p.value}')
+        return SetParametersResult(successful=True)
 
     def girando_rapido(self) -> bool:
         return (self.giro_maximo > 0 and self.giro.listo
