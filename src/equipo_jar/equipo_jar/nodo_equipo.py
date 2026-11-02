@@ -83,14 +83,17 @@ class NodoEquipo(Node):
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
         self.declare_parameter('distancia_encadenar', 0.3)
         self.declare_parameter('inspecciones_maximas', 15)
+        self.declare_parameter('recoveries_para_cortar', 2)   # 0 = nunca se corta
+        # Con 1 detección roja se sigue mirando hasta este tiempo (s).
+        self.declare_parameter('tiempo_mirar_dudoso_s', 2.0)
         # Tope por objetivo: base + por_metro * distancia en línea recta (s).
         self.declare_parameter('tiempo_objetivo_base_s', 20.0)
         self.declare_parameter('tiempo_objetivo_por_metro_s', 6.0)
         # Segunda pasada: solo si faltan víctimas y sobra este tiempo (s).
         self.declare_parameter('margen_segunda_pasada_s', 120.0)
         self.declare_parameter('alcance_segunda_pasada', 1.8)
-        # Con un objetivo activo, si la pose en el mapa (amcl) no se mueve 0.10 m
-        # ni gira 0.3 rad en este tiempo, se abandona: patinando contra una
+        # Con un objetivo activo, si la pose en el mapa (amcl) no se traslada 0.10 m
+        # en este tiempo (girar no cuenta), se abandona: patinando contra una
         # pared /odom marca movimiento y el watchdog de arriba no salta.
         self.declare_parameter('tiempo_sin_desplazamiento_s', 15.0)
         # Giro en el lugar para apuntar la cámara a un candidato.
@@ -150,11 +153,14 @@ class NodoEquipo(Node):
         self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
         self.inspecciones_maximas = self.get_parameter('inspecciones_maximas').value
         self.inspecciones_hechas = 0
+        self.recoveries_para_cortar = self.get_parameter('recoveries_para_cortar').value
+        self.tiempo_mirar_dudoso = self.get_parameter('tiempo_mirar_dudoso_s').value
         self.tiempo_objetivo_base = self.get_parameter('tiempo_objetivo_base_s').value
         self.tiempo_objetivo_por_metro = self.get_parameter('tiempo_objetivo_por_metro_s').value
         self.t_inicio_objetivo = None
         self.tope_objetivo = math.inf
         self.id_objetivo = 0
+        self.cortar_por_recovery = False
         self.margen_segunda_pasada = self.get_parameter('margen_segunda_pasada_s').value
         self.alcance_segunda_pasada = self.get_parameter('alcance_segunda_pasada').value
         self.segunda_pasada_hecha = False
@@ -447,9 +453,19 @@ class NodoEquipo(Node):
         self.ultimo_avance = self.ahora()
         self.ancla = None
         ident = self.id_objetivo
-        self.nav.send_goal_async(meta).add_done_callback(
+        self.cortar_por_recovery = False
+        self.nav.send_goal_async(
+            meta, feedback_callback=lambda fb: self._feedback(ident, fb)).add_done_callback(
             lambda f: self._objetivo_aceptado(ident, f))
         return True
+
+    def _feedback(self, ident, fb):
+        # Los recoveries del BT (Spin, Wait 5 s, BackUp, en ronda) cuestan 20-35 s
+        # y casi nunca destraban: pasado el primero se corta y la misión hace su
+        # destrabe y sigue.
+        if (ident == self.id_objetivo
+                and fb.feedback.number_of_recoveries >= self.recoveries_para_cortar):
+            self.cortar_por_recovery = self.recoveries_para_cortar > 0
 
     def _objetivo_aceptado(self, ident, futuro):
         gh = futuro.result()
@@ -632,6 +648,12 @@ class NodoEquipo(Node):
             self.reintentar_objetivo = False
             self.ir_a(self.objetivo[0], self.objetivo[1], self.yaw_objetivo, nuevo=False)
 
+        if self.navegando and self.cortar_por_recovery:
+            self.get_logger().warn(f'Nav2 entró en recovery en {self.texto_pose()}: se corta')
+            self.cancelar()
+            self.al_terminar_objetivo(False)
+            return
+
         if self.navegando and self.ahora() - self.t_inicio_objetivo > self.tope_objetivo:
             self.get_logger().warn(
                 f'Objetivo sin alcanzar en {self.tope_objetivo:.0f} s, en '
@@ -713,9 +735,9 @@ class NodoEquipo(Node):
         if self.ancla is None:
             self.ancla = (*pose, ahora)
             return False
-        x, y, yaw, t = self.ancla
-        giro = abs(math.atan2(math.sin(pose[2] - yaw), math.cos(pose[2] - yaw)))
-        if math.hypot(pose[0] - x, pose[1] - y) > 0.10 or giro > 0.3:
+        x, y, _, t = self.ancla
+        # Solo traslación: los Spin de los recoveries de Nav2 no son avance.
+        if math.hypot(pose[0] - x, pose[1] - y) > 0.10:
             self.ancla = (*pose, ahora)
             return False
         return ahora - t > self.tiempo_sin_desplazamiento
@@ -751,7 +773,8 @@ class NodoEquipo(Node):
 
     def cerca_del_punto_de_vista(self, pose):
         return (pose is not None and not self.objetivo_es_inspeccion
-                and math.dist(pose[:2], self.objetivo) < self.distancia_encadenar)
+                and math.dist(pose[:2], self.objetivo) < self.distancia_encadenar
+                and self.exploracion.linea_de_vista(pose[:2], self.objetivo))
 
     def localizar(self):
         """Pose inicial con dispersión y actualizaciones de amcl sin moverse."""
@@ -945,7 +968,12 @@ class NodoEquipo(Node):
                     and self.exploracion.linea_de_vista(pose[:2], (c['x'], c['y']))]
         if not visibles:
             return False
-        c = min(visibles, key=lambda c: math.hypot(c['x'] - pose[0], c['y'] - pose[1]))
+        # El que pide menos giro (evita el zig-zag entre candidatos).
+
+        def giro(c):
+            err = math.atan2(c['y'] - pose[1], c['x'] - pose[0]) - pose[2]
+            return abs(math.atan2(math.sin(err), math.cos(err)))
+        c = min(visibles, key=giro)
         self.cancelar()   # el objetivo encadenado anterior no tiene que seguir manejando
         self.inspecciones_hechas += 1
         self.inspeccion = {'c': c, 'fase': 'girar', 't': self.ahora()}
@@ -962,7 +990,7 @@ class NodoEquipo(Node):
         if pose is not None and insp['fase'] == 'girar':
             err = math.atan2(c['y'] - pose[1], c['x'] - pose[0]) - pose[2]
             err = math.atan2(math.sin(err), math.cos(err))
-            if abs(err) > 0.15 and ahora - insp['t'] < self.tiempo_giro:
+            if abs(err) > 0.25 and ahora - insp['t'] < self.tiempo_giro:
                 w = min(self.giro_maximo, max(self.giro_minimo, 1.5 * abs(err)))
                 cmd.angular.z = math.copysign(w, err)
             else:
@@ -974,7 +1002,8 @@ class NodoEquipo(Node):
                 self.terminar_inspeccion('reportado')
             elif c['rojo'] >= 2 and mirando < self.tiempo_mirar + self.espera_reporte:
                 c['estado'] = 'ROJO'   # esperar a que juntar_victimas reporte
-            elif mirando > self.tiempo_mirar and c['rojo'] < 2:
+            elif (mirando > self.tiempo_mirar and c['rojo'] == 0) or (
+                    mirando > self.tiempo_mirar_dudoso and c['rojo'] < 2):
                 c['estado'] = 'DESCARTADO'
                 self.terminar_inspeccion('no es rojo')
             elif mirando > self.tiempo_mirar + self.espera_reporte:
