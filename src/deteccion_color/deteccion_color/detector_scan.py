@@ -1,3 +1,4 @@
+import collections
 import math
 
 import cv2
@@ -112,6 +113,16 @@ class DetectorScanColor(Node):
         self.declare_parameter('hue_rojo_alto_2', 180.0)
         self.declare_parameter('saturacion_min', 120.0)
         self.declare_parameter('valor_min', 80.0)
+        # Erosión de la máscara (en pixeles; 0 = sin erosión): los rayos que
+        # rozan el borde de la caja y siguen hasta la pared de atrás dejan
+        # de contar como rojos.
+        self.declare_parameter('erosion_mascara', 1)
+        # Más lejos que esto, un grado de error de amcl ya corre el punto
+        # más de 6 cm: no se reporta.
+        self.declare_parameter('rango_maximo', 3.5)
+        # Se usa la imagen más cercana al stamp del scan; si la diferencia
+        # pasa este valor (s), el scan se saltea. Negativo: sin chequeo.
+        self.declare_parameter('desfase_maximo_imagen', 0.2)
 
         self.hue_rojo_bajo_1 = self.get_parameter('hue_rojo_bajo_1').value
         self.hue_rojo_alto_1 = self.get_parameter('hue_rojo_alto_1').value
@@ -119,12 +130,19 @@ class DetectorScanColor(Node):
         self.hue_rojo_alto_2 = self.get_parameter('hue_rojo_alto_2').value
         self.saturacion_min = self.get_parameter('saturacion_min').value
         self.valor_min = self.get_parameter('valor_min').value
+        erosion = int(self.get_parameter('erosion_mascara').value)
+        self.nucleo_erosion = (
+            np.ones((2 * erosion + 1, 2 * erosion + 1), np.uint8) if erosion > 0 else None)
+        self.rango_maximo = self.get_parameter('rango_maximo').value
+        self.desfase_maximo = self.get_parameter('desfase_maximo_imagen').value
 
         self.puente = CvBridge()
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.ultima_imagen = None
+        self.imagenes = collections.deque(maxlen=5)   # (stamp en s, mensaje)
+        self.aviso_desfase_mostrado = False
         self.info_camara = None
         self.aviso_tf_mostrado = False
 
@@ -148,7 +166,23 @@ class DetectorScanColor(Node):
         self.publisher_ = self.create_publisher(LaserScan, 'scan_rojo', qos_profile_sensor_data)
 
     def recibir_imagen(self, msg: Image):
-        self.ultima_imagen = self.puente.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        # Se guarda el mensaje y se convierte solo la imagen que se usa.
+        self.ultima_imagen = msg
+        self.imagenes.append((Time.from_msg(msg.header.stamp).nanoseconds * 1e-9, msg))
+
+    def imagen_para(self, scan: LaserScan):
+        """La imagen más cercana al instante del scan, o None si están muy lejos."""
+        t_scan = Time.from_msg(scan.header.stamp).nanoseconds * 1e-9 + scan.scan_time / 2
+        desfase, msg = min(((abs(t - t_scan), m) for t, m in self.imagenes),
+                           key=lambda par: par[0])
+        if 0 <= self.desfase_maximo < desfase:
+            if not self.aviso_desfase_mostrado:
+                self.get_logger().warn(
+                    f'Imagen y scan desfasados {desfase:.2f} s: se saltean esos scans '
+                    '(desfase_maximo_imagen)')
+                self.aviso_desfase_mostrado = True
+            return None
+        return self.puente.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
     def recibir_info_camara(self, msg: CameraInfo):
         # K es la matriz intrínseca 3x3 en fila: [fx 0 cx; 0 fy cy; 0 0 1]
@@ -223,6 +257,10 @@ class DetectorScanColor(Node):
         if self.ultima_imagen is None or self.info_camara is None:
             return
 
+        imagen = self.imagen_para(msg)
+        if imagen is None:
+            return
+
         # 2. Transformada lidar -> cámara
         transform = self.obtener_transform_laser_a_camara(msg.header.frame_id)
         if transform is None:
@@ -242,7 +280,7 @@ class DetectorScanColor(Node):
         validos = (
             np.isfinite(rangos)
             & (rangos >= msg.range_min)
-            & (rangos <= msg.range_max)
+            & (rangos <= min(msg.range_max, self.rango_maximo))
         )
 
         # 6. Proyección de cada punto a la imagen
@@ -258,13 +296,15 @@ class DetectorScanColor(Node):
         dentro_de_imagen = adelante & (u >= 0) & (u < ancho) & (v >= 0) & (v < alto)
 
         # 8. Máscara de rojo de la imagen actual
-        imagen_hsv = cv2.cvtColor(self.ultima_imagen, cv2.COLOR_BGR2HSV)
+        imagen_hsv = cv2.cvtColor(imagen, cv2.COLOR_BGR2HSV)
         mascara = mascara_rojo(
             imagen_hsv,
             self.hue_rojo_bajo_1, self.hue_rojo_alto_1,
             self.hue_rojo_bajo_2, self.hue_rojo_alto_2,
             self.saturacion_min, self.valor_min
         )
+        if self.nucleo_erosion is not None:
+            mascara = cv2.erode(mascara, self.nucleo_erosion)
 
         # 9. Rayos cuyo pixel es rojo (la imagen se indexa [fila, columna] = [v, u])
         es_rojo = np.zeros(len(rangos), dtype=bool)

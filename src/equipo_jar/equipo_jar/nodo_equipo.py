@@ -78,6 +78,7 @@ class NodoEquipo(Node):
         # Si el robot no se mueve en este tiempo con un objetivo activo, se
         # abandona ese objetivo (el juez corta la corrida a los 60 s quieto).
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
+        self.declare_parameter('distancia_encadenar', 0.3)
         # Pose inicial: dispersión (desvío estándar) de la nube de amcl alrededor
         # del origen, y cuándo se la considera convergida.
         self.declare_parameter('dispersion_inicial_xy', 0.3)
@@ -121,6 +122,7 @@ class NodoEquipo(Node):
         self.tolerancia_largada = self.get_parameter('tolerancia_largada').value
         self.intentos_vuelta = self.get_parameter('intentos_vuelta').value
         self.tiempo_sin_avance = self.get_parameter('tiempo_sin_avance_s').value
+        self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
         self.dispersion_xy = self.get_parameter('dispersion_inicial_xy').value
         self.dispersion_yaw = self.get_parameter('dispersion_inicial_yaw').value
         self.sigma_localizado_xy = self.get_parameter('sigma_localizado_xy').value
@@ -531,6 +533,12 @@ class NodoEquipo(Node):
                         self.exploracion.objetivo_terminado(False)
                     else:
                         self.ir_a(*ajustado)
+            elif self.cerca_del_punto_de_vista(pose):
+                # Se da por visitado sin frenar: el próximo objetivo reemplaza
+                # a este en Nav2 y el robot sigue de largo.
+                self.goal_handle = None
+                self.navegando = False
+                self.exploracion.objetivo_terminado(True)
             else:
                 self.revisar_objetivo_activo()
         elif self.estado == VOLVIENDO and not self.navegando:
@@ -538,6 +546,10 @@ class NodoEquipo(Node):
                 self.terminar()
             else:
                 self.ir_a(self.largada[0], self.largada[1], self.largada[2])
+
+    def cerca_del_punto_de_vista(self, pose):
+        return (pose is not None and not self.objetivo_es_inspeccion
+                and math.dist(pose[:2], self.objetivo) < self.distancia_encadenar)
 
     def localizar(self):
         """Pose inicial con dispersión y actualizaciones de amcl sin moverse."""

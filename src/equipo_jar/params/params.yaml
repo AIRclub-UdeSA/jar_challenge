@@ -14,6 +14,7 @@ nodo_equipo:
     tolerancia_largada: 0.15        # m; el bono de vuelta exige <= 0.25 m (§8)
     intentos_vuelta: 3
     tiempo_sin_avance_s: 20.0       # el juez corta la corrida a los 60 s quieto
+    distancia_encadenar: 0.3        # m; a esta distancia de un punto de vista se pasa al próximo
     # Pose inicial: dispersión de amcl alrededor del origen y cuándo convergió.
     dispersion_inicial_xy: 0.3      # m
     dispersion_inicial_yaw: 0.6     # rad
@@ -70,6 +71,9 @@ detector_scan:
     hue_rojo_alto_2: 180.0
     saturacion_min: 120.0
     valor_min: 80.0
+    erosion_mascara: 1              # px; 0 = sin erosión
+    rango_maximo: 3.5               # m; rojo más lejos no cuenta
+    desfase_maximo_imagen: 0.2      # s entre imagen y scan; negativo = sin chequeo
 
 # Candidatos a víctima: objetos que el lidar ve fuera del mapa (cualquier color).
 detector_no_mapeados:
