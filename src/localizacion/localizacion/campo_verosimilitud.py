@@ -36,10 +36,14 @@ class CampoVerosimilitud(Node):
         )
 
     def recibir_mapa(self, msg: OccupancyGrid):
-        """Convierte el OccupancyGrid de /map en un array 2D, calcula el campo
+        """
+        Calcula el campo de verosimilitud a partir de /map.
+
+        Convierte el OccupancyGrid de /map en un array 2D, calcula el campo
         de probabilidad, y lo republica con el mismo header/info que el mapa
         de entrada. No decide nada acá — el cálculo vive en
-        campo_de_probabilidad()."""
+        campo_de_probabilidad().
+        """
         alto = msg.info.height
         ancho = msg.info.width
         grid = np.array(msg.data, dtype=np.int16).reshape((alto, ancho))
@@ -58,6 +62,8 @@ class CampoVerosimilitud(Node):
 
     def campo_de_probabilidad(self, grid: np.ndarray, resolucion: float) -> np.ndarray:
         """
+        Calcula la probabilidad de cada celda a partir del mapa.
+
         TODO: dada la grilla de ocupación (mismo formato que /map: 0 = libre,
         100 = ocupado, -1 = desconocido; grid[fila, columna], fila 0 es la
         esquina inferior izquierda), devolver un array del mismo shape con la

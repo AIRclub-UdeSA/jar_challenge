@@ -5,7 +5,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
-                        QoSReliabilityPolicy, qos_profile_sensor_data)
+                       QoSReliabilityPolicy, qos_profile_sensor_data)
 from rclpy.duration import Duration
 from rclpy.time import Time
 
@@ -18,14 +18,20 @@ from tf2_ros import Buffer, TransformListener
 
 
 def yaw_de_quaternion(q: Quaternion) -> float:
-    """Extrae el ángulo de yaw (rotación en el plano) de un quaternion.
+    """
+    Extrae el yaw de un quaternion.
+
+    Extrae el ángulo de yaw (rotación en el plano) de un quaternion.
     Álgebra de siempre, no es el objetivo de este workshop — la misma
-    cuenta que ya usaste en semana 06."""
+    cuenta que ya usaste en semana 06.
+    """
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
 def agrupar_en_rachas(booleanos: np.ndarray):
     """
+    Agrupa los índices contiguos en rachas.
+
     TODO: agrupar los índices contiguos de un array booleano en "rachas".
 
     Un obstáculo real casi nunca genera un solo punto "no mapeado" suelto:
@@ -76,6 +82,8 @@ def agrupar_en_rachas(booleanos: np.ndarray):
 
 class DetectorObstaculos(Node):
     """
+    Detecta objetos rojos que no están en el mapa.
+
     Toma los puntos rojos de /scan_rojo, los agrupa en objetos (rachas
     contiguas del scan) y publica la coordenada en `map` de cada uno.
 
@@ -143,9 +151,13 @@ class DetectorObstaculos(Node):
         self.get_logger().info('Mapa recibido.')
 
     def obtener_transform_a_map(self, frame_id_scan, instante):
-        """Busca en tf2 la transformada del frame del lidar a `map` en el
+        """
+        Busca la transformada del lidar a `map` en el instante del scan.
+
+        Busca en tf2 la transformada del frame del lidar a `map` en el
         instante del scan (no la última: girando, 0.1 s de desfase corren el
-        punto varios centímetros). None si no está disponible."""
+        punto varios centímetros). None si no está disponible.
+        """
         try:
             return self.tf_buffer.lookup_transform(
                 self.map_frame, frame_id_scan, Time.from_msg(instante),
@@ -159,6 +171,8 @@ class DetectorObstaculos(Node):
 
     def recibir_scan(self, msg: LaserScan):
         """
+        Procesa un scan rojo y publica los objetos no mapeados.
+
         TODO: el corazón del workshop — corre una vez por cada scan que
         llega. Comparar cada punto contra /map y, con los que no
         calzan, armar los objetos "no mapeados".
@@ -263,10 +277,14 @@ class DetectorObstaculos(Node):
     # ---------- publishers ----------
 
     def publicar_scan_filtrado(self, msg: LaserScan, rangos, no_mapeado):
-        """Mismo truco que /scan_rojo en semana 04: una copia del scan de
+        """
+        Publica el scan con solo los puntos no mapeados.
+
+        Mismo truco que /scan_rojo en semana 04: una copia del scan de
         entrada con `inf` (sin retorno) en todos los rangos salvo los "no
         mapeados". Sirve para debug visual en RViz — el resultado que
-        importa de este workshop son los objetos de publicar_objetos()."""
+        importa de este workshop son los objetos de publicar_objetos().
+        """
         salida = LaserScan()
         salida.header = msg.header
         salida.angle_min = msg.angle_min
@@ -280,12 +298,16 @@ class DetectorObstaculos(Node):
         self.pub_scan_no_mapeado.publish(salida)
 
     def publicar_objetos(self, no_mapeado, xs_map, ys_map, instante):
-        """Agrupa no_mapeado en rachas (con agrupar_en_rachas, de arriba),
+        """
+        Agrupa los puntos no mapeados en objetos y los publica.
+
+        Agrupa no_mapeado en rachas (con agrupar_en_rachas, de arriba),
         descarta las muy cortas (ruido), y por cada racha que sobrevive
         promedia sus puntos en `map` para obtener la coordenada del
         objeto — publica esa lista como PoseArray (el dato) y como
         MarkerArray (para verla en RViz sin agregar un display de
-        PoseArray)."""
+        PoseArray).
+        """
         ahora = self.get_clock().now().to_msg()
 
         objetos = PoseArray()

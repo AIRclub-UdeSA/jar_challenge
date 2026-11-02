@@ -37,8 +37,12 @@ def invertir_pose(pose):
 
 
 def componer_poses(pose_a, pose_b):
-    """pose_a * pose_b: aplicar primero b, después a. Se usa para pasar de
-    "map→base" y "odom→base" a "map→odom" (ver publicar_transformada)."""
+    """
+    Compone dos poses 2D (a * b).
+
+    pose_a * pose_b: aplicar primero b, después a. Se usa para pasar de
+    "map→base" y "odom→base" a "map→odom" (ver publicar_transformada).
+    """
     xa, ya, ta = pose_a
     xb, yb, tb = pose_b
     c, s = math.cos(ta), math.sin(ta)
@@ -80,8 +84,8 @@ class Localizador(Node):
         self.declare_parameter('submuestreo_scan', 15)
 
         # Parametros de Escala
-        self.declare_parameter('escala_avance',1.0)
-        self.declare_parameter('escala_giro',1.0)
+        self.declare_parameter('escala_avance', 1.0)
+        self.declare_parameter('escala_giro', 1.0)
 
         self.map_frame = self.get_parameter('map_frame').value
         self.odom_frame = self.get_parameter('odom_frame').value
@@ -97,7 +101,9 @@ class Localizador(Node):
         self.escala_avance = self.get_parameter('escala_avance').value
         self.escala_giro = self.get_parameter('escala_giro').value
 
-        self.get_logger().info(f'Started Localizador with: {self.escala_avance} escala_avance and {self.escala_giro} escala_giro')
+        self.get_logger().info(
+            f'Started Localizador with: {self.escala_avance} escala_avance '
+            f'and {self.escala_giro} escala_giro')
 
         # Estado del filtro: array (num_particulas, 4) con columnas
         # (x, y, theta, peso). Arranca como una nube gaussiana angosta
@@ -131,11 +137,10 @@ class Localizador(Node):
         )
         self.create_subscription(OccupancyGrid, 'likelihood_map', self.recibir_campo, qos_mapa)
         # El /scan va best effort (qos_profile_sensor_data, ver semana 03);
-        # /odom y /ground_truth/odom son reliable y van con el default.
+        # /odom es reliable y va con el default.
         self.create_subscription(LaserScan, 'scan', self.recibir_scan,
                                  qos_profile_sensor_data)
         self.create_subscription(Odometry, 'odom', self.recibir_odom, 10)
-        self.create_subscription(Odometry, 'ground_truth/odom', self.recibir_ground_truth, 10)
         # "2D Pose Estimate" de RViz publica acá (semana 08).
         self.create_subscription(
             PoseWithCovarianceStamped, 'initialpose', self.recibir_pose_inicial, 10)
@@ -143,7 +148,6 @@ class Localizador(Node):
         self.pub_particulas = self.create_publisher(PoseArray, 'particlecloud', 10)
         self.pub_camino_odom = self.create_publisher(Path, 'camino_odom', 10)
         self.pub_camino_corregido = self.create_publisher(Path, 'camino_corregido', 10)
-        self.pub_camino_real = self.create_publisher(Path, 'camino_real', 10)
 
         # frame_id=map por consistencia visual en RViz con los otros dos
         # caminos, aunque abajo se le cargan poses crudas de /odom (frame
@@ -154,8 +158,6 @@ class Localizador(Node):
         self.camino_odom_msg.header.frame_id = self.map_frame
         self.camino_corregido_msg = Path()
         self.camino_corregido_msg.header.frame_id = self.map_frame
-        self.camino_real_msg = Path()
-        self.camino_real_msg.header.frame_id = self.map_frame
 
     # ---------- callbacks ----------
     # Notá que acá nos apartamos de la convención de semanas anteriores de
@@ -166,8 +168,12 @@ class Localizador(Node):
     # fiel al algoritmo real.
 
     def recibir_pose_inicial(self, msg: PoseWithCovarianceStamped):
-        """Vuelve a sembrar la nube alrededor de la pose que marcó RViz con
-        "2D Pose Estimate" (misma cuenta que el __init__)."""
+        """
+        Reinicia la nube de partículas en la pose marcada en RViz.
+
+        Vuelve a sembrar la nube alrededor de la pose que marcó RViz con
+        "2D Pose Estimate" (misma cuenta que el __init__).
+        """
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         theta = self.yaw_de_quaternion(msg.pose.pose.orientation)
@@ -186,20 +192,13 @@ class Localizador(Node):
             self.info_mapa = msg.info
             self.get_logger().info('Campo de verosimilitud recibido.')
 
-    def recibir_ground_truth(self, msg: Odometry):
-        """Solo para comparar visualmente en RViz -- Gazebo publica la pose
-        real del robot en `/ground_truth/odom` (mismo frame que `map`, ver
-        README). Nunca se usa dentro del filtro, ni existiría en el robot
-        físico: es una ventaja exclusiva del simulador para verificar qué
-        tan bien está corrigiendo el filtro."""
-        x = msg.pose.pose.position.x
-        y = msg.pose.pose.position.y
-        theta = self.yaw_de_quaternion(msg.pose.pose.orientation)
-        self.acumular_camino(self.camino_real_msg, self.pub_camino_real, x, y, theta)
-
     def recibir_odom(self, msg: Odometry):
-        """Predicción: calcula el desplazamiento y la rotación desde la
-        última odometría y se los pasa a mover_particulas()."""
+        """
+        Paso de predicción con la odometría.
+
+        Predicción: calcula el desplazamiento y la rotación desde la
+        última odometría y se los pasa a mover_particulas().
+        """
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         theta = self.yaw_de_quaternion(msg.pose.pose.orientation)
@@ -216,8 +215,12 @@ class Localizador(Node):
         self.ultimo_odom = (x, y, theta)
 
     def recibir_scan(self, msg: LaserScan):
-        """Corrección: pesa las partículas contra el scan actual, resamplea,
-        estima la pose y publica la transformada map→odom."""
+        """
+        Paso de corrección con el scan.
+
+        Corrección: pesa las partículas contra el scan actual, resamplea,
+        estima la pose y publica la transformada map→odom.
+        """
         self.ultimo_scan = msg
         if self.campo is None or self.ultimo_odom is None:
             return
@@ -242,10 +245,14 @@ class Localizador(Node):
         return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def scan_a_puntos(self, msg: LaserScan):
-        """Convierte el LaserScan (polar, en el frame del lidar) a un array
+        """
+        Convierte el scan a puntos en el frame del robot.
+
+        Convierte el LaserScan (polar, en el frame del lidar) a un array
         Nx2 de puntos (x, y) en base_frame, submuestreado. Usa tf2 para la
         transformada lidar→base — mismo patrón que ya usaste en
-        detector_scan.py de semana 04, no hay que medir nada a mano."""
+        detector_scan.py de semana 04, no hay que medir nada a mano.
+        """
         try:
             tf = self.tf_buffer.lookup_transform(self.base_frame, msg.header.frame_id, Time())
         except Exception:
@@ -272,8 +279,12 @@ class Localizador(Node):
         return np.stack([xs, ys], axis=1)
 
     def estimar_pose(self, particulas):
-        """Media ponderada de x/y + media circular de theta sobre el set de
-        partículas ya resampleado."""
+        """
+        Estima la pose a partir de las partículas.
+
+        Media ponderada de x/y + media circular de theta sobre el set de
+        partículas ya resampleado.
+        """
         x = float(np.mean(particulas[:, 0]))
         y = float(np.mean(particulas[:, 1]))
         theta = float(math.atan2(
@@ -305,10 +316,14 @@ class Localizador(Node):
         publisher.publish(camino_msg)
 
     def publicar_transformada(self, pose_estimada):
-        """map→odom = (map→base) compuesta con la inversa de (odom→base) —
+        """
+        Publica la transformada map -> odom.
+
+        map→odom = (map→base) compuesta con la inversa de (odom→base) —
         así, RViz (y cualquier otro nodo) puede seguir usando la odometría
         cruda de siempre y obtener una pose corregida en map "gratis"
-        aplicando esta transformada."""
+        aplicando esta transformada.
+        """
         pose_map_odom = componer_poses(pose_estimada, invertir_pose(self.ultimo_odom))
 
         t = TransformStamped()
@@ -324,6 +339,8 @@ class Localizador(Node):
 
     def mover_particulas(self, particulas, dx, dy, dtheta, theta0):
         """
+        Mueve las partículas con el modelo de movimiento.
+
         TODO: modelo de movimiento odométrico **mecanum**
         (`sample_motion_model_odometry`, el de la lámina de la clase),
         aplicado a las N partículas a la vez con numpy. Devolvé un array
@@ -395,6 +412,8 @@ class Localizador(Node):
 
     def pesar_particulas(self, particulas, puntos_scan):
         """
+        Pesa las partículas contra el scan.
+
         TODO: el modelo de sensor. Para cada partícula, ver qué tan bien
         calzan los puntos del scan (ya en base_frame, submuestreados) contra
         el campo de verosimilitud, y devolver un array de N pesos
@@ -468,6 +487,8 @@ class Localizador(Node):
 
     def remuestrear(self, particulas, pesos):
         """
+        Remuestrea las partículas según sus pesos.
+
         TODO: resampling sistemático (de varianza baja). Dado el array de
         pesos normalizados, devolvé un array nuevo de partículas (mismo
         shape que particulas) redibujado con reemplazo, proporcional al
