@@ -117,6 +117,34 @@ def test_arranca_aunque_el_robot_este_pegado_a_una_pared():
     assert len(c.distancias_desde(0.1, 1.5)) > 100
 
 
+@pytest.mark.parametrize('largada', [
+    (0.0, 1.5),     # sobre la pared de la izquierda
+    (2.0, 0.0),     # sobre la pared de abajo
+    (-1.0, -1.0),   # fuera del mapa, del lado negativo
+    (9.0, 9.0),     # fuera del mapa, del lado positivo
+])
+def test_una_largada_que_no_cae_en_una_celda_libre_igual_tiene_metas(largada):
+    """Antes: sobre una pared, cero candidatos (el robot publicaba /done sin explorar); fuera
+    del mapa, IndexError o un índice negativo que se daba vuelta."""
+    referencia = cobertura(sala())
+    c = cobertura(sala(), largada=largada)
+    assert len(c.candidatos) == len(referencia.candidatos) > 0
+    assert c.meta_cobertura(c.distancias_desde(2.0, 1.5)) is not None
+
+
+def test_la_largada_en_una_pared_usa_la_sala_mas_cercana():
+    grilla = sala()
+    grilla[:, 40] = 100                   # dos salas, sin puerta, separadas en x = 2,0 m
+    c = cobertura(grilla, largada=(1.98, 1.5))   # sobre la pared, más cerca de la izquierda
+    assert c.alcanzable[c.celda(1.0, 1.5)]
+    assert not c.alcanzable[c.celda(3.0, 1.5)]
+
+
+def test_un_mapa_sin_celdas_libres_no_lanza_excepcion():
+    c = cobertura(np.full((20, 20), 100, dtype=np.int16), largada=(0.5, 0.5))
+    assert c.candidatos == []
+
+
 def test_olvidar_objetos_no_recupera_metas_abandonadas():
     c = cobertura(sala())
     c.lista_negra.add(3)

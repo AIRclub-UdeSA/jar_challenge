@@ -54,8 +54,11 @@ class Cobertura:
         self.d_mapa = cv2.distanceTransform(
             self.libre.astype(np.uint8), cv2.DIST_L2, 5) * self.res
         _, etiquetas = cv2.connectedComponents(self.libre.astype(np.uint8))
-        i, j = self.celda(*largada)
-        self.alcanzable = etiquetas == etiquetas[i, j]
+        celda_largada = self._celda_de_largada(*largada)
+        if celda_largada is None:
+            self.alcanzable = self.libre.copy()  # mapa sin celdas libres: no hay nada que elegir
+        else:
+            self.alcanzable = etiquetas == etiquetas[celda_largada]
         self.objetivo = self.alcanzable & (self.d_mapa >= 0.10)
         self.total = max(int(self.objetivo.sum()), 1)
 
@@ -81,6 +84,27 @@ class Cobertura:
                     self.visibles_fino.append(
                         self.rayos(x, y, alcance_vista_fino_m) & self.objetivo)
         self.alcance_fino_m = alcance_vista_fino_m
+
+    def _celda_de_largada(self, x, y):
+        """La celda libre desde la que se mide qué parte del mapa es alcanzable.
+
+        La largada llega de TF, o (0, 0) si TF todavía no estaba cuando llegó /map. Esa celda puede
+        no estar libre: el robot arrancó pegado a una pared, AMCL todavía no convergió, o el mapa
+        tiene desconocido justo ahí. Usarla igual da la componente de las celdas ocupadas, sin
+        ningún punto de observación: la cobertura termina enseguida y el robot publica /done sin
+        haber explorado. Fuera de la grilla, un índice negativo se da vuelta sin avisar y uno
+        grande tira IndexError. Por eso se usa la celda libre más cercana, prefiriendo las que
+        tienen despeje (un punto libre suelto no sirve), y None si el mapa no tiene ninguna libre.
+        """
+        i, j = self.celda(x, y)
+        if 0 <= i < self.alto and 0 <= j < self.ancho and self.libre[i, j]:
+            return i, j
+        for celdas in (self.d_mapa >= 0.10, self.libre):
+            filas, columnas = np.nonzero(celdas)
+            if len(filas) > 0:
+                k = int(np.argmin((filas - i) ** 2 + (columnas - j) ** 2))
+                return int(filas[k]), int(columnas[k])
+        return None
 
     def celda(self, x, y):
         return int(round((y - self.oy) / self.res)), int(round((x - self.ox) / self.res))
