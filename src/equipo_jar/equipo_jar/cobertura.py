@@ -8,6 +8,7 @@ import heapq
 import math
 
 import cv2
+from equipo_jar.memoria_camara import veredicto
 import numpy as np
 
 # Vecinos de una celda: (fila, columna, largo del paso en celdas).
@@ -20,9 +21,15 @@ SECTORES_VISTA = 8          # un objeto se confirma visto desde dos de estos sec
 class Cobertura:
     def __init__(self, grilla, resolucion, origen_x, origen_y, largada, radio_paso_m,
                  despeje_meta_m, alcance_vista_m=3.0, alcance_vista_fino_m=1.8,
-                 despeje_cobertura_m=0.36, separacion_candidatos_m=0.3, ganancia_minima=40):
-        """`grilla` es el OccupancyGrid como matriz filas×columnas (-1 desconocido, 0 libre)."""
+                 despeje_cobertura_m=0.36, separacion_candidatos_m=0.3, ganancia_minima=40,
+                 margen_pared_m=0.20):
+        """`grilla` es el OccupancyGrid como matriz filas×columnas (-1 desconocido, 0 libre).
+
+        `margen_pared_m`: lo que el lidar ve a menos de esto de una pared del mapa no cuenta como
+        objeto (ver acumular_lidar).
+        """
         self.res = resolucion
+        self.margen_pared_m = margen_pared_m
         self.ox = origen_x
         self.oy = origen_y
         self.alto, self.ancho = grilla.shape
@@ -111,7 +118,9 @@ class Cobertura:
         dentro = (ii >= 0) & (ii < self.alto) & (jj >= 0) & (jj < self.ancho)
         ii, jj = ii[dentro], jj[dentro]
         # Pegado a una pared del mapa no cuenta: ahí un error chico de pose ya parece un objeto.
-        anomalo = self.objetivo[ii, jj] & (self.d_mapa[ii, jj] > 0.20)
+        # Más margen saca más pedazos de pared que faltan en el mapa, pero también dejaría sin
+        # inspeccionar una caja contra una pared (el reglamento no dice que no pueda haberlas).
+        anomalo = self.objetivo[ii, jj] & (self.d_mapa[ii, jj] > self.margen_pared_m)
         celdas = np.unique(np.stack([ii[anomalo], jj[anomalo]], axis=1), axis=0)
         if not len(celdas):
             return
@@ -146,6 +155,25 @@ class Cobertura:
                 self._actualizar_despeje()
             objetos.append(self.xy(ii.mean(), jj.mean()))
         return objetos
+
+    def veredicto_camara(self, cx, cy, camara, veces_min, celdas_min, radio_m=0.30):
+        """Qué vio la cámara del objeto en (cx, cy): memoria_camara.ROJO_VISTO, SIN_ROJO o SIN_VER.
+
+        `camara`: la grilla de /equipo/vistas_camara, del mismo tamaño que el mapa. Las celdas del
+        objeto son las que el lidar vio fuera del mapa (al menos 2 veces) a menos de `radio_m` de
+        su centro: así no cuentan las paredes de alrededor, que la cámara ve sin rojo aunque el
+        objeto no lo haya visto nunca.
+        """
+        i, j = self.celda(cx, cy)
+        n = int(math.ceil(radio_m / self.res)) + 1
+        f0, f1 = max(i - n, 0), min(i + n + 1, self.alto)
+        c0, c1 = max(j - n, 0), min(j + n + 1, self.ancho)
+        if f0 >= f1 or c0 >= c1:
+            return veredicto(np.zeros((1, 1)), np.zeros((1, 1), bool), veces_min, celdas_min)
+        ii, jj = np.mgrid[f0:f1, c0:c1]
+        disco = np.hypot(ii - i, jj - j) * self.res <= radio_m
+        objeto = disco & (self.cuenta[f0:f1, c0:c1] >= 2)
+        return veredicto(camara[f0:f1, c0:c1], objeto, veces_min, celdas_min)
 
     def olvidar_objetos(self):
         self.nuevos[:] = False

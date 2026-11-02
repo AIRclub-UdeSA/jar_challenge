@@ -21,6 +21,10 @@ se toma en el instante de la imagen (TF odom -> base_footprint con el stamp de l
 el de ahora: la imagen llega con unas decenas de ms de atraso. Al arrancar no se ubica nada hasta
 que nodo_mision avisa en /equipo/amcl_convergido que AMCL convergió (el robot ya se movió).
 
+Además anota qué miró la cámara (memoria_camara.py): con cada imagen, las celdas del mapa donde
+pegan los rayos del lidar que caen adentro de la imagen, y si había rojo ahí. Lo publica en
+/equipo/vistas_camara para que nodo_mision no vaya a inspeccionar lo que ya se vio que no es rojo.
+
 Se mira también con el robot quieto: nodo_mision frena unos segundos frente a cada objeto para
 mirarlo, y quieto la imagen, el scan y la pose son del mismo instante (es la mejor vista). No se
 mira girando más rápido que giro_max_deteccion. Por debajo de eso, la imagen y el scan no son del
@@ -29,12 +33,14 @@ imagen (TF odom -> base_footprint en los dos instantes).
 """
 import math
 import traceback
+from array import array
 from dataclasses import fields
 
 import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
+import numpy as np
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -46,11 +52,13 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from equipo_jar.agrupador import AgrupadorCajas
 from equipo_jar.deteccion import (
     FiltroColor, FiltroForma, angulo_de_columna, apoyada_en_el_piso, buscar_cajas_rojas,
-    coinciden, distancia_por_altura, frente_del_lidar, hay_algo_delante, mediana_del_tramo,
-    profundidad, tramo_del_lidar, yaw_de_cuaternion)
+    coinciden, distancia_por_altura, frente_del_lidar, hay_algo_delante, hay_rojo_en_rayos,
+    mascara_rojo, mediana_del_tramo, profundidad, rayos_en_la_imagen, tramo_del_lidar,
+    yaw_de_cuaternion)
 from equipo_jar.evasion import normalizar_angulo
 from equipo_jar.geometria import componer, de_robot_a_mapa
 from equipo_jar.mapa import GrillaMapa
+from equipo_jar.memoria_camara import MemoriaCamara
 from equipo_jar.supervisor_localizacion import ConfigSupervisor, SupervisorLocalizacion
 
 # /map lo publica el juez con esta QoS (docs/QOS.md).
@@ -66,6 +74,8 @@ TOPIC_CAJAS = '/equipo/cajas_confirmadas'
 TOPIC_POSE_AMCL = '/amcl_pose'
 # Interno: nodo_mision avisa una vez que AMCL convergió (un solo criterio para los dos nodos).
 TOPIC_CONVERGENCIA = '/equipo/amcl_convergido'
+# Interno: qué miró la cámara y si había rojo (memoria_camara.py). Lo usa nodo_mision.
+TOPIC_VISTAS = '/equipo/vistas_camara'
 
 # Parámetros y su valor por defecto. Los valores de la corrida viven en params/params.yaml (§9.1).
 PARAMETROS = {
@@ -111,6 +121,11 @@ PARAMETROS = {
     'dispersion_max_m': 0.15,
     'olvido_s': 3.0,
     'radio_duplicado_m': 0.60,
+    # Qué miró la cámara (memoria_camara.py)
+    'anotar_vistas': True,
+    'distancia_max_vista_m': 2.5,
+    'margen_rojo_px': 8,
+    'periodo_vistas_s': 0.5,
     # Frames y log
     'frame_mapa': 'map',
     'frame_odom': 'odom',
@@ -155,6 +170,9 @@ class NodoPercepcion(Node):
         self.lidar_en_robot = None    # (x, y) del lidar en base_footprint, de TF
         self.frente_lidar_deg = None  # ángulo del /scan que apunta al frente, de TF
         self.altura_camara = None     # altura (m) de la cámara sobre el piso, de TF
+        self.info_mapa = None         # geometría de /map, para publicar la memoria de la cámara
+        self.memoria = None           # MemoriaCamara, cuando llega /map
+        self.vistas_nuevas = False    # la memoria cambió desde la última vez que se publicó
 
         self.sub_mapa = self.create_subscription(
             OccupancyGrid, '/map', self.al_recibir_mapa, QOS_MAPA)
@@ -177,8 +195,11 @@ class NodoPercepcion(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.pub_cajas = self.create_publisher(PointStamped, TOPIC_CAJAS, 10)
+        # Como /map: la última grilla le llega también a quien se suscriba tarde.
+        self.pub_vistas = self.create_publisher(OccupancyGrid, TOPIC_VISTAS, QOS_MAPA)
 
         self.create_timer(1.0 / self.p('frecuencia_hz'), self.ciclo)
+        self.create_timer(self.p('periodo_vistas_s'), self.publicar_vistas)
         self.get_logger().info('Percepción lista. Esperando el mapa en /map...')
 
     def p(self, nombre):
@@ -188,6 +209,7 @@ class NodoPercepcion(Node):
 
     def al_recibir_mapa(self, msg):
         self.mapa = GrillaMapa.desde_mensaje(msg)
+        self.info_mapa = msg.info
 
     def al_recibir_scan(self, scan):
         self.scan = scan
@@ -321,8 +343,10 @@ class NodoPercepcion(Node):
             self.p('frame_odom'), self.p('frame_robot'), Time.from_msg(self.stamp_imagen)) or odom
         pose = componer(estado.correccion, odom_imagen)
 
+        mascara = mascara_rojo(self.imagen, self.color)
+
         # Cada mancha con forma de caja se ubica por separado: puede haber más de una caja.
-        manchas, motivo = buscar_cajas_rojas(self.imagen, self.color, self.forma)
+        manchas, motivo = buscar_cajas_rojas(self.imagen, self.color, self.forma, mascara)
         puntos = []
         for mancha in manchas:
             punto, motivo_mancha = self.ubicar_caja_roja(mancha, pose, odom_imagen[2])
@@ -342,6 +366,15 @@ class NodoPercepcion(Node):
                 self.get_logger().info(
                     f'Caja {len(self.agrupador.confirmadas)} confirmada en '
                     f'({centro[0]:.2f}, {centro[1]:.2f}) con pose de {estado.fuente}')
+
+        # Al final y aparte: si esto falla, las cajas de esta imagen ya se procesaron.
+        if self.p('anotar_vistas'):
+            try:
+                self.anotar_vista(mascara, pose, odom_imagen[2])
+            except Exception:  # a propósito: cualquier error
+                self.get_logger().error(
+                    f'Error al anotar lo que vio la cámara:\n{traceback.format_exc()}',
+                    throttle_duration_sec=5.0)
 
     def informar(self, estado):
         """Loguea los cambios de fuente de la pose. Al cambiar, las vistas sin confirmar se
@@ -444,6 +477,53 @@ class NodoPercepcion(Node):
                                             self.p('margen_vista_fin_m')):
                 return None, 'en el mapa hay una pared entre el robot y la caja'
         return centro, None
+
+    def anotar_vista(self, mascara, pose, yaw_odom_imagen):
+        """Anota en la memoria qué celdas del mapa vio la cámara en esta imagen y si había rojo
+        donde estaría una caja apoyada ahí (memoria_camara.py)."""
+        if self.memoria is None:
+            self.memoria = MemoriaCamara(self.mapa.alto, self.mapa.ancho)
+        k = self.info_camara.k
+        fx, cx, fy, cy = k[0], k[2], k[4], k[5]
+        s = self.scan
+        # Como para las cajas: lo que giró el robot entre el rayo del frente y la imagen.
+        giro = self.giro_desde_el_scan(0.0, yaw_odom_imagen)
+        angulos, distancias = rayos_en_la_imagen(
+            s.ranges, s.angle_min, s.angle_increment, self.frente_deg(), giro, fx, cx,
+            mascara.shape[1], int(self.p('margen_borde_px')),
+            self.p('distancia_min_deteccion_m'), self.p('distancia_max_vista_m'))
+        if len(angulos) == 0:
+            return
+        rojo = hay_rojo_en_rayos(
+            mascara, angulos, distancias, fx, cx, fy, cy, self.altura_camara,
+            self.p('alto_caja_m'), int(self.p('margen_rojo_px')), self.p('tolerancia_piso'))
+        # Donde pegó cada rayo, en el mapa (el lidar está corrido del centro del robot).
+        lx, ly = self.lidar_en_robot or (0.0, 0.0)
+        px = lx + distancias * np.cos(angulos)
+        py = ly + distancias * np.sin(angulos)
+        x, y, yaw = pose
+        mx = x + math.cos(yaw) * px - math.sin(yaw) * py
+        my = y + math.sin(yaw) * px + math.cos(yaw) * py
+        filas, columnas, adentro = self.mapa.celdas_de(mx, my)
+        self.memoria.anotar(filas[adentro], columnas[adentro], rojo[adentro])
+        self.vistas_nuevas = True
+
+    def publicar_vistas(self):
+        """Publica la memoria de la cámara, si cambió. Un error acá no puede matar el nodo."""
+        try:
+            if self.memoria is None or self.info_mapa is None or not self.vistas_nuevas:
+                return
+            self.vistas_nuevas = False
+            msg = OccupancyGrid()
+            msg.header.frame_id = self.p('frame_mapa')
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.info = self.info_mapa
+            msg.data = array('b', self.memoria.datos().tobytes())
+            self.pub_vistas.publish(msg)
+        except Exception:  # a propósito: cualquier error
+            self.get_logger().error(
+                f'Error al publicar lo que vio la cámara:\n{traceback.format_exc()}',
+                throttle_duration_sec=5.0)
 
     def publicar_caja(self, x, y):
         msg = PointStamped()

@@ -47,6 +47,20 @@ class GrillaMapa:
             return fila, col
         return None
 
+    def celdas_de(self, xs, ys):
+        """Como `celda`, para muchos puntos a la vez: (filas, columnas, adentro) como arrays.
+
+        `adentro` dice qué puntos caen en la grilla; filas y columnas de los de afuera no sirven.
+        """
+        ox, oy, oyaw = self.origen
+        dx, dy = np.asarray(xs, dtype=float) - ox, np.asarray(ys, dtype=float) - oy
+        c, s = math.cos(oyaw), math.sin(oyaw)
+        lx, ly = c * dx + s * dy, -s * dx + c * dy
+        columnas = np.floor(lx / self.resolucion).astype(int)
+        filas = np.floor(ly / self.resolucion).astype(int)
+        adentro = (filas >= 0) & (filas < self.alto) & (columnas >= 0) & (columnas < self.ancho)
+        return filas, columnas, adentro
+
     def ocupada(self, x, y):
         celda = self.celda(x, y)
         return celda is not None and self.celdas[celda] >= self.umbral_ocupado

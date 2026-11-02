@@ -6,8 +6,9 @@ import pytest
 from equipo_jar.deteccion import (
     FiltroColor, FiltroForma, Mancha, angulo_de_columna, apoyada_en_el_piso, buscar_caja_roja,
     buscar_cajas_rojas, cerca_de_alguno, coinciden, distancia_a_la_caja, distancia_por_altura,
-    filas_esperadas, frente_del_lidar, hay_algo_delante, mascara_rojo, mediana_del_tramo,
-    profundidad, promedio, punto_en_el_plano, tramo_del_lidar, yaw_de_cuaternion)
+    filas_esperadas, frente_del_lidar, hay_algo_delante, hay_rojo_en_rayos, mascara_rojo,
+    mediana_del_tramo, profundidad, promedio, punto_en_el_plano, rayos_en_la_imagen,
+    tramo_del_lidar, yaw_de_cuaternion)
 
 # La cámara del robot (real_robot_contract.yaml del simulador): 320 x 240, a 0,109 m del piso.
 ANCHO, ALTO = 320, 240
@@ -311,3 +312,78 @@ def test_frente_del_lidar():
     assert frente_del_lidar(*cuaternion(yaw=math.pi / 2)) == (pytest.approx(-90.0), True)
     # Dado vuelta: los ángulos del /scan van al revés y no se puede usar.
     assert not frente_del_lidar(*cuaternion(roll=math.pi))[1]
+
+
+# --- Qué miró la cámara --------------------------------------------------------------------
+
+def scan_con(angulos_deg, distancia=1.5, n=1080, frente_deg=0.0):
+    """Un /scan de n rayos en 360° que solo pega en los ángulos pedidos (desde el frente)."""
+    incremento = 2 * math.pi / n
+    rangos = [math.inf] * n
+    for a in angulos_deg:
+        rangos[int(round((math.radians(a + frente_deg) + math.pi) / incremento)) % n] = distancia
+    return rangos, -math.pi, incremento
+
+
+def rayos(rangos, angulo_min, incremento, frente_deg=0.0, giro_deg=0.0):
+    return rayos_en_la_imagen(rangos, angulo_min, incremento, frente_deg, giro_deg, FX, CX,
+                              ANCHO, 5, 0.35, 2.5)
+
+
+def test_solo_los_rayos_que_caen_adentro_de_la_imagen():
+    # La cámara ve ±30° (320 px, fx 271,8): 40° y lo de atrás quedan afuera.
+    angulos, distancias = rayos(*scan_con([0.0, 20.0, -25.0, 40.0, 180.0]))
+    assert sorted(np.degrees(angulos).round()) == [-25.0, 0.0, 20.0]
+    assert list(distancias) == pytest.approx([1.5, 1.5, 1.5])
+
+
+def test_rayos_con_el_lidar_al_reves_y_corregidos_por_el_giro():
+    # El lidar del simulador está montado al revés: el frente es el rayo de 180°.
+    angulos, _ = rayos(*scan_con([10.0], frente_deg=180.0), frente_deg=180.0)
+    assert np.degrees(angulos) == pytest.approx([10.0], abs=0.2)
+    # Si entre el rayo y la imagen el robot giró 4° a la izquierda, en la imagen está a 6°.
+    angulos, _ = rayos(*scan_con([10.0], frente_deg=180.0), frente_deg=180.0, giro_deg=4.0)
+    assert np.degrees(angulos) == pytest.approx([6.0], abs=0.2)
+
+
+@pytest.mark.parametrize('distancia', [0.2, 3.0, math.inf])
+def test_rayos_fuera_del_rango_no_cuentan(distancia):
+    angulos, _ = rayos(*scan_con([0.0], distancia=distancia))
+    assert len(angulos) == 0
+
+
+def rojo_en(img, columnas, prof=1.5, altura_camara=ALTURA_CAMARA, margen_px=8):
+    angulos = [angulo_de_columna(c, FX, CX) for c in columnas]
+    return list(hay_rojo_en_rayos(mascara_rojo(img, COLOR), angulos, [prof] * len(angulos),
+                                  FX, CX, FY, CY, altura_camara, ALTO_CAJA, margen_px, 0.25))
+
+
+def test_hay_rojo_donde_esta_la_caja_roja_y_no_al_lado():
+    img = dibujar_caja(imagen_vacia(), 1.5, columna=100)
+    assert rojo_en(img, [100, 250]) == [True, False]
+
+
+def test_una_caja_azul_no_tiene_rojo():
+    assert rojo_en(dibujar_caja(imagen_vacia(), 1.5, color=AZUL), [CX]) == [False]
+
+
+def test_el_margen_de_columnas_agarra_el_borde_de_la_caja():
+    img = dibujar_caja(imagen_vacia(), 1.5, columna=100)  # 45 px de ancho: hasta la columna 123
+    assert rojo_en(img, [128], margen_px=8) == [True]
+    assert rojo_en(img, [128], margen_px=2) == [False]
+
+
+def test_un_rojo_fuera_de_la_altura_de_una_caja_no_cuenta():
+    # Un cartel rojo arriba en la pared: donde estaría una caja a 1,5 m no hay rojo.
+    img = imagen_vacia()
+    img[0:20, 140:180] = ROJO
+    assert rojo_en(img, [160]) == [False]
+    # Sin la altura de la cámara se mira la columna entera: ahí sí cuenta.
+    assert rojo_en(img, [160], altura_camara=None) == [True]
+
+
+def test_la_mascara_ya_calculada_da_lo_mismo():
+    img = dibujar_caja(imagen_vacia(), 1.0)
+    con, _ = buscar_cajas_rojas(img, COLOR, FORMA, mascara_rojo(img, COLOR))
+    sin, _ = buscar_cajas_rojas(img, COLOR, FORMA)
+    assert con == sin and len(con) == 1

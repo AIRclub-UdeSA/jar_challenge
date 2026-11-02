@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from equipo_jar.cobertura import Cobertura
+from equipo_jar.memoria_camara import ROJO, ROJO_VISTO, SIN_ROJO, SIN_VER
 
 RES = 0.05
 
@@ -131,3 +132,45 @@ def test_fase_fina_vuelve_a_recorrer():
     c.pasar_a_fase_fina()
     assert c.porcentaje_visto() == 0.0
     assert c.fase == 2
+
+
+def test_el_margen_contra_las_paredes_se_puede_cambiar():
+    # Un objeto a 0,25-0,40 m de la pared de abajo: con el margen de 0,20 es un objeto; con
+    # 0,40 m, todo lo que ve el lidar de él queda dentro del margen.
+    normal = cobertura(sala())
+    ver_objeto(normal, *caja(2.0, 0.35))
+    assert len(normal.objetos_nuevos()) == 1
+    amplio = Cobertura(sala(), RES, 0.0, 0.0, (2.0, 1.5), 0.17, 0.30, margen_pared_m=0.40)
+    ver_objeto(amplio, *caja(2.0, 0.35))
+    assert amplio.objetos_nuevos() == []
+
+
+def camara_vacia(c):
+    return np.zeros((c.alto, c.ancho), dtype=np.int16)
+
+
+def test_lo_que_vio_la_camara_de_un_objeto():
+    c = cobertura(sala())
+    ver_objeto(c, *caja(2.0, 1.5))
+    c.objetos_nuevos()
+    camara = camara_vacia(c)
+    assert c.veredicto_camara(2.0, 1.5, camara, 3, 3) == SIN_VER
+    camara[c.cuenta > 0] = 5                # la cámara vio el objeto en 5 imágenes, sin rojo
+    assert c.veredicto_camara(2.0, 1.5, camara, 3, 3) == SIN_ROJO
+    i, j = c.celda(2.0, 1.5)
+    camara[i, j] = ROJO                     # en una imagen vio rojo
+    assert c.veredicto_camara(2.0, 1.5, camara, 3, 3) == ROJO_VISTO
+
+
+def test_la_camara_viendo_solo_paredes_no_descarta_al_objeto():
+    c = cobertura(sala())
+    ver_objeto(c, *caja(2.0, 1.5))
+    camara = camara_vacia(c)
+    camara[c.ocupado] = 50                  # vio todas las paredes, nunca el objeto
+    assert c.veredicto_camara(2.0, 1.5, camara, 3, 3) == SIN_VER
+
+
+@pytest.mark.parametrize('x, y', [(-1.0, -1.0), (10.0, 10.0), (0.02, 0.02)])
+def test_veredicto_de_la_camara_en_los_bordes_del_mapa(x, y):
+    c = cobertura(sala())
+    assert c.veredicto_camara(x, y, camara_vacia(c), 3, 3) == SIN_VER

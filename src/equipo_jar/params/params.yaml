@@ -74,6 +74,12 @@ nodo_percepcion:
     dispersion_max_m: 0.15          # las vistas de un grupo tienen que estar así de juntas (mediana, m)
     olvido_s: 3.0                   # un grupo sin vistas nuevas en este tiempo se olvida
     radio_duplicado_m: 0.60         # a menos de esto de una caja ya confirmada, es la misma
+    # Qué miró la cámara (equipo_jar/memoria_camara.py): dónde pegan los rayos del lidar que caen
+    # adentro de la imagen y si ahí había rojo. Misión lo usa para no inspeccionar lo que no es rojo.
+    anotar_vistas: true
+    distancia_max_vista_m: 2.5      # más lejos no se anota: la caja se ve chica y el rojo puede no salir
+    margen_rojo_px: 8               # rojo a menos de esto (px) de la columna del rayo cuenta como rojo ahí
+    periodo_vistas_s: 0.5           # cada cuánto se publica la grilla en /equipo/vistas_camara
     frame_mapa: map
     frame_odom: odom
     frame_robot: base_footprint
@@ -179,6 +185,12 @@ nodo_mision:
     despeje_giro_m: 0.25            # con menos que esto (m) no se gira para mirar
     radio_duplicado_m: 0.40         # a menos de esto (m) de una caja ya reportada, es la misma
     radio_objeto_conocido_m: 0.50   # a menos de esto (m) de un objeto ya visto, es el mismo
+    margen_pared_objetos_m: 0.20    # lo que el lidar ve a menos de esto (m) de una pared del mapa no es objeto
+    # No inspeccionar lo que la cámara ya vio sin rojo (distractoras, señuelos, paredes que faltan
+    # en el mapa). Con false, se inspecciona todo objeto, como antes.
+    descartar_con_camara: true
+    veces_sin_rojo: 3               # imágenes sin rojo que tiene que tener cada celda del objeto...
+    celdas_sin_rojo: 3              # ...y cuántas celdas así, para darlo por visto sin rojo
     rango_min_lidar_m: 0.05
     rango_max_lidar_m: 3.5
     # Rectángulo del robot respecto de base_footprint: tiene que coincidir con la huella de Nav2.

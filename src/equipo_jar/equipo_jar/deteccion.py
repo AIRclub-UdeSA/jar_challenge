@@ -21,6 +21,10 @@ El camino de una imagen a un punto en el mapa, con un filtro en cada paso:
    filas de la imagen. Un rojo que no cumple (un cartel, algo detrás de una pared baja, una
    mancha en el piso) no es una caja.
 
+Aparte, para nodo_mision: qué miró la cámara (`rayos_en_la_imagen`, `hay_rojo_en_rayos`). Cada
+rayo del lidar que cae adentro de la imagen dice si donde pegó había rojo a la altura de una caja.
+Así misión no va a inspeccionar lo que la cámara ya vio y no es rojo (memoria_camara.py).
+
 Es la idea del workshop de la semana 04, simplificada: en vez de proyectar todo el scan sobre la
 imagen, se mira el scan solo en la dirección donde la cámara vio el rojo.
 https://airclub-udesa.github.io/jar_site/workshops/semana-04-deteccion-color/
@@ -138,11 +142,16 @@ def motivo_de_descarte(mancha, ancho_imagen, alto_imagen, forma):
     return None
 
 
-def manchas_rojas(imagen_bgr, color, margen_borde_px=5):
-    """Todas las manchas rojas de la imagen, de la más grande a la más chica."""
+def manchas_rojas(imagen_bgr, color, margen_borde_px=5, mascara=None):
+    """Todas las manchas rojas de la imagen, de la más grande a la más chica.
+
+    `mascara`: la de `mascara_rojo` si ya se calculó (percepción la usa también para anotar qué
+    vio la cámara); si no, se calcula acá.
+    """
     alto_img = imagen_bgr.shape[0]
-    contornos, _ = cv2.findContours(
-        mascara_rojo(imagen_bgr, color), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if mascara is None:
+        mascara = mascara_rojo(imagen_bgr, color)
+    contornos, _ = cv2.findContours(mascara, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     manchas = []
     for c in contornos:
         x, y, ancho, alto = cv2.boundingRect(c)
@@ -155,7 +164,7 @@ def manchas_rojas(imagen_bgr, color, margen_borde_px=5):
     return sorted(manchas, key=lambda mancha: mancha.area, reverse=True)
 
 
-def buscar_cajas_rojas(imagen_bgr, color, forma):
+def buscar_cajas_rojas(imagen_bgr, color, forma, mascara=None):
     """([Mancha], motivo): todas las manchas que pasan los filtros de forma, de la más grande a
     la más chica, y el motivo por el que se descartó la mancha roja más grande (None si pasó).
 
@@ -164,7 +173,8 @@ def buscar_cajas_rojas(imagen_bgr, color, forma):
     """
     alto_img, ancho_img = imagen_bgr.shape[:2]
     cajas, primer_motivo = [], 'no hay rojo'
-    for i, mancha in enumerate(manchas_rojas(imagen_bgr, color, forma.margen_borde_px)):
+    for i, mancha in enumerate(
+            manchas_rojas(imagen_bgr, color, forma.margen_borde_px, mascara)):
         motivo = motivo_de_descarte(mancha, ancho_img, alto_img, forma)
         if motivo is None:
             cajas.append(mancha)
@@ -318,6 +328,68 @@ def apoyada_en_el_piso(mancha, prof, fy, cy, altura_camara_m, alto_caja_m, toler
     arriba_bien = mancha.cortada_arriba or abs(mancha.y0 - arriba) <= tolerancia
     abajo_bien = mancha.cortada_abajo or abs(mancha.y1 - abajo) <= tolerancia
     return arriba_bien and abajo_bien
+
+
+# --- 6. Qué miró la cámara -------------------------------------------------------------------
+#
+# Para no ir a inspeccionar lo que la cámara ya vio y no es rojo (memoria_camara.py): cada rayo del
+# lidar que cae adentro de la imagen dice qué se vio en esa dirección y a qué distancia.
+
+def rayos_en_la_imagen(rangos, angulo_min, incremento, frente_deg, giro_deg, fx, cx, ancho_img,
+                       margen_px, rango_min, rango_max):
+    """(ángulos, distancias) de los rayos del lidar que caen adentro de la imagen.
+
+    Ángulos en rad respecto del eje de la cámara (positivo, izquierda), ya corregidos por lo que
+    giró el robot entre el rayo y la imagen (`giro_deg`, como en `tramo_del_lidar`: un objeto que
+    en la imagen está a b grados, el lidar lo midió a b + giro). Solo los rayos que pegan en algo
+    entre `rango_min` y `rango_max` y caen a más de `margen_px` de los costados de la imagen.
+    """
+    rangos = np.asarray(rangos, dtype=float)
+    crudo = angulo_min + np.arange(len(rangos)) * incremento
+    crudo = crudo - math.radians(frente_deg) - math.radians(giro_deg)
+    angulos = np.arctan2(np.sin(crudo), np.cos(crudo))
+    adelante = np.abs(angulos) < math.radians(80.0)  # tan() no sirve cerca de 90°
+    columnas = cx - fx * np.tan(np.where(adelante, angulos, 0.0))
+    con_distancia = np.isfinite(rangos) & (rangos >= rango_min) & (rangos <= rango_max)
+    adentro = adelante & (columnas >= margen_px) & (columnas <= ancho_img - 1 - margen_px)
+    elegidos = con_distancia & adentro
+    return angulos[elegidos], rangos[elegidos]
+
+
+def hay_rojo_en_rayos(mascara, angulos, distancias, fx, cx, fy, cy, altura_camara_m, alto_caja_m,
+                      margen_px, tolerancia):
+    """Para cada rayo: ¿hay rojo en la imagen donde se vería una caja apoyada donde pegó?
+
+    Se miran las filas que ocuparía una caja de `alto_caja_m` apoyada en el piso a esa
+    profundidad (`filas_esperadas`), agrandadas en `tolerancia` (fracción del alto), y las
+    columnas a ± `margen_px` de la del rayo. Un solo píxel rojo alcanza para decir que sí: si hay
+    que equivocarse, mejor inspeccionar de más que dejar una caja sin mirar. Así, un rojo arriba en
+    una pared o en el piso lejano no tapa lo que hay a la altura de una caja.
+    Sin la altura de la cámara (TF todavía no la dio) se mira la columna entera.
+    """
+    alto_img, ancho_img = mascara.shape[:2]
+    angulos = np.asarray(angulos, dtype=float)
+    distancias = np.asarray(distancias, dtype=float)
+    # Rojos por columna acumulados de arriba hacia abajo: los de las filas [f0, f1) de la columna
+    # c son acumulado[f1, c] - acumulado[f0, c].
+    acumulado = np.zeros((alto_img + 1, ancho_img), dtype=np.int32)
+    acumulado[1:] = np.cumsum(mascara > 0, axis=0)
+    columnas = np.rint(cx - fx * np.tan(angulos)).astype(int)
+    if altura_camara_m is None:
+        desde = np.zeros(len(angulos), dtype=int)
+        hasta = np.full(len(angulos), alto_img, dtype=int)
+    else:
+        prof = np.maximum(distancias * np.cos(angulos), 1e-3)
+        abajo = cy + fy * altura_camara_m / prof
+        arriba = cy - fy * (alto_caja_m - altura_camara_m) / prof
+        extra = tolerancia * (abajo - arriba)
+        desde = np.clip(np.floor(arriba - extra), 0, alto_img).astype(int)
+        hasta = np.clip(np.ceil(abajo + extra) + 1, 0, alto_img).astype(int)
+    rojo = np.zeros(len(angulos), dtype=bool)
+    for corrimiento in range(-margen_px, margen_px + 1):
+        c = np.clip(columnas + corrimiento, 0, ancho_img - 1)
+        rojo |= (acumulado[hasta, c] - acumulado[desde, c]) > 0
+    return rojo
 
 
 # --- Utilidades ------------------------------------------------------------------------------

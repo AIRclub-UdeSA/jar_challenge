@@ -7,6 +7,11 @@ terminar. Así dos nodos nunca se pisan el comando.
 Cuando el robot se traba, cancela la meta y sale despacio (equipo_jar/escape.py). Reintenta la meta
 una vez; si se vuelve a trabar, la abandona: se pierde esa meta, no la corrida.
 
+Lo que el lidar ve y no está en el mapa se va a mirar de cerca (inspección), salvo que la cámara
+ya lo haya visto sin rojo (percepción lo publica en /equipo/vistas_camara, ver memoria_camara.py):
+una caja de otro color, un señuelo o una pared que falta en el mapa no son víctimas. Si se entera
+en camino, corta el viaje; si se entera mirándolo, deja de mirar.
+
 También es el único que decide cuándo AMCL convergió al arrancar: cuando el robot se alejó
 `distancia_convergencia_m` de la largada y pasaron `espera_convergencia_s`. Quieto, AMCL no fija
 bien el ángulo (en simulación quedaba 5,5° corrido aunque su covarianza ya era chica, y una caja
@@ -20,6 +25,7 @@ from action_msgs.msg import GoalStatus
 from equipo_jar.cobertura import Cobertura
 from equipo_jar.escape import Cuerpo, DetectorTraba, Escape, puntos_en_robot
 from equipo_jar.evasion import normalizar_angulo
+from equipo_jar.memoria_camara import ROJO_VISTO, SIN_ROJO, SIN_VER
 from equipo_jar.reportes import armar_reporte
 from geometry_msgs.msg import PointStamped, PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
@@ -37,6 +43,7 @@ from tf2_ros import Buffer, TransformListener
 
 COBERTURA, INSPECCION, REGRESO = 'COBERTURA', 'INSPECCION', 'REGRESO'
 TOPIC_CONVERGENCIA = '/equipo/amcl_convergido'  # interno: lo escucha nodo_percepcion
+TOPIC_VISTAS = '/equipo/vistas_camara'          # interno: qué miró la cámara (nodo_percepcion)
 
 
 def yaw_de(q):
@@ -64,6 +71,10 @@ class NodoMision(Node):
         self.declare_parameter('despeje_giro_m', 0.25)
         self.declare_parameter('radio_duplicado_m', 0.40)
         self.declare_parameter('radio_objeto_conocido_m', 0.50)
+        self.declare_parameter('margen_pared_objetos_m', 0.20)
+        self.declare_parameter('descartar_con_camara', True)
+        self.declare_parameter('veces_sin_rojo', 3)
+        self.declare_parameter('celdas_sin_rojo', 3)
         self.declare_parameter('rango_min_lidar_m', 0.05)
         self.declare_parameter('rango_max_lidar_m', 3.5)
         self.declare_parameter('frente_robot_m', 0.13)
@@ -107,6 +118,10 @@ class NodoMision(Node):
         self.reportes = 0
         self.inspeccionados = []
         self.pendientes = []
+        self.descartados = []           # la cámara los vio sin rojo: no se van a mirar
+        self.vistas_camara = None       # grilla de /equipo/vistas_camara (memoria_camara.py)
+        self.objeto_meta = None         # el objeto que se va a mirar con la meta de inspección
+        self.objeto_mirando = None      # el que se está mirando ahora
         self.intentos_regreso = 0
 
         self.meta = None                # (x, y, yaw, tipo)
@@ -140,6 +155,8 @@ class NodoMision(Node):
             PointStamped, '/equipo/cajas_confirmadas', self.al_recibir_caja, 10)
         self.sub_cmd_nav = self.create_subscription(
             Twist, '/equipo/cmd_vel_nav', self.al_recibir_cmd_nav, 10)
+        self.sub_vistas = self.create_subscription(
+            OccupancyGrid, TOPIC_VISTAS, self.al_recibir_vistas, qos_mapa)
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_victimas = self.create_publisher(PointStamped, '/victimas', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
@@ -165,7 +182,8 @@ class NodoMision(Node):
         pose = self.leer_tf(self.frame_mapa, self.frame_robot)
         self.cobertura = Cobertura(
             grilla, mapa.info.resolution, origen.x, origen.y, pose[:2] if pose else (0.0, 0.0),
-            self.valor('radio_paso_m'), self.valor('despeje_meta_m'))
+            self.valor('radio_paso_m'), self.valor('despeje_meta_m'),
+            margen_pared_m=self.valor('margen_pared_objetos_m'))
         self.t_inicio = self.ahora()
         self.get_logger().info(
             f'mapa {mapa.info.width}x{mapa.info.height}, '
@@ -173,6 +191,10 @@ class NodoMision(Node):
 
     def al_recibir_scan(self, scan):
         self.scan = scan
+
+    def al_recibir_vistas(self, grilla):
+        self.vistas_camara = np.array(grilla.data, dtype=np.int16).reshape(
+            grilla.info.height, grilla.info.width)
 
     def al_recibir_cmd_nav(self, cmd):
         self.t_cmd_nav = self.ahora()
@@ -275,20 +297,73 @@ class NodoMision(Node):
             y + math.sin(yaw) * px + math.cos(yaw) * py)
         if ahora - self.ultimo_objetos > 1.0:
             self.ultimo_objetos = ahora
-            radio = self.valor('radio_objeto_conocido_m')
-            for cx, cy in self.cobertura.objetos_nuevos():
-                conocidos = self.confirmadas + self.inspeccionados + self.pendientes
-                if not any(math.hypot(cx - a, cy - b) < radio for a, b in conocidos):
-                    self.pendientes.append((cx, cy))
-                    self.get_logger().info(
-                        f'objeto no mapeado ({cx:.2f}, {cy:.2f}) t={ahora - self.t_inicio:.1f}')
+            self.anotar_objetos(self.cobertura.objetos_nuevos(), ahora)
+            self.revisar_objetos(ahora)
+
+    # Objetos fuera del mapa: cuáles hace falta ir a mirar
+
+    def veredicto_camara(self, x, y):
+        """Qué vio la cámara del objeto en (x, y): ROJO_VISTO, SIN_ROJO o SIN_VER."""
+        camara = self.vistas_camara
+        if (not self.valor('descartar_con_camara') or camara is None
+                or camara.shape != (self.cobertura.alto, self.cobertura.ancho)):
+            return SIN_VER
+        return self.cobertura.veredicto_camara(
+            x, y, camara, self.valor('veces_sin_rojo'), self.valor('celdas_sin_rojo'))
+
+    def motivo_para_no_mirar(self, objeto):
+        """Por qué ya no hace falta ir a mirar este objeto, o None si hace falta."""
+        if objeto is None:
+            return None
+        radio = self.valor('radio_objeto_conocido_m')
+        if any(math.hypot(objeto[0] - a, objeto[1] - b) < radio for a, b in self.confirmadas):
+            return 'ya es una caja confirmada'
+        if self.veredicto_camara(*objeto) == SIN_ROJO:
+            return 'la cámara lo vio sin rojo'
+        return None
+
+    def anotar_objetos(self, objetos, ahora):
+        """Los objetos nuevos que el lidar ve fuera del mapa quedan para inspeccionar, salvo los
+        que la cámara ya vio sin rojo: una caja de otro color, un señuelo, una pared que falta."""
+        radio = self.valor('radio_objeto_conocido_m')
+        for cx, cy in objetos:
+            conocidos = self.confirmadas + self.inspeccionados + self.pendientes + self.descartados
+            if any(math.hypot(cx - a, cy - b) < radio for a, b in conocidos):
+                continue
+            texto = f'objeto no mapeado ({cx:.2f}, {cy:.2f}) t={ahora - self.t_inicio:.1f}'
+            if self.veredicto_camara(cx, cy) == SIN_ROJO:
+                self.descartados.append((cx, cy))
+                self.get_logger().info(texto + ': la cámara ya lo vio sin rojo, no lo inspecciono')
+            else:
+                self.pendientes.append((cx, cy))
+                self.get_logger().info(texto)
+
+    def revisar_objetos(self, ahora):
+        """Con lo que la cámara vio después: un pendiente sin rojo se descarta, y un descartado
+        en el que apareció rojo vuelve a quedar para inspeccionar."""
+        t = ahora - self.t_inicio
+        for objeto in list(self.pendientes):
+            if self.veredicto_camara(*objeto) == SIN_ROJO:
+                self.pendientes.remove(objeto)
+                self.descartados.append(objeto)
+                self.get_logger().info(
+                    f'descarto el objeto ({objeto[0]:.2f}, {objeto[1]:.2f}) t={t:.1f}: '
+                    'la cámara lo vio sin rojo')
+        for objeto in list(self.descartados):
+            if self.veredicto_camara(*objeto) == ROJO_VISTO:
+                self.descartados.remove(objeto)
+                self.pendientes.append(objeto)
+                self.get_logger().info(
+                    f'el objeto ({objeto[0]:.2f}, {objeto[1]:.2f}) tiene rojo t={t:.1f}: '
+                    'vuelve a quedar para inspeccionar')
 
     # Metas de Nav2
 
-    def ir(self, x, y, yaw, tipo, k=None):
+    def ir(self, x, y, yaw, tipo, k=None, objeto=None):
         ahora = self.ahora()
         self.meta = (x, y, yaw, tipo)
         self.k_meta = k
+        self.objeto_meta = objeto
         self.t_meta = ahora
         self.resultado_meta = None
         self.handle_meta = None
@@ -343,6 +418,7 @@ class NodoMision(Node):
         if self.meta[3] == INSPECCION:
             self.t_mirar_hasta = self.ahora() + self.valor('tiempo_inspeccion_s')
             self.yaw_mirar = self.meta[2]
+            self.objeto_mirando = self.objeto_meta
         self.soltar_meta()
         self.trabas_meta = 0
 
@@ -355,7 +431,7 @@ class NodoMision(Node):
         if self.trabas_meta >= self.valor('trabas_por_meta'):
             self.abandonar_meta()
         else:
-            self.meta_a_retomar = (*self.meta, self.k_meta)
+            self.meta_a_retomar = (*self.meta, self.k_meta, self.objeto_meta)
             self.soltar_meta()
         self.traba.reiniciar()
         self.escape = Escape(
@@ -376,9 +452,11 @@ class NodoMision(Node):
         self.traba.reiniciar()
         self.get_logger().info(f'fin del escape t={ahora - self.t_inicio:.1f}')
         if self.meta_a_retomar is not None:
-            x, y, yaw, tipo, k = self.meta_a_retomar
+            x, y, yaw, tipo, k, objeto = self.meta_a_retomar
             self.meta_a_retomar = None
-            self.ir(x, y, yaw, tipo, k)
+            if tipo == INSPECCION and self.motivo_para_no_mirar(objeto):
+                return  # mientras escapaba se supo que no hace falta ir a mirarlo
+            self.ir(x, y, yaw, tipo, k, objeto)
 
     # Máquina de estados
 
@@ -386,11 +464,14 @@ class NodoMision(Node):
         distancias = self.cobertura.distancias_desde(*self.pose[:2])
         while self.pendientes:
             self.pendientes.sort(key=lambda q: math.hypot(q[0] - self.pose[0], q[1] - self.pose[1]))
-            cx, cy = self.pendientes.pop(0)
-            self.inspeccionados.append((cx, cy))
-            meta = self.cobertura.meta_inspeccion(cx, cy, distancias)
+            objeto = self.pendientes.pop(0)
+            if self.motivo_para_no_mirar(objeto):
+                self.descartados.append(objeto)
+                continue
+            self.inspeccionados.append(objeto)
+            meta = self.cobertura.meta_inspeccion(*objeto, distancias)
             if meta is not None:
-                self.ir(*meta, INSPECCION)
+                self.ir(*meta, INSPECCION, objeto=objeto)
                 return True
         meta = self.cobertura.meta_cobertura(distancias)
         if meta is None:
@@ -441,6 +522,16 @@ class NodoMision(Node):
             self.t_reintentar = ahora + 1.0
             return
         x, y, _, tipo = self.meta
+        if tipo == INSPECCION:
+            motivo = self.motivo_para_no_mirar(self.objeto_meta)
+            if motivo:
+                ox, oy = self.objeto_meta
+                self.get_logger().info(
+                    f'dejo de ir a mirar ({ox:.2f}, {oy:.2f}) t={ahora - self.t_inicio:.1f}: '
+                    f'{motivo}')
+                self.soltar_meta()
+                self.trabas_meta = 0
+                return
         if tipo == COBERTURA:
             ya_no_sirve = self.pendientes \
                 or self.cobertura.ganancia(self.k_meta) < self.cobertura.ganancia_minima
@@ -460,8 +551,15 @@ class NodoMision(Node):
 
     def mirar(self, ahora):
         cmd = Twist()
-        if ahora > self.t_mirar_hasta:
+        motivo = self.motivo_para_no_mirar(self.objeto_mirando)
+        if ahora > self.t_mirar_hasta or motivo:
+            if motivo:
+                ox, oy = self.objeto_mirando
+                self.get_logger().info(
+                    f'termino de mirar ({ox:.2f}, {oy:.2f}) antes t={ahora - self.t_inicio:.1f}: '
+                    f'{motivo}')
             self.t_mirar_hasta = 0.0
+            self.objeto_mirando = None
         else:
             error = normalizar_angulo(self.yaw_mirar - self.pose[2])
             despeje = self.cobertura.despeje_en(*self.pose[:2])

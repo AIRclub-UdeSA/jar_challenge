@@ -104,6 +104,28 @@ ubicada 0,29–0,32 m mal (50 puntos en vez de 100): la covarianza mide cuánto 
 partículas, no cuánto se equivocan, y las 5 vistas desde el mismo lugar comparten el mismo error.
 Las cajas en espera de `nodo_mision` quedan como red de seguridad.
 
+**Inspecciones: no ir a mirar lo que la cámara ya vio sin rojo.** `nodo_mision` va a mirar de cerca
+(inspección, 4 s quieto) cada objeto que el lidar ve fuera del `/map`. En 21 corridas de
+`pruebas/` (2026-11-01), 82 de 120 inspecciones fueron a objetos que no son víctimas: 41 a cajas
+azules distractoras y 41 a "fantasmas", pedazos de pared a 21–35 cm de una pared del `/map` que en
+el mapa faltan o están corridos (siempre en los mismos lugares). Las de fantasmas tardaron 15 s de
+media y causaron 11 de las 18 trabas. En `maze_3_6x6`, las corridas con 4 a 7 fantasmas pasaron
+150–180 s inspeccionando, lo visto quedó estancado entre 54 % y 59 % de 60 s a 200 s y la última
+caja llegó después de los 5 min (400 puntos); la que tuvo 2 fantasmas inspeccionó 47 s (600).
+
+Ahora percepción anota qué miró la cámara (`memoria_camara.py`): con cada imagen, la celda del
+`/map` donde pega cada rayo del lidar que cae adentro de la imagen, y si en la imagen había rojo
+donde estaría una caja apoyada ahí (un solo píxel alcanza, y una celda que vio rojo queda así para
+siempre). Lo publica en `/equipo/vistas_camara` (`nav_msgs/OccupancyGrid` con la geometría de
+`/map`: 0 sin ver, 1–99 imágenes sin rojo, 100 rojo; reliable + transient local, depth 1, cada
+0,5 s si cambió; se puede ver en RViz). Misión no inspecciona un objeto cuyas celdas (las que el
+lidar vio fuera del mapa) la cámara ya vio sin rojo (`veces_sin_rojo` imágenes en
+`celdas_sin_rojo` celdas). Si se entera en camino corta el viaje, y si se entera mirándolo deja de
+mirar (también si el objeto ya es una caja confirmada). Si después aparece rojo, el objeto vuelve
+a quedar para inspeccionar. Con `descartar_con_camara: false` se inspecciona todo, como antes. El
+margen contra las paredes del mapa quedó en 0,20 m (`margen_pared_objetos_m`): agrandarlo sacaría
+fantasmas, pero también cajas contra una pared, y el reglamento no dice que no pueda haberlas.
+
 **Pendiente:** cuando AMCL se pierde, se lo podría reinicializar por `/initialpose` con la pose
 del respaldo (es tema de localización).
 

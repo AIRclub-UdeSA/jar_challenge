@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import pytest
 
 from equipo_jar.agrupador import AgrupadorCajas
@@ -42,6 +43,19 @@ def test_celdas_libres_ocupadas_y_afuera():
     assert not m.ocupada(-0.95, -0.95)
     assert m.celda(5.0, 0.0) is None          # afuera del mapa
     assert not m.libre(5.0, 0.0)
+
+
+@pytest.mark.parametrize('yaw', [0.0, math.pi / 2])
+def test_celdas_de_muchos_puntos_coinciden_con_celda(yaw):
+    m = mapa_con_pared() if yaw == 0.0 else GrillaMapa(20, 20, 0.1, 0.5, -0.5, yaw, [0] * 400)
+    xs = np.array([0.0, 1.05, -0.95, 5.0, -1.2, 0.33, -0.7])
+    ys = np.array([0.0, 0.0, -0.95, 0.0, 0.3, 0.71, 0.9])
+    filas, columnas, adentro = m.celdas_de(xs, ys)
+    for k in range(len(xs)):
+        esperada = m.celda(xs[k], ys[k])
+        assert adentro[k] == (esperada is not None)
+        if esperada is not None:
+            assert (filas[k], columnas[k]) == esperada
 
 
 def test_hay_libre_cerca():
