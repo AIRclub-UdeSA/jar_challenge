@@ -83,6 +83,7 @@ class NodoEquipo(Node):
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
         self.declare_parameter('distancia_encadenar', 0.3)
         self.declare_parameter('inspecciones_maximas', 15)
+        self.declare_parameter('distancia_minima_inspeccion', 0.5)   # m
         self.declare_parameter('recoveries_para_cortar', 2)   # 0 = nunca se corta
         # Con 1 detección roja se sigue mirando hasta este tiempo (s).
         self.declare_parameter('tiempo_mirar_dudoso_s', 2.0)
@@ -153,6 +154,7 @@ class NodoEquipo(Node):
         self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
         self.inspecciones_maximas = self.get_parameter('inspecciones_maximas').value
         self.inspecciones_hechas = 0
+        self.distancia_minima_inspeccion = self.get_parameter('distancia_minima_inspeccion').value
         self.recoveries_para_cortar = self.get_parameter('recoveries_para_cortar').value
         self.tiempo_mirar_dudoso = self.get_parameter('tiempo_mirar_dudoso_s').value
         self.tiempo_objetivo_base = self.get_parameter('tiempo_objetivo_base_s').value
@@ -463,7 +465,8 @@ class NodoEquipo(Node):
         # Los recoveries del BT (Spin, Wait 5 s, BackUp, en ronda) cuestan 20-35 s
         # y casi nunca destraban: pasado el primero se corta y la misión hace su
         # destrabe y sigue.
-        if (ident == self.id_objetivo
+        # En la vuelta no: ahí los recoveries de Nav2 sí sirven y no hay otro objetivo.
+        if (ident == self.id_objetivo and self.estado == EXPLORANDO
                 and fb.feedback.number_of_recoveries >= self.recoveries_para_cortar):
             self.cortar_por_recovery = self.recoveries_para_cortar > 0
 
@@ -521,11 +524,21 @@ class NodoEquipo(Node):
                     f'desde {self.texto_pose()}: se sigue con el próximo')
             self.exploracion.objetivo_terminado(exito)
         elif self.estado == VOLVIENDO:
-            if exito or self.distancia_a_largada() <= self.tolerancia_largada:
+            distancia = self.distancia_a_largada()
+            # Nav2 puede dar "llegué" con la pose de un instante antes de que amcl
+            # se corrija: el bono de vuelta pide <= 0.25 m, así que se mira de nuevo.
+            if distancia <= self.tolerancia_largada or (exito and distancia <= 0.2):
                 self.terminar()
             else:
+                if exito:
+                    self.get_logger().info(
+                        f'Nav2 dice que llegó, pero amcl da {distancia:.2f} m: se reintenta')
+                # Se sigue intentando mientras haya tiempo: rendirse lejos de la
+                # largada pierde el +100 (con poca CPU el controlador falla seguido
+                # y los intentos se gastaban en segundos).
                 self.vueltas_fallidas += 1
-                if self.vueltas_fallidas >= self.intentos_vuelta:
+                if (self.vueltas_fallidas >= self.intentos_vuelta
+                        and self.segundos_de_corrida() > self.tiempo_corrida - 20.0):
                     self.get_logger().warn('No se pudo volver a la largada; se termina igual')
                     self.terminar()
 
@@ -963,8 +976,11 @@ class NodoEquipo(Node):
         """Si hay un candidato pendiente a la vista, empieza a girar hacia él."""
         if pose is None or self.exploracion.despeje(pose[0], pose[1]) < self.despeje_giro:
             return False   # sin lugar para girar en el lugar
+        # De muy cerca la caja tapa toda la imagen y los puntos del lidar sobre ella
+        # caen fuera del cuadro: daba "no es rojo" con una víctima a 0.33 m.
         visibles = [c for c in self.pendientes()
-                    if math.hypot(c['x'] - pose[0], c['y'] - pose[1]) < self.distancia_inspeccion
+                    if self.distancia_minima_inspeccion
+                    <= math.hypot(c['x'] - pose[0], c['y'] - pose[1]) < self.distancia_inspeccion
                     and self.exploracion.linea_de_vista(pose[:2], (c['x'], c['y']))]
         if not visibles:
             return False

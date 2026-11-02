@@ -43,6 +43,7 @@ class JuntarVictimas(Node):
         # grupo más disperso que esto (p. ej. puntos corridos por una pared
         # durante un giro) no se reporta todavía.
         self.declare_parameter('dispersion_maxima', 0.08)
+        self.declare_parameter('puntos_recientes', 30)
         # Al final de la corrida (equipo/vaciar_reportes) se publican los
         # mejores grupos que no llegaron a detecciones_minimas: un reporte
         # errado da 0 y no resta, así que los lugares que sobran se usan.
@@ -54,6 +55,7 @@ class JuntarVictimas(Node):
         self.base_frame = self.get_parameter('base_frame').value
         self.distancia_minima_reportes = self.get_parameter('distancia_minima_reportes').value
         self.dispersion_maxima = self.get_parameter('dispersion_maxima').value
+        self.puntos_recientes = self.get_parameter('puntos_recientes').value
         self.minimas_final = self.get_parameter('detecciones_minimas_final').value
         self.reportadas = []        # medianas ya publicadas
 
@@ -133,7 +135,10 @@ class JuntarVictimas(Node):
         if (g['publicado'] or self.publicados >= self.victimas
                 or len(g['puntos']) < self.minimas):
             return
-        puntos = np.array(g['puntos'])
+        # Los últimos puntos: la mirada más reciente (en general la de cerca). El
+        # grupo entero junta vistas de lugares y momentos distintos, y con amcl
+        # menos preciso su dispersión pasaba el límite aunque cada vista fuera buena.
+        puntos = np.array(g['puntos'][-self.puntos_recientes:])
         mediana = np.median(puntos, axis=0)
         for r in self.reportadas:
             if math.hypot(mediana[0] - r[0], mediana[1] - r[1]) < self.distancia_minima_reportes:
@@ -144,6 +149,10 @@ class JuntarVictimas(Node):
                 return
         dispersion = float(np.median(np.hypot(*(puntos - mediana).T)))
         if dispersion > self.dispersion_maxima:
+            self.get_logger().info(
+                f'Grupo en ({mediana[0]:.2f}, {mediana[1]:.2f}) con {len(g["puntos"])} '
+                f'detecciones, dispersión {dispersion:.3f} m: todavía no se reporta',
+                throttle_duration_sec=3.0)
             return
         self.publicar(g, mediana)
 

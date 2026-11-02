@@ -261,10 +261,12 @@ class Exploracion:
         return True
 
     def punto_de_inspeccion(self, objetivo, desde, d_min=0.6, d_max=1.5):
-        """Celda libre a d_min-d_max de `objetivo`, con vista directa, la más cercana a `desde`.
+        """Celda libre a d_min-d_max de `objetivo`, con vista directa, cerca de `desde`.
 
         Se busca en un anillo alrededor del objetivo, sobre celdas con
-        despeje_punto_vista (el robot tiene que poder girar en el lugar).
+        despeje_punto_vista (el robot tiene que poder girar en el lugar). Entre
+        las candidatas se prefieren las más despejadas: en un rincón el robot
+        después tarda en salir (cada 0.1 m de despeje vale 0.2 m de camino).
         """
         r = self.res
         fila0, col0 = self.celda(*objetivo)
@@ -281,7 +283,8 @@ class Exploracion:
                 d = math.hypot(x - objetivo[0], y - objetivo[1])
                 if not (d_min <= d <= d_max) or not self.linea_de_vista((x, y), objetivo):
                     continue
-                dd = math.hypot(x - desde[0], y - desde[1])
+                dd = (math.hypot(x - desde[0], y - desde[1])
+                      - 2.0 * min(self.dist_pared[fila, col], 0.6))
                 if dd < mejor_d:
                     mejor, mejor_d = (x, y), dd
         return mejor

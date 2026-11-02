@@ -12,11 +12,12 @@ nodo_equipo:
     margen_vuelta_s: 30.0           # margen para llegar a la largada antes del final
     velocidad_vuelta_estimada: 0.2  # m/s medios, para estimar cuánto tarda la vuelta
     tolerancia_largada: 0.15        # m; el bono de vuelta exige <= 0.25 m (§8)
-    intentos_vuelta: 6               # cortes por recovery incluidos
+    intentos_vuelta: 6               # después de estos, igual se sigue hasta 20 s antes del final
     tiempo_sin_avance_s: 20.0       # el juez corta la corrida a los 60 s quieto
     tiempo_sin_desplazamiento_s: 12.0  # s sin moverse en el mapa (amcl) con un objetivo: patina
     distancia_encadenar: 0.45       # m; a esta distancia de un punto de vista se pasa al próximo
     inspecciones_maximas: 15        # tope de candidatos a mirar (un mapa corrido arma muchos falsos)
+    distancia_minima_inspeccion: 0.5  # m; más cerca la cámara no ve bien la caja
     tiempo_mirar_dudoso_s: 2.0      # con 1 sola detección roja se sigue mirando hasta acá
     recoveries_para_cortar: 2       # recoveries de Nav2 (Spin/Wait/BackUp) antes de cortar; 0 = nunca
     margen_segunda_pasada_s: 120.0  # si faltan víctimas y sobra este tiempo, otra ruta más cerca
@@ -61,6 +62,7 @@ juntar_victimas:
     detecciones_minimas: 12         # detecciones (~1.7 s viendo la caja) antes de reportar
     distancia_minima_reportes: 0.7  # m: un grupo más cerca de una ya reportada es la misma caja
     dispersion_maxima: 0.08         # m: grupos más dispersos no se reportan
+    puntos_recientes: 30            # la mediana y la dispersión se calculan con los últimos N puntos
     radio_grupo: 0.30               # m, distancia máxima a la mediana del grupo
     # Media caja (m): corre cada detección de la cara al centro. Las cajas del
     # simulador miden 0.25 m; las del robot real del workshop, ~0.18 (0.09).
