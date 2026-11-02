@@ -28,6 +28,8 @@ nodo_equipo:
     costo_maximo_objetivo: 50       # costo del costmap global (0-100) tolerado
     costo_libre_objetivo: 20        # costo de la celda a la que se lo corre
     radio_ajuste_objetivo: 0.8      # m
+    espera_nav2_s: 30.0             # s sin Nav2 activo antes de reiniciarlo
+    reintentos_nav2: 2
     # Exploración: puntos de vista desde donde el lidar ve todo el laberinto.
     alcance_cobertura: 3.5          # m de lidar que cuentan como "visto"
     despeje_punto_vista: 0.25       # m mínimos de un punto de vista a la pared

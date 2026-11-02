@@ -18,7 +18,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -259,6 +259,9 @@ def generate_launch_description():
         behavior,
         navigator,
         amcl,
-        lifecycle,
+        # El lifecycle_manager arranca unos segundos después: si intenta
+        # configurar los nodos de Nav2 antes de descubrir sus servicios, el
+        # pedido falla, aborta todo el bringup y el robot no se mueve.
+        TimerAction(period=3.0, actions=[lifecycle]),
         rviz,
     ])

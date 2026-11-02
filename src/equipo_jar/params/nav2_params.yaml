@@ -263,12 +263,14 @@ global_costmap:
       # semana 03, acá una capa más en vez de un `if distancia < margen`.
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Más corto y empinado que el de nav2_bringup (0.55 / 3.0): con
-        # 0.55 todo el ancho de un pasillo de 0.8 m tenía costo alto y el
-        # robot no "se animaba" a cruzarlo. Con esto el costo cae rápido
-        # pasando el footprint y el centro del pasillo queda casi libre.
-        cost_scaling_factor: 5.0
-        inflation_radius: 0.35
+        # Costmap global (el que usa el planner): más ancho y suave que el
+        # local, para que el camino vaya por el centro de los pasillos y
+        # abra las curvas. Con 0.35 / 5.0 el plan cortaba las esquinas de
+        # las vueltas en U (pasaba a 0.12 m de la punta de la pared) y el
+        # robot, que es un rectángulo de 0.30 x 0.20, no podía doblar ahí.
+        # El local (el que usa DWB para no chocar) sigue en 0.35 / 5.0.
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.5
       always_send_full_costmap: True
 
 local_costmap:
@@ -666,7 +668,7 @@ planner_server:
       max_planning_time: 2.0
       # Cuánto pesa el costo de las celdas frente a la distancia: con más,
       # el camino va por el centro de los pasillos y no pegado a las paredes.
-      cost_travel_multiplier: 2.0
+      cost_travel_multiplier: 3.0
       use_final_approach_orientation: false
       smoother:
         max_iterations: 1000

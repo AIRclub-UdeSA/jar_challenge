@@ -28,6 +28,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PointStamped, PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import LaserScan
 from rclpy.action import ActionClient
@@ -94,6 +95,10 @@ class NodoEquipo(Node):
         self.declare_parameter('costo_maximo_objetivo', 50)
         self.declare_parameter('costo_libre_objetivo', 20)
         self.declare_parameter('radio_ajuste_objetivo', 0.8)
+        # Si Nav2 no acepta objetivos este tiempo después del mapa (bringup
+        # abortado), se le pide al lifecycle_manager que lo reinicie.
+        self.declare_parameter('espera_nav2_s', 30.0)
+        self.declare_parameter('reintentos_nav2', 2)
         # Parámetros del planificador de exploración (ver exploracion.py).
         for nombre in ('alcance_cobertura', 'despeje_punto_vista', 'despeje_transito',
                        'despeje_caja', 'fraccion_cobertura', 'reintentos_punto_vista'):
@@ -117,6 +122,12 @@ class NodoEquipo(Node):
         self.costo_maximo_objetivo = self.get_parameter('costo_maximo_objetivo').value
         self.costo_libre_objetivo = self.get_parameter('costo_libre_objetivo').value
         self.radio_ajuste_objetivo = self.get_parameter('radio_ajuste_objetivo').value
+        self.espera_nav2 = self.get_parameter('espera_nav2_s').value
+        self.reintentos_nav2 = self.get_parameter('reintentos_nav2').value
+        self.reinicios_nav2 = 0
+        self.t_espera_nav2 = None
+        self.gestor_nav2 = self.create_client(
+            ManageLifecycleNodes, 'lifecycle_manager/manage_nodes')
 
         self.estado = ESPERANDO_MAPA
         self.mapa = None
@@ -404,6 +415,10 @@ class NodoEquipo(Node):
                 return
         pose = self.pose_robot()
         if self.estado == LOCALIZANDO:
+            if not self.nav.server_is_ready():
+                # También mientras se espera a amcl: si el bringup abortó,
+                # amcl tampoco está activo y la localización no avanza.
+                self.quizas_reiniciar_nav2()
             if not self.localizado:
                 self.localizar()
                 return
@@ -483,6 +498,34 @@ class NodoEquipo(Node):
                 f'sigma yaw {math.sqrt(cov[2]):.3f} rad')
             self.localizado = True
             self.pub_localizado.publish(Empty())
+
+    def quizas_reiniciar_nav2(self):
+        """Si Nav2 no arrancó (bringup abortado), pide RESET y STARTUP."""
+        ahora = self.ahora()
+        if self.t_espera_nav2 is None:
+            self.t_espera_nav2 = ahora
+        if (ahora - self.t_espera_nav2 < self.espera_nav2
+                or self.reinicios_nav2 >= self.reintentos_nav2
+                or not self.gestor_nav2.service_is_ready()):
+            return
+        self.reinicios_nav2 += 1
+        self.t_espera_nav2 = ahora
+        self.get_logger().warn(
+            f'Nav2 no arrancó: se reinicia (intento {self.reinicios_nav2}/{self.reintentos_nav2})')
+        reset = ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.RESET)
+        self.gestor_nav2.call_async(reset).add_done_callback(self._arrancar_nav2)
+
+    def _arrancar_nav2(self, _futuro):
+        inicio = ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.STARTUP)
+        self.gestor_nav2.call_async(inicio).add_done_callback(self._nav2_reiniciado)
+
+    def _nav2_reiniciado(self, futuro):
+        ok = futuro.result() is not None and futuro.result().success
+        self.get_logger().info(f'Reinicio de Nav2: {"ok" if ok else "falló"}')
+        # amcl arranca otra vez con su pose por defecto: localizar de nuevo.
+        self.localizado = False
+        self.t_pose_inicial = None
+        self.pose_inicial_aceptada = False
 
     def publicar_pose_inicial(self):
         msg = PoseWithCovarianceStamped()
