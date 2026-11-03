@@ -8,7 +8,7 @@
 nodo_equipo:
   ros__parameters:
     frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.30      # m/s
+    velocidad_lineal_max: 0.45      # m/s (el robot recorta igual en 0,5)
     velocidad_angular_max: 1.00     # rad/s
     tiempo_regreso: 530.0           # s desde el mapa: empezar a buscar la largada (o con N reportes)
     tiempo_limite: 590.0            # s desde el mapa: frenar y publicar /done (la corrida corta a 600)
@@ -24,37 +24,62 @@ detector_scan:
     saturacion_min: 120.0
     giro_maximo: 0.5                # rad/s (IMU): girando más rápido no se marca rojo; 0 = apagado
     erosion_mascara: 2              # px que se achica cada mancha roja (bordes de las cajas)
+    pixeles_rojo_minimos: 150       # px rojos para avisar "rojo a la vista" (de 320x240)
+    tolerancia_profundidad: 0.3     # m: rayo rojo más atrás que esto de su grupo = se escapó por el borde
 
 evasor:
   ros__parameters:
-    distancia_choque_m: 0.5
+    distancia_choque_m: 0.4
     angulo_giro_deg: 25.0
-    angulo_vision_deg: 60.0
+    angulo_vision_deg: 40.0         # cono frontal angosto: las paredes del pasillo no lo frenan
     angulo_frente_deg: 180.0
     velocidad_adelante: 0.3
-    velocidad_angular: 0.4          # rad/s: por debajo de giro_maximo, para detectar girando
+    velocidad_rapida: 0.45          # m/s en zonas abiertas (tope: nodo_equipo.velocidad_lineal_max)
+    abierto_lateral_desde: 0.4      # m a la pared lateral más cercana: empieza a acelerar
+    abierto_lateral_hasta: 0.8      # m: a velocidad_rapida
+    abierto_frente_desde: 1.0       # m libres adelante: empieza a acelerar
+    abierto_frente_hasta: 1.5       # m: a velocidad_rapida
+    velocidad_angular: 0.5          # rad/s: giro normal
+    velocidad_angular_rojo: 0.3     # rad/s con rojo a la vista (por debajo de giro_maximo)
+    tiempo_giro_lento: 1.5          # s que sigue lento después de dejar de ver rojo
     # Mejoras (cada una se apaga con false; todo en false = evasor original):
     girar_hacia_libre: true         # girar hacia el lado más libre hasta despejar el frente
-    margen_lateral: 0.22            # m: pared más cerca al costado -> alejarse de costado
-    velocidad_lateral: 0.1          # m/s
-    distancia_lenta: 1.0            # m: desde acá frena de a poco hasta distancia_choque_m
+    margen_lateral: 0.19            # m (desde el centro): pared más cerca al costado -> alejarse
+    medio_ancho_robot: 0.13         # m: forma del robot para ver adelante y a los costados
+    medio_largo_robot: 0.16         # m
+    margen_frontal: 0.05            # m de más a cada lado del corredor de adelante
+    anticipacion_lateral: 0.05      # m delante de la trompa que cuentan como costado
+    velocidad_lateral: 0.06         # m/s
+    ancho_pasillo: 0.5              # m: paredes a los dos lados más cerca que esto -> centrarse
+    ganancia_centrado: 0.5          # 1/s
+    distancia_lenta: 0.7            # m: desde acá frena de a poco hasta distancia_choque_m
     acercarse_rojo: true            # acercarse a lo rojo que todavía no se confirmó
-    distancia_acercamiento: 0.7     # m del objeto donde se queda mirando
+    distancia_acercamiento: 0.45    # m del objeto donde se queda mirando: MENOR que
+                                    # gestor_victimas.distancia_maxima_observacion, o no confirma
     tiempo_max_acercamiento: 10.0   # s: después lo abandona (y lo ignora 30 s)
     distancia_max_rojo: 2.5         # m
     radio_confirmada: 0.5           # m
+    memoria_rojo: 8.0               # s que recuerda un objeto rojo visto (girando sale enseguida de la cámara)
     explorar_con_memoria: true      # elegir rumbo hacia lo que la cámara no vio
     fov_camara_deg: 61.0            # campo horizontal de la cámara (de camera_info)
     alcance_camara: 2.5             # m
     peso_libre: 1.0
     peso_no_visto: 2.0
-    periodo_reevaluar: 4.0          # s
+    peso_seguir: 0.8                # preferencia por seguir derecho (evita ir y volver)
+    mejora_para_cambiar: 0.2        # "nada nuevo adelante" solo gira si otra dirección tiene esto más sin ver
+    periodo_reevaluar: 8.0          # s
     no_visto_minimo: 0.05           # fracción sin ver adelante por debajo de la cual cambia de rumbo
     barridos: true                  # vuelta completa en zonas con mucho sin ver
     radio_barrido: 1.2              # m
     fraccion_para_barrer: 0.5
     distancia_entre_barridos: 1.0   # m
     espacio_para_barrer: 0.3        # m libres alrededor para girar sin rozar
+    # Volviendo a la largada: rumbo que más acerca CAMINANDO por el laberinto (mapa de distancias).
+    regreso_por_mapa: true          # false = mientras vuelve sigue explorando (como antes)
+    margen_regreso: 0.15            # m: el camino calculado no pasa más cerca de las paredes
+    paso_regreso: 0.5               # m adelante que se evalúa cada dirección
+    periodo_regreso: 1.0            # s entre correcciones de rumbo
+    tolerancia_rumbo_regreso_deg: 25.0
 
 localizador:
   ros__parameters:
@@ -92,7 +117,7 @@ gestor_victimas:
     radio_asociacion: 0.35              # m: dos detecciones más cerca son la misma caja
     observaciones_minimas: 8            # veces que hay que ver una caja para reportarla
     tiempo_olvido: 5.0                  # s sin ver un candidato no confirmado antes de descartarlo
-    distancia_maxima_observacion: 0.5   # m: detecciones más lejanas se ignoran
+    distancia_maxima_observacion: 1.0   # m: detecciones más lejanas se ignoran (> evasor.distancia_acercamiento)
     medio_lado_caja: 0.125              # m: de la cara que ve el lidar al centro de la caja
     calidad_minima: 0.6                 # (0-1) por debajo, la pose es dudosa y se ignoran detecciones
     calidad_vencimiento: 1.0            # s

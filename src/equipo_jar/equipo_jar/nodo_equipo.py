@@ -101,6 +101,8 @@ class NodoEquipo(Node):
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_victimas = self.create_publisher(PointStamped, '/victimas', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
+        # Mientras vuelve, la largada (en `map`) para que el evasor oriente su exploración hacia ella.
+        self.pub_objetivo_regreso = self.create_publisher(PointStamped, 'objetivo_regreso', 10)
 
         periodo = 1.0 / self.get_parameter('frecuencia_control_hz').value
         self.create_timer(periodo, self.ciclo_de_control)
@@ -218,6 +220,12 @@ class NodoEquipo(Node):
                 self.cambiar_estado(VOLVIENDO, f'pasaron {t:.0f} s')
 
         if self.estado in (VOLVIENDO, APROXIMANDO):
+            if self.largada_map is not None:
+                objetivo = PointStamped()
+                objetivo.header.frame_id = self.p('map_frame')
+                objetivo.header.stamp = self.get_clock().now().to_msg()
+                objetivo.point.x, objetivo.point.y = self.largada_map
+                self.pub_objetivo_regreso.publish(objetivo)
             self.intentar_regreso()
 
     def intentar_regreso(self):

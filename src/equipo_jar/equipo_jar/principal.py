@@ -82,8 +82,10 @@ def main():
             for nodo in nodos:
                 executor.remove_node(nodo)
                 nodo.destroy_node()
-        except KeyboardInterrupt:
-            pass   # un segundo Ctrl-C mientras se cierra: no hay nada más que limpiar
+        except (KeyboardInterrupt, Exception):  # noqa: BLE001
+            # Cerrando con Ctrl-C, rclpy puede invalidar el contexto en el medio (o llegar un
+            # segundo Ctrl-C): no hay nada más que limpiar, y el robot se frena solo igual.
+            pass
         if rclpy.ok():
             rclpy.shutdown()
 

@@ -3,7 +3,8 @@ import math
 import numpy as np
 import pytest
 
-from equipo_jar.regreso import distancia_a_paredes, linea_libre, velocidad_hacia
+from equipo_jar.regreso import (campo_hacia, distancia_a_paredes, linea_libre, valor_cercano,
+                                velocidad_hacia)
 
 RES = 0.05
 
@@ -41,6 +42,23 @@ def test_linea_libre_y_bloqueada():
 def test_linea_que_sale_del_mapa_no_es_libre():
     d = distancia_a_paredes(cuarto_con_pared(), RES)
     assert not linea_libre(d, RES, 0.0, 0.0, (0.5, 0.5), (5.0, 0.5), margen=0.0)
+
+
+def test_campo_hacia_rodea_la_pared():
+    # Objetivo en (1,5, 0,5), del otro lado de la pared (x = 1, de y = 0 a 1,5): hay que subir,
+    # pasar por arriba (y > 1,5) y bajar. En línea recta serían 1 m; caminando, bastante más.
+    d = distancia_a_paredes(cuarto_con_pared(), RES)
+    campo = campo_hacia(d, RES, 0.0, 0.0, (1.5, 0.5), margen=0.15)
+    desde = valor_cercano(campo, RES, 0.0, 0.0, 0.5, 0.5, 0.05)
+    assert 2.0 < desde < 3.5
+    # Subir (hacia donde termina la pared) acerca; ir para abajo, hacia el rincón, aleja.
+    assert valor_cercano(campo, RES, 0.0, 0.0, 0.5, 1.0, 0.05) < desde
+    assert valor_cercano(campo, RES, 0.0, 0.0, 0.5, 0.25, 0.05) > desde
+
+
+def test_campo_hacia_objetivo_fuera_del_mapa_es_todo_inalcanzable():
+    d = distancia_a_paredes(cuarto_con_pared(), RES)
+    assert np.isinf(campo_hacia(d, RES, 0.0, 0.0, (9.0, 9.0), 0.15)).all()
 
 
 def test_velocidad_hacia_en_el_frame_del_robot():
