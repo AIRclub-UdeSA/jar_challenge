@@ -481,8 +481,11 @@ class NodoEquipo(Node):
         self.objetivo = (x, y)
         self.yaw_objetivo = yaw
         self.navegando = True
-        self.ultimo_avance = self.ahora()
-        self.ancla = None
+        if nuevo:
+            # Un reenvío (subobjetivo, objetivo corrido, reintento) no reinicia los
+            # watchdogs: si no, el ciclo subobjetivo/retomar cada 4-8 s los anulaba.
+            self.ultimo_avance = self.ahora()
+            self.ancla = None
         ident = self.id_objetivo
         self.cortar_por_recovery = False
         self.nav.send_goal_async(
@@ -1151,6 +1154,7 @@ class NodoEquipo(Node):
                     if minima <= math.hypot(c['x'] - pose[0], c['y'] - pose[1])
                     < self.distancia_inspeccion
                     and self.exploracion.linea_de_vista(pose[:2], (c['x'], c['y']))
+                    and ('pose_corte' not in c or math.dist(pose[:2], c['pose_corte']) > 0.5)
                     and (not solo_claros or self.exploracion.despeje(c['x'], c['y'])
                          >= self.despeje_candidato_claro)]
         if not visibles:
@@ -1179,15 +1183,29 @@ class NodoEquipo(Node):
             err = math.atan2(c['y'] - pose[1], c['x'] - pose[0]) - pose[2]
             err = math.atan2(math.sin(err), math.cos(err))
             cerca = self.despeje_scan()
-            if abs(err) > 0.25 and ahora - insp['t'] < self.tiempo_giro and cerca >= 0.23:
+            corte = self.despeje_giro_scan - 0.03   # 0 en params apaga las dos condiciones
+            sin_tiempo = ahora - insp['t'] >= self.tiempo_giro and abs(err) > 0.5
+            if abs(err) > 0.25 and (cerca < corte or sin_tiempo):
+                # Sin lugar para seguir girando: mirar desde acá sería mirar para otro
+                # lado y descartar una víctima. No cuenta como inspección; se reintenta
+                # cuando el robot esté en otro lugar.
+                self.get_logger().info(
+                    f'Giro cortado hacia ({c["x"]:.2f}, {c["y"]:.2f}) en {self.texto_pose()}: '
+                    + (f'algo a {cerca:.2f} m' if cerca < corte else 'se acabó el tiempo')
+                    + '; se mira desde otro lugar')
+                c['pose_corte'] = pose[:2]
+                self.inspecciones_hechas -= 1
+                self.inspeccion = None
+                self.pub_cmd_vel.publish(Twist())
+                return
+            if abs(err) > 0.25 and ahora - insp['t'] < self.tiempo_giro:
                 w = min(self.giro_maximo, max(self.giro_minimo, 1.5 * abs(err)))
                 cmd.angular.z = math.copysign(w, err)
             else:
                 self.get_logger().info(
                     f'Mirando el candidato ({c["x"]:.2f}, {c["y"]:.2f}) desde '
                     f'{self.texto_pose()}: error de rumbo {math.degrees(err):.0f}°'
-                    + (' (algo a menos de 0.23 m: se corta el giro)' if cerca < 0.23
-                       else ' (se acabó el tiempo de giro)' if abs(err) > 0.25 else ''))
+                    + (' (se acabó el tiempo de giro)' if abs(err) > 0.25 else ''))
                 insp['fase'] = 'mirar'
                 insp['t'] = ahora
         elif insp['fase'] == 'mirar':
