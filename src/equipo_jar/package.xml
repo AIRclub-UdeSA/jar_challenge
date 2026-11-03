@@ -6,7 +6,6 @@
   <maintainer email="equipo@example.com">Stack&amp;Queue</maintainer>
   <license>MIT</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>action_msgs</exec_depend>
