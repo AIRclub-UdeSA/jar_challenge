@@ -515,9 +515,23 @@ def test_sale_del_margen_de_una_pared_en_vez_de_quedarse_bloqueado(nodo):
 
 
 def test_no_sale_del_margen_si_el_scan_lo_impide(nodo):
+    """Caja arriba y pared abajo, pegadas al chasis: ningún paso aleja."""
     n = preparar_mirada(nodo)
-    caja = np.array([[0.0, 0.13], [0.1, 0.13], [-0.1, 0.13]])
-    assert not n.salir_del_margen(0.5, 0.17, 0.0, caja)
+    lados = np.linspace(-0.2, 0.2, 21)
+    encierro = np.array([[x, 0.13] for x in lados] + [[x, -0.13] for x in lados]
+                        + [[0.195, y] for y in lados] + [[-0.195, y] for y in lados])
+    assert not n.salir_del_margen(0.5, 0.17, 0.0, encierro)
+
+
+def test_encerrado_por_el_scan_se_aleja_de_lo_que_ve(nodo):
+    """Sin celda libre cerca, se mueve en la dirección que más lo aleja del scan."""
+    n = preparar_mirada(nodo)
+    n.libre_fino[:] = False
+    caja = np.array([[0.2, y] for y in np.linspace(-0.1, 0.1, 11)])
+    n.pub_cmd_vel.reset_mock()
+    assert n.salir_del_margen(0.5, 0.5, 0.0, caja)
+    cmd = n.pub_cmd_vel.publish.call_args[0][0]
+    assert cmd.linear.x < 0.0
 
 
 def test_mirada_bloqueada_un_momento_se_retoma_sin_reiniciar(nodo, monkeypatch):
@@ -664,18 +678,28 @@ def test_con_todas_las_victimas_vuelve(nodo):
     assert n.estado == explorador.ESTADO_REGRESANDO
 
 
-def test_quieto_mucho_tiempo_fuerza_una_mirada(nodo):
+def test_quieto_mucho_tiempo_fuerza_una_mirada(nodo, monkeypatch):
+    """El corte de 60 s del jurado es en tiempo real: el temporizador usa el reloj de pared."""
     n = preparar_mirada(nodo)
-    _, _, reloj = nodo
+    pared = [1000.0]
+    monkeypatch.setattr(explorador.time, 'monotonic', lambda: pared[0])
     n.posicion_ultima_mirada = (0.5, 0.5)
     n.cubiertas_en_ultima_mirada = n.celdas_cubiertas
     n.velocidad_ordenada = 0.0
     n.revisar_reloj()
-    reloj.now.return_value = Time(seconds=100 + n.espera_inmovil_s,
-                                  clock_type=ClockType.ROS_TIME)
+    pared[0] += n.espera_inmovil_s
     n.revisar_reloj()
     assert n.forzar_mirada
-    # El scan del helper tiene el sello de t=100: volver ahí para que siga vigente.
-    reloj.now.return_value = Time(seconds=100, clock_type=ClockType.ROS_TIME)
     assert n.mirar_alrededor((0.5, 0.5, 0.0))
     assert n.mirada.activa
+
+
+def test_marcas_del_scan_que_encierran_al_robot_se_borran(nodo):
+    """Si el mapa lo deja libre y solo lo encierran marcas del scan, se liberan."""
+    n = preparar_mirada(nodo)
+    x, y = 0.5, 0.5
+    n.actualizar_obstaculos((x, y, 0.0), np.array([[0.17, 0.0], [-0.17, 0.0]]))
+    assert not n.libre_fino[n.celda_fina_segura(x, y)]
+    assert n.liberar_marcas_cercanas(x, y)
+    assert n.libre_fino[n.celda_fina_segura(x, y)]
+    assert not n.obstaculos_temporales

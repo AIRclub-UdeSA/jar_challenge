@@ -107,7 +107,7 @@ explorador:
     margen_obstaculos_scan: 0.02
     alcance_obstaculos_scan: 1.0
     impactos_minimos_scan: 3
-    radio_escape: 0.20
+    radio_escape: 0.35
     velocidad_escape: 0.06
     # Corrida de 10 min desde /map (§5): a los 7.5 min reporta lo que tenga y
     # vuelve a la largada para publicar /done (bono de regreso, §8).

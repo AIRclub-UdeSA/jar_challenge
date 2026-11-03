@@ -174,6 +174,20 @@ def celda_libre_cercana(libre, celda, radio_celdas):
     return int(filas[i] + f0), int(cols[i] + c0)
 
 
+def celdas_libres_cercanas(libre, celda, radio_celdas, maximo=40):
+    """Hasta `maximo` celdas libres dentro de `radio_celdas`, de la más cercana a la más lejana."""
+    fila, col = celda
+    alto, ancho = libre.shape
+    f0, f1 = max(0, fila - radio_celdas), min(alto, fila + radio_celdas + 1)
+    c0, c1 = max(0, col - radio_celdas), min(ancho, col + radio_celdas + 1)
+    filas, cols = np.nonzero(libre[f0:f1, c0:c1])
+    filas, cols = filas + f0, cols + c0
+    distancias = np.hypot(filas - fila, cols - col)
+    dentro = distancias <= radio_celdas
+    orden = np.argsort(distancias[dentro], kind='stable')[:maximo]
+    return [(int(f), int(c)) for f, c in zip(filas[dentro][orden], cols[dentro][orden])]
+
+
 def escape_seguro(puntos, largo, ancho, desplazamiento, minimo=0.01):
     """
     Indica si mover la huella `desplazamiento` (base_footprint) no la acerca al scan.
@@ -187,3 +201,23 @@ def escape_seguro(puntos, largo, ancho, desplazamiento, minimo=0.01):
     antes = float(np.min(distancia_huella(puntos, largo, ancho)))
     despues = float(np.min(distancia_huella(puntos - np.asarray(desplazamiento), largo, ancho)))
     return despues >= minimo or despues >= antes
+
+
+def direccion_de_alejamiento(puntos, largo, ancho, paso=0.03, direcciones=16):
+    """
+    Dirección unitaria (base_footprint) que más aleja la huella del scan.
+
+    Prueba `direcciones` rumbos con un paso de `paso` metros y devuelve el que
+    deja más holgura, solo si la mejora; None si ninguno aleja el chasis.
+    """
+    puntos = np.asarray(puntos, dtype=float).reshape(-1, 2)
+    if not len(puntos):
+        return None
+    actual = float(np.min(distancia_huella(puntos, largo, ancho)))
+    mejor, holgura_mejor = None, actual
+    for angulo in np.linspace(0.0, 2.0 * math.pi, direcciones, endpoint=False):
+        u = np.array([math.cos(angulo), math.sin(angulo)])
+        holgura = float(np.min(distancia_huella(puntos - u * paso, largo, ancho)))
+        if holgura > holgura_mejor + 1e-4:
+            mejor, holgura_mejor = (float(u[0]), float(u[1])), holgura
+    return mejor

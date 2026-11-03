@@ -1,4 +1,5 @@
 import math
+import time
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,7 +26,8 @@ from jar_exploracion.mirada import (MiradaPorPasos, eje_mas_cercano, giro_seguro
                                     radio_de_giro)
 from jar_exploracion.planificador import PlanificadorCompilado, segmento_transitable
 from jar_exploracion.trazado import celdas_visibles
-from jar_exploracion.seguridad import (buscar_desvio, celda_libre_cercana, escape_seguro,
+from jar_exploracion.seguridad import (buscar_desvio, celdas_libres_cercanas,
+                                       direccion_de_alejamiento, escape_seguro,
                                        espacio_transitable, puntos_scan, regular_traslacion)
 
 FRECUENCIA_HZ = 10.0
@@ -329,6 +331,9 @@ class Explorador(Node):
             self.margen_seguridad + 0.006,
             self.yaw_huella - yaw_de_quaternion(msg.info.origin.orientation))
         self.componentes_libres, _ = nd.label(self.libre_fino)
+        # Solo el mapa, sin obstáculos del scan: para saber si lo que encierra
+        # al robot es una marca del scan y no una pared.
+        self.libre_estatico = self.libre_fino
 
         self.info_mapa = info
         self.costo_fino = self.costo_por_holgura(
@@ -379,6 +384,7 @@ class Explorador(Node):
         self.yaw_huella = yaw
         yaw_mapa = yaw - yaw_de_quaternion(self.info_mapa.origin.orientation)
         self.libre_fino = self.espacio_libre(self.datos_planificacion, yaw_mapa)
+        self.libre_estatico = self.espacio_libre(self.datos_mapa, yaw_mapa)
         self.componentes_libres, _ = nd.label(self.libre_fino)
         self.costo_fino = self.costo_por_holgura(self.datos_planificacion, yaw_mapa)
         for cache in (self.cache_zonas_alcanzables, self.cache_busquedas,
@@ -1221,6 +1227,8 @@ class Explorador(Node):
                 if celda_robot is None or not self.libre_fino[celda_robot]:
                     if self.salir_del_margen(x_r, y_r, yaw_r, impactos):
                         return
+                    if self.liberar_marcas_cercanas(x_r, y_r):
+                        return
                     self.get_logger().warn(
                         'No se buscan puntos de observación: posición del robot bloqueada.',
                         throttle_duration_sec=10.0)
@@ -1356,44 +1364,91 @@ class Explorador(Node):
 
     def salir_del_margen(self, x_r, y_r, yaw_r, impactos):
         """
-        Aleja el robot hacia la celda libre más cercana si quedó dentro del margen.
+        Aleja el robot del margen de una pared u obstáculo en vez de quedar detenido.
 
-        Sin esto el explorador se queda detenido: desde una celda no transitable
-        no busca puntos de observación ni planifica. Devuelve False si no hay
-        celda libre cerca o si el paso acercaría el chasis a un impacto del scan.
+        Desde una celda no transitable el explorador no busca destinos ni
+        planifica, y 60 s quieto terminan la corrida (§11.3). Prueba las celdas
+        libres cercanas, de la más cercana a la más lejana, y toma la primera
+        cuya dirección no acerque el chasis a un impacto del scan. Si ninguna
+        sirve, se aleja del impacto más cercano. False solo si nada es seguro.
         """
         celda = self.celda_fina_segura(x_r, y_r)
         if celda is None:
             return False
         resolucion = self.info_mapa.resolution
-        destino = celda_libre_cercana(
-            self.libre_fino, celda, math.ceil(self.radio_escape / resolucion))
-        if destino is None:
-            return False
-        # Celdas -> metros en el frame del mapa y luego en base_footprint.
         yaw_mapa = yaw_de_quaternion(self.info_mapa.origin.orientation)
-        d_col, d_fila = destino[1] - celda[1], destino[0] - celda[0]
-        dx_m = (math.cos(yaw_mapa) * d_col - math.sin(yaw_mapa) * d_fila) * resolucion
-        dy_m = (math.sin(yaw_mapa) * d_col + math.cos(yaw_mapa) * d_fila) * resolucion
-        distancia = math.hypot(dx_m, dy_m)
-        if distancia < 1e-6:
-            return False
         c, sn = math.cos(yaw_r), math.sin(yaw_r)
-        ux, uy = (c * dx_m + sn * dy_m) / distancia, (-sn * dx_m + c * dy_m) / distancia
-        if not escape_seguro(impactos, self.largo_robot, self.ancho_robot,
-                             (0.02 * ux, 0.02 * uy)):
-            return False
-        self.get_logger().warn(
-            f'Robot dentro del margen de una pared: me alejo {100 * distancia:.0f} cm '
-            'hacia la celda libre más cercana.', throttle_duration_sec=5.0)
+        for destino in celdas_libres_cercanas(
+                self.libre_fino, celda, math.ceil(self.radio_escape / resolucion)):
+            # Celdas -> metros en el frame del mapa y luego en base_footprint.
+            d_col, d_fila = destino[1] - celda[1], destino[0] - celda[0]
+            dx_m = (math.cos(yaw_mapa) * d_col - math.sin(yaw_mapa) * d_fila) * resolucion
+            dy_m = (math.sin(yaw_mapa) * d_col + math.cos(yaw_mapa) * d_fila) * resolucion
+            distancia = math.hypot(dx_m, dy_m)
+            if distancia < 1e-6:
+                continue
+            direccion = ((c * dx_m + sn * dy_m) / distancia,
+                         (-sn * dx_m + c * dy_m) / distancia)
+            if escape_seguro(impactos, self.largo_robot, self.ancho_robot,
+                             (0.02 * direccion[0], 0.02 * direccion[1])):
+                self.get_logger().warn(
+                    f'Robot dentro del margen: me alejo {100 * distancia:.0f} cm '
+                    'hacia una celda libre.', throttle_duration_sec=5.0)
+                return self.escapar(direccion)
+        direccion = direccion_de_alejamiento(impactos, self.largo_robot, self.ancho_robot)
+        if direccion is not None:
+            self.get_logger().warn(
+                'Robot dentro del margen sin celda libre a mano: me alejo de lo más cercano.',
+                throttle_duration_sec=5.0)
+            return self.escapar(direccion)
+        return False
+
+    def escapar(self, direccion):
+        """Traslada despacio en `direccion` (unitaria, base_footprint)."""
         self.camino = None
         self.publicar_camino([])
         cmd = Twist()
-        cmd.linear.x = self.velocidad_escape * ux
-        cmd.linear.y = self.velocidad_escape * uy
+        cmd.linear.x = self.velocidad_escape * direccion[0]
+        cmd.linear.y = self.velocidad_escape * direccion[1]
         self.vx_anterior, self.vy_anterior = cmd.linear.x, cmd.linear.y
         self.velocidad_ordenada = self.velocidad_escape
         self.pub_cmd_vel.publish(cmd)
+        return True
+
+    def liberar_marcas_cercanas(self, x_r, y_r, radio=0.5):
+        """
+        Borra las marcas del scan alrededor del robot si son lo único que lo encierra.
+
+        Junto a una caja, la caja inflada con la huella deja al robot "adentro" de
+        un obstáculo y sin salida: el explorador no planifica y el jurado corta la
+        corrida a los 60 s. Si el mapa solo deja libre esa posición, la traba es
+        de las marcas; el frenado y el desvío contra el scan en vivo siguen
+        evitando el choque.
+        """
+        celda = self.celda_fina_segura(x_r, y_r)
+        if celda is None or not self.libre_estatico[celda]:
+            return False
+        cercanas = [c for c in self.obstaculos_temporales
+                    if math.dist(self.celda_a_mundo(*c, self.info_mapa), (x_r, y_r)) <= radio]
+        if not cercanas:
+            return False
+        for c in cercanas:
+            self.obstaculos_temporales.pop(c, None)
+            self.conteo_impactos.pop(c, None)
+        datos = self.datos_mapa.copy()
+        for c in self.obstaculos_temporales:
+            if self.conteo_impactos.get(c, 0) >= self.impactos_minimos_scan:
+                datos[c] = 100
+        yaw_mapa = self.yaw_huella - yaw_de_quaternion(self.info_mapa.origin.orientation)
+        self.datos_planificacion = datos
+        self.libre_fino = self.espacio_libre(datos, yaw_mapa)
+        self.componentes_libres, _ = nd.label(self.libre_fino)
+        self.costo_fino = self.costo_por_holgura(datos, yaw_mapa)
+        self.cache_zonas_alcanzables.clear()
+        self.camino = None
+        self.get_logger().warn(
+            f'Robot encerrado por marcas del scan: borro {len(cercanas)} a menos de '
+            f'{radio:.1f} m y sigo con el scan en vivo.', throttle_duration_sec=5.0)
         return True
 
     # ---------- control ----------
@@ -1410,10 +1465,13 @@ class Explorador(Node):
             transcurrido = (ahora - self.momento_mapa).nanoseconds / 1e9
             if transcurrido >= self.tiempo_regreso_s:
                 self.motivo_regreso = f'{transcurrido:.0f} s desde la publicación de /map'
+        # Reloj de pared, como el del jurado: en un simulador lento el reloj
+        # simulado se atrasa y el corte de 60 s llegaría antes.
+        pared = time.monotonic()
         if self.velocidad_ordenada > 0.01 or self.mirada.activa or self.momento_movimiento is None:
-            self.momento_movimiento = ahora
+            self.momento_movimiento = pared
         elif (self.estado in (ESTADO_EXPLORANDO, ESTADO_REGRESANDO) and self.espera_inmovil_s > 0
-              and (ahora - self.momento_movimiento).nanoseconds / 1e9 >= self.espera_inmovil_s):
+              and pared - self.momento_movimiento >= self.espera_inmovil_s):
             if not self.forzar_mirada:
                 self.get_logger().warn(
                     f'{self.espera_inmovil_s:.0f} s sin moverse: mirada para no quedar inmóvil.')
