@@ -25,6 +25,7 @@ nodo_equipo:
     margen_segunda_pasada_s: 120.0  # si faltan víctimas y sobra este tiempo, otra ruta más cerca
     alcance_segunda_pasada: 1.8     # m de lidar que cuentan como visto en la segunda pasada
     despeje_giro: 0.22              # m libres a la pared para girar en el lugar a mirar un candidato
+    despeje_giro_scan: 0.26         # m libres según el lidar (cajas incluidas) para empezar a girar
     giro_minimo_inspeccion: 0.0     # rad/s; subir (~0.4) si el robot real no gira a baja velocidad
     giro_maximo_inspeccion: 1.0     # rad/s (= max_vel_theta)
     tiempo_giro_inspeccion: 6.0     # s

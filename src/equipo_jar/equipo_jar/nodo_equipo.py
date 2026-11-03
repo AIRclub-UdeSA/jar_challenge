@@ -112,6 +112,9 @@ class NodoEquipo(Node):
         self.declare_parameter('tiempo_sin_desplazamiento_s', 15.0)
         # Giro en el lugar para apuntar la cámara a un candidato.
         self.declare_parameter('despeje_giro', 0.22)        # m libres a la pared para girar
+        # m libres según el lidar (cajas incluidas) para empezar a girar: la esquina
+        # del chasis está a 0.21 m del centro.
+        self.declare_parameter('despeje_giro_scan', 0.26)
         self.declare_parameter('giro_minimo_inspeccion', 0.0)   # rad/s (zona muerta del real)
         self.declare_parameter('giro_maximo_inspeccion', 0.8)   # rad/s
         self.declare_parameter('tiempo_giro_inspeccion', 6.0)   # s
@@ -192,6 +195,7 @@ class NodoEquipo(Node):
         self.ancla = None   # (x, y, yaw, t): última pose desde la que hubo desplazamiento
         self.recien_llegado = False   # se acaba de llegar a un punto de inspección
         self.despeje_giro = self.get_parameter('despeje_giro').value
+        self.despeje_giro_scan = self.get_parameter('despeje_giro_scan').value
         self.giro_minimo = self.get_parameter('giro_minimo_inspeccion').value
         self.giro_maximo = self.get_parameter('giro_maximo_inspeccion').value
         self.tiempo_giro = self.get_parameter('tiempo_giro_inspeccion').value
@@ -576,6 +580,28 @@ class NodoEquipo(Node):
                         and self.segundos_de_corrida() > self.tiempo_corrida - 20.0):
                     self.get_logger().warn('No se pudo volver a la largada; se termina igual')
                     self.terminar()
+
+    def despeje_scan(self):
+        """Distancia (m) del centro del robot al punto más cercano del scan (cajas incluidas).
+
+        El mapa no tiene las cajas: para girar en el lugar al lado de una hay que
+        mirar el lidar. Los puntos a menos de 0.12 m son rebotes del propio robot.
+        """
+        scan = self.ultimo_scan
+        if scan is None:
+            return math.inf
+        try:
+            tf = self.tf_buffer.lookup_transform('base_footprint', scan.header.frame_id, Time())
+        except Exception:
+            return math.inf
+        yaw_laser = yaw_de_quaternion(tf.transform.rotation)
+        tx, ty = tf.transform.translation.x, tf.transform.translation.y
+        r = np.asarray(scan.ranges)
+        a = scan.angle_min + np.arange(len(r)) * scan.angle_increment + yaw_laser
+        ok = np.isfinite(r) & (r > scan.range_min)
+        d = np.hypot(tx + r[ok] * np.cos(a[ok]), ty + r[ok] * np.sin(a[ok]))
+        d = d[d > 0.12]
+        return float(d.min()) if len(d) else math.inf
 
     def empezar_destrabe(self):
         """Calcula hacia dónde alejarse de lo que el lidar ve cerca del robot.
@@ -1095,6 +1121,8 @@ class NodoEquipo(Node):
         """Si hay un candidato pendiente a la vista, empieza a girar hacia él."""
         if pose is None or self.exploracion.despeje(pose[0], pose[1]) < self.despeje_giro:
             return False   # sin lugar para girar en el lugar
+        if self.despeje_scan() < self.despeje_giro_scan:
+            return False   # una caja (que no está en el mapa) demasiado cerca para girar
         # De muy cerca la caja tapa toda la imagen y los puntos del lidar sobre ella
         # caen fuera del cuadro: daba "no es rojo" con una víctima a 0.33 m.
         minima = 0.35 if self.recien_llegado else self.distancia_minima_inspeccion
@@ -1130,14 +1158,16 @@ class NodoEquipo(Node):
         if pose is not None and insp['fase'] == 'girar':
             err = math.atan2(c['y'] - pose[1], c['x'] - pose[0]) - pose[2]
             err = math.atan2(math.sin(err), math.cos(err))
-            if abs(err) > 0.25 and ahora - insp['t'] < self.tiempo_giro:
+            cerca = self.despeje_scan()
+            if abs(err) > 0.25 and ahora - insp['t'] < self.tiempo_giro and cerca >= 0.23:
                 w = min(self.giro_maximo, max(self.giro_minimo, 1.5 * abs(err)))
                 cmd.angular.z = math.copysign(w, err)
             else:
                 self.get_logger().info(
                     f'Mirando el candidato ({c["x"]:.2f}, {c["y"]:.2f}) desde '
                     f'{self.texto_pose()}: error de rumbo {math.degrees(err):.0f}°'
-                    + (' (se acabó el tiempo de giro)' if abs(err) > 0.25 else ''))
+                    + (' (algo a menos de 0.23 m: se corta el giro)' if cerca < 0.23
+                       else ' (se acabó el tiempo de giro)' if abs(err) > 0.25 else ''))
                 insp['fase'] = 'mirar'
                 insp['t'] = ahora
         elif insp['fase'] == 'mirar':
