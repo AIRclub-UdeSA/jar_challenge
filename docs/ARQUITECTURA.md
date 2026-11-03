@@ -51,6 +51,12 @@ figura en la sección 0; el resto sigue siendo propuesta.
   potential*: encontraba que había camino pero no lo podía trazar.
 - **RPP sin `use_collision_detection`:** con la detección prendida, la huella real toca el costmap
   en huecos por los que el robot entra, y RPP no avanza (quedó en 0 puntos en `maze_4_metal_6x6`).
+- **RPP con `lookahead_dist` 0,25** (antes 0,40): con el punto a 0,40 m, en una U alrededor de la
+  punta de un panel RPP corta la curva ~10 cm hacia adentro y roza la punta. Choques medidos contra
+  la geometría del `.world` (el juez de práctica no los cuenta), tandas del 2/11 en los 4 mapas:
+  los de la caja distractora de `maze_1` (2-3 por corrida) desaparecen y las trabas bajan, con los
+  mismos puntos. Queda el roce en la punta de `maze_3` al salir del giro en el lugar
+  (`rotate_to_heading_min_angle`, sin probar).
 - **Trabas** (`escape.py`): tras 6 s quieto, o 15 s sin alejarse 0,15 m aunque gire, se cancela la
   meta y el robot sale despacio hacia donde el lidar ve más lugar, también de costado. Reintenta la
   meta una vez; a la segunda traba la abandona.
