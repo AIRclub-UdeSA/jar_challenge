@@ -792,6 +792,8 @@ class NodoEquipo(Node):
             elif self.inspeccion is not None:
                 self.paso_inspeccion(pose)
             elif self.empezar_inspeccion(pose, solo_claros=self.navegando):
+                # (también los pegados a una pared si la cámara ya vio rojo ahí: las
+                # víctimas pueden estar contra la pared)
                 # Apenas hay un candidato claro a la vista se lo mira, aunque se esté
                 # yendo a un punto de vista: ese objetivo se cancela sin darlo por
                 # visitado y se retoma después de mirar. Los pegados a una pared
@@ -1155,7 +1157,8 @@ class NodoEquipo(Node):
                     < self.distancia_inspeccion
                     and self.exploracion.linea_de_vista(pose[:2], (c['x'], c['y']))
                     and ('pose_corte' not in c or math.dist(pose[:2], c['pose_corte']) > 0.5)
-                    and (not solo_claros or self.exploracion.despeje(c['x'], c['y'])
+                    and (not solo_claros or c['rojo'] > 0
+                         or self.exploracion.despeje(c['x'], c['y'])
                          >= self.despeje_candidato_claro)]
         if not visibles:
             return False
