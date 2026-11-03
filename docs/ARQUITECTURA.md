@@ -91,6 +91,14 @@ lógica está en módulos puros con tests:
   vuelve a AMCL cuando coincide y está quieto 2 s. Probado con los logs de `pruebas/` (salto de
   3,4 m, deriva de 2 m en `maze_1_6x5`, deriva de 0,9 m girando en `maze_4_metal_6x6`). Antes de
   ubicar cajas espera el aviso de `nodo_mision` (ver abajo).
+  El log del respaldo dice contra qué referencia no coincide AMCL (la que más se pasa de su
+  tolerancia, y de hace cuántos metros), lleva la cuenta (`respaldo n.º N`) y, al volver, cuánto
+  duró. Cada línea `Pose:` termina con `t=` (tiempo de simulación), así
+  `scripts/analizar_respaldos.py pruebas/<corridas>` cruza cada respaldo con la pose real y dice
+  si fue falso (AMCL estaba bien) o justificado.
+  **Pendiente:** en 8 respaldos del 31/10 (supervisor de entonces) con pose real, 4 fueron falsos
+  (AMCL a 0,05–0,13 m de la real; uno duró 78 s) y 4 justificados (0,19–1,8 m). Hace falta una
+  tanda con el log nuevo para ajustar tolerancias con números.
 
 **Convergencia al arrancar: decide solo `nodo_mision`.** AMCL convergió cuando el robot se alejó
 0,6 m de la largada y pasaron 8 s más (`distancia_convergencia_m`, `espera_convergencia_s`).

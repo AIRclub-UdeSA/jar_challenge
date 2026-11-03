@@ -105,6 +105,8 @@ class SupervisorLocalizacion:
         self.t_coincide = None        # desde cuándo AMCL coincide de nuevo (estando en respaldo)
         self.corr_coincide = None     # su corrección en ese momento: tiene que quedarse quieta
         self.en_respaldo = False
+        self.respaldos = 0            # cuántas veces se entró en respaldo en la corrida
+        self.t_respaldo = None        # cuándo se entró en el respaldo actual
         self.candidata = None         # corrección de AMCL que no coincide, para ver si es estable
         self.t_candidata = None
         self.mov_candidata = None
@@ -163,7 +165,7 @@ class SupervisorLocalizacion:
             return self.sin_referencia(t, correccion_amcl if fresca else None, sigmas)
         if not fresca:
             self.t_coincide = None
-            return self.respaldo('AMCL dejó de publicar map -> odom')
+            return self.respaldo(t, 'AMCL dejó de publicar map -> odom')
 
         if self.coincide_con_referencias(correccion_amcl, odom):
             self.candidata = None
@@ -174,23 +176,21 @@ class SupervisorLocalizacion:
                         correccion_amcl, self.corr_coincide, odom, Movimiento()):
                     self.t_coincide, self.corr_coincide = t, correccion_amcl
                 if t - self.t_coincide < self.c.confirmar_regreso_s:
-                    return self.respaldo('AMCL vuelve a coincidir: espero a confirmarlo')
-                self.en_respaldo = False
+                    return self.respaldo(t, 'AMCL vuelve a coincidir: espero a confirmarlo')
+                motivo = 'AMCL volvió a coincidir' + self.salir_del_respaldo(t)
                 self.tomar_referencia(correccion_amcl)
-                return EstadoPose(correccion_amcl, AMCL, True, 0.0, 'AMCL volvió a coincidir')
+                return EstadoPose(correccion_amcl, AMCL, True, 0.0, motivo)
             if self.mov.avance - self.referencias[-1][1].avance >= self.c.paso_referencia_m:
                 self.agregar_referencia(correccion_amcl)
             return EstadoPose(correccion_amcl, AMCL, True, 0.0, 'AMCL coincide con /odom')
 
         self.t_coincide = None
         if self.amcl_se_relocalizo(t, odom, correccion_amcl, sigmas):
-            self.en_respaldo = False
+            motivo = ('AMCL estable en otro lugar con covarianza chica: lo acepto'
+                      + self.salir_del_respaldo(t))
             self.tomar_referencia(correccion_amcl)
-            return EstadoPose(correccion_amcl, AMCL, True, 0.0,
-                              'AMCL estable en otro lugar con covarianza chica: lo acepto')
-        d_m, d_rad = diferencia(componer(correccion_amcl, odom), componer(self.ultima(), odom))
-        return self.respaldo(
-            f'AMCL se apartó {d_m:.2f} m y {math.degrees(d_rad):.0f}° de lo que dice /odom')
+            return EstadoPose(correccion_amcl, AMCL, True, 0.0, motivo)
+        return self.respaldo(t, self.texto_peor_referencia(correccion_amcl, odom))
 
     def ultima(self):
         return self.referencias[-1][0]
@@ -198,6 +198,37 @@ class SupervisorLocalizacion:
     def coincide_con_referencias(self, correccion, odom):
         return all(self.coinciden(correccion, ref, odom, self.mov.desde(mov_ref))
                    for ref, mov_ref in self.referencias)
+
+    def peor_referencia(self, correccion, odom):
+        """La referencia con la que AMCL coincide peor: la que más se pasa de su tolerancia.
+
+        Devuelve (d_m, d_rad, tol_m, tol_rad, hace_m): la diferencia de pose, la tolerancia de esa
+        referencia y cuántos metros avanzó el robot desde que se tomó. Es la que dispara el
+        respaldo: coincide_con_referencias() pide coincidir con todas, y la que falla suele ser una
+        vieja (una deriva lenta ya está adentro de las nuevas). Por eso no sirve medir contra la
+        última: daba "se apartó 0,00 m y 0°" justo cuando el respaldo lo disparaba otra.
+        """
+        peor, exceso_peor = None, -math.inf
+        for ref, mov_ref in self.referencias:
+            mov = self.mov.desde(mov_ref)
+            d_m, d_rad = diferencia(componer(correccion, odom), componer(ref, odom))
+            tol_m, tol_rad = self.tolerancias(mov)
+            exceso = max(d_m / max(tol_m, 1e-9), d_rad / max(tol_rad, 1e-9))
+            if exceso > exceso_peor:
+                peor, exceso_peor = (d_m, d_rad, tol_m, tol_rad, mov.avance), exceso
+        return peor
+
+    def texto_peor_referencia(self, correccion, odom):
+        d_m, d_rad, tol_m, tol_rad, hace_m = self.peor_referencia(correccion, odom)
+        return (f'AMCL se apartó {d_m:.2f} m y {math.degrees(d_rad):.0f}° de la referencia de '
+                f'hace {hace_m:.1f} m (tolera {tol_m:.2f} m y {math.degrees(tol_rad):.0f}°)')
+
+    def salir_del_respaldo(self, t):
+        """Sale del respaldo, si estaba. Devuelve el texto con cuánto duró, para el log."""
+        if not self.en_respaldo:
+            return ''
+        self.en_respaldo = False
+        return f' tras {t - self.t_respaldo:.1f} s en respaldo (n.º {self.respaldos})'
 
     def sin_referencia(self, t, correccion, sigmas):
         """Antes de confiar en AMCL por primera vez."""
@@ -213,11 +244,14 @@ class SupervisorLocalizacion:
                               'AMCL nunca publicó: uso /odom como mapa')
         return EstadoPose(None, SIN_POSE, False, 0.0, 'esperando a AMCL')
 
-    def respaldo(self, motivo):
+    def respaldo(self, t, motivo):
         if not self.en_respaldo:
             # Al entrar, se descartan las referencias nuevas y queda la más vieja de la ventana.
             while len(self.referencias) > 1:
                 self.referencias.pop()
+            self.respaldos += 1
+            self.t_respaldo = t
+            motivo += f' (respaldo n.º {self.respaldos})'
         self.en_respaldo = True
         mov = self.mov.desde(self.referencias[-1][1])
         confiable = (mov.avance <= self.c.avance_max_respaldo_m
