@@ -27,3 +27,13 @@ def armar_reporte(x, y, ahora):
     msg.point.y = float(y)
     msg.point.z = 0.0
     return msg
+
+
+def vale_el_bono(aciertos, bono=200.0, por_victima=100.0):
+    """Si conviene gastar ya los reportes que quedan para ganar el bono de tiempo (§8).
+
+    aciertos: P(acierto) de cada candidato, uno por reporte que queda. Un reporte errado
+    solo gasta su lugar, que vale por_victima si su víctima aparece después. Conviene si
+    el bono esperado, bono * P(todos aciertan), supera lo que cuestan los errados.
+    """
+    return bono * math.prod(aciertos) > por_victima * sum(1.0 - q for q in aciertos)

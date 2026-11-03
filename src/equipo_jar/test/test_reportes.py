@@ -3,7 +3,7 @@ import math
 import pytest
 from builtin_interfaces.msg import Time
 
-from equipo_jar.reportes import armar_reporte
+from equipo_jar.reportes import armar_reporte, vale_el_bono
 
 
 def test_reporte_bien_formado():
@@ -17,3 +17,11 @@ def test_reporte_bien_formado():
 def test_reporte_rechaza_valores_no_finitos(x, y):
     with pytest.raises(ValueError):
         armar_reporte(x, y, Time())
+
+
+def test_bono_conviene_con_candidatos_probables():
+    assert vale_el_bono([0.9, 0.9, 0.9])          # 146 de bono esperado contra 30
+    assert not vale_el_bono([0.9, 0.9, 0.3])      # 49 contra 90
+    assert vale_el_bono([0.99])
+    assert vale_el_bono([0.5])                    # un solo lugar: 100 contra 50
+    assert not vale_el_bono([0.3])                # 60 contra 70

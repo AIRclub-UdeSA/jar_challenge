@@ -1,0 +1,45 @@
+# Perfiles: cuánto arriesga el robot (docs/MISSION.md, "Perfiles").
+#
+#   ros2 launch equipo_jar competencia.launch.py victimas:=N perfil:=cuidadoso
+#
+# Sin `perfil:=`, vale `competencia.perfil` de params.yaml. Cada perfil fija unas pocas
+# magnitudes físicas; competencia.launch.py deriva de ellas los parámetros de los nodos
+# motion, mission y world_model que dependen unos de otros (velocidad del controlador y la
+# estimada por el planificador, el margen del footprint y la holgura de los caminos), así
+# cambiar de perfil en la sede no deja a los componentes en desacuerdo sobre qué es
+# pasable.
+#
+# Cada perfil va en una sección ros__parameters, el formato que pide tools/verificar_params.py,
+# aunque no sea un nodo: el launch lee sus valores de acá.
+
+rapido:
+  ros__parameters:
+    v_max: 0.50            # m/s, máxima
+    margen: 0.025          # m alrededor del chasis que el lidar debe ver libre (nodo motion)
+    holgura_control: 0.015 # m de error de seguimiento: los caminos dejan margen + esto
+    atasco_s: 6.0          # s sin avanzar atasco_dist: atascado
+    atasco_dist: 0.15      # m
+    reporte_p_min: 0.85    # P(víctima) para reportar (y dejar de mirar): una vista roja da
+                           # ~0.9+; las que no son víctimas no pasaron de 0.62 en el bench
+    modelo_p_min: 0.90     # lo que el modelo del mundo llama confirmado: siembra objetos desde
+                           # celdas rojas y, con N confirmados, baja el resto a 0
+
+normal:
+  ros__parameters:
+    v_max: 0.35
+    margen: 0.04           # con 0.03 el robot quedaba a 2-3 cm de las paredes (docs/MISSION.md)
+    holgura_control: 0.01  # los caminos siguen dejando 0.05: no cambia qué es pasable
+    atasco_s: 8.0
+    atasco_dist: 0.15
+    reporte_p_min: 0.85
+    modelo_p_min: 0.95
+
+cuidadoso:
+  ros__parameters:
+    v_max: 0.25
+    margen: 0.045
+    holgura_control: 0.04
+    atasco_s: 10.0
+    atasco_dist: 0.10
+    reporte_p_min: 0.97
+    modelo_p_min: 0.97
