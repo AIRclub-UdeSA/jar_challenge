@@ -5,8 +5,188 @@
 # coordenadas, rutas ni posiciones de víctimas. El CI (tools/verificar_params.py)
 # rechaza estos archivos si rompen la regla.
 #
-nodo_equipo:
+
+supervisor:
   ros__parameters:
-    frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.30      # m/s
-    velocidad_angular_max: 1.00     # rad/s
+    frecuencia_hz: 20.0
+    duracion_corrida_s: 600.0
+    vel_lineal_max: 0.4
+    vel_lateral_max: 0.25
+    vel_angular_max: 1.0
+    acel_lineal_max: 1.00
+    acel_angular_max: 3.00
+    vencimiento_s: 0.5
+    medio_largo_m: 0.16
+    medio_ancho_m: 0.11
+    margen_m: 0.02
+    distancia_freno_m: 0.03
+    distancia_lenta_m: 0.12
+mision:
+  ros__parameters:
+    esperar_decision: true
+    espera_max_decision_s: 4.0
+    descartar_paso_sin_avance: true
+    max_recuperaciones_nav: 0
+    medir_huecos: true
+    cruzar_huecos: false
+    distancia_max_hueco_m: 1.2
+    medir_antes_de_descartar: false
+    antes_cuello_m: 0.6
+    espera_medicion_s: 2.0
+    radio_llegada_m: 0.35
+    escapar_giro_frenado: true
+    tiempo_giro_frenado_s: 2.0
+    giro_max_huecos: 0.3
+    huecos:
+      ancho_robot_m: 0.22
+      margen_m: 0.04
+      alcance_m: 2.0
+      profundidad_min_m: 0.30
+      cuantil: 0.25
+    frecuencia_hz: 10.0
+    pausa_inspeccion_s: 1.0
+    radio_union_objetivo_m: 0.35
+    duracion_s: 600.0
+    vel_giro_localizacion: 0.9
+    giro_localizacion_rad: 6.3
+    tiempo_max_localizacion_s: 15.0
+    tolerancia_orientacion_rad: 0.25
+    ganancia_giro: 2.5
+    vel_giro_max: 1.0
+    tiempo_max_orientacion_s: 8.0
+    tiempo_max_goal_s: 60.0
+    tiempo_inmovil_s: 20.0
+    vel_giro_desatasco: 0.6
+    tiempo_desatasco_s: 3.0
+    radio_descarte_m: 0.3
+    vel_media_regreso: 0.15
+    factor_camino: 1.5
+    margen_regreso_s: 30.0
+    margen_final_s: 10.0
+    intentos_regreso: 4
+    distancia_max_ajuste_m: 0.5
+    tolerancia_ajuste_m: 0.05
+    ganancia_ajuste: 1.0
+    vel_ajuste_max: 0.10
+    tiempo_max_ajuste_s: 12.0
+    umbral_quieto_lineal: 0.02
+    distancia_escape_m: 0.30
+    vel_escape: 0.08
+    tiempo_max_escape_s: 4.0
+    medio_largo_robot_m: 0.16
+    medio_ancho_robot_m: 0.11
+    margen_m: 0.02
+    periodo_limpieza_costmap_s: 4.0
+    tiempo_sin_moverse_s: 30.0
+    vel_giro_escape: 0.3
+    margen_giro_m: 0.005
+    usar_paso_angosto: true
+    ancho_minimo_creible_m: 0.20
+    no_repetir_tapon: true
+    liberar_tapones_al_volver: true
+    ancho_imposible_m: 0.34
+    ancho_min_hueco_m: 0.45
+    distancia_inicio_paso_m: 0.6
+    tiempo_trabado_paso_s: 5.0
+    distancia_paso_m: 0.40
+    tiempo_max_paso_s: 40.0
+    tiempo_sin_progreso_paso_s: 15.0
+    avance_paso_m: 0.7
+    intentos_paso: 3
+    avance_fallido_m: 0.10
+    radio_lugar_fallido_m: 0.40
+    tapon_hasta_m: 0.8
+    tapon_antes_m: 0.15
+    tapon_medio_ancho_m: 0.15
+    paso:
+      vel_m_s: 0.12
+      adelanto_m: 0.25
+      vel_centrado_max: 0.05
+      vel_giro_max: 0.4
+      margen_giro_m: 0.01
+      hueco_min_m: 0.08
+      margen_supervisor_m: 0.02
+explorador:
+  ros__parameters:
+    mantener_inspeccion: true
+    seguir_dudosos: true
+    visitas_sin_voto_max: 2
+    descarte_lejos_m: 1.0
+    descartes_lejos_max: 1
+    dudoso_de_paso_m: 1.0
+    despeje_amplio_m: 0.22
+    penalidad_paso_m: 3.0
+    despeje_inspeccion_m: 0.35
+    resolucion_gruesa_m: 0.10
+    alcance_camara_m: 1.5
+    fov_camara_rad: 1.0
+    giro_max_marcado: 0.4
+    despeje_min_m: 0.10
+    despeje_goal_m: 0.35
+    separacion_candidatos_m: 0.30
+    costo_distancia: 30.0
+    ganancia_minima: 15.0
+    radio_local_m: 1.5
+    ganancia_local: 10.0
+    fraccion_local: 0.5
+    radio_descarte_m: 0.30
+    alejar_rojo_cortado: true
+    inspeccion_lejos_min_m: 1.0
+    inspeccion_lejos_max_m: 1.5
+    frecuencia_marcado_hz: 5.0
+    frecuencia_goal_hz: 1.0
+    planificar_zonas: true
+    zonas:
+      vel_m_s: 0.15
+      cobertura_m2_s: 0.15
+      celdas_min: 20
+      max_zonas: 7
+      histeresis: 0.1
+      peso_posible: 100.0
+percepcion:
+  ros__parameters:
+    seguir_dudosos: true
+    reportar_candidatos_lidar: true
+    h_bajo_1: 0
+    h_alto_1: 10
+    h_bajo_2: 170
+    h_alto_2: 179
+    s_min: 120
+    v_min: 70
+    area_min_px: 150
+    margen_borde_px: 2
+    kernel_px: 3
+    profundidad_media_caja_m: 0.125
+    alcance_deteccion_m: 1.6
+    recorte_ventana: 0.15
+    salto_cluster_m: 0.15
+    puntos_min_lidar: 3
+    giro_max_deteccion: 0.4
+    desfase_max_scan_s: 0.3
+    fraccion_max_en_pared: 0.5
+    frecuencia_max_hz: 5.0
+    radio_union_m: 0.35
+    observaciones_min: 5
+    dispersion_max_m: 0.10
+    separacion_vistas_min_m: 0.0
+    observaciones_max: 60
+    no_rojo_por_pixeles: true
+    candidatos:
+      unir_candidatos: true
+      distancia_unir_m: 0.25
+      descarte_por_mayoria: true
+      proporcion_descarte: 4.0
+      alcance_candidato_m: 2.0
+      alcance_posible_m: 3.5
+      radio_rojo_lejano_m: 0.5
+      salto_oclusion_m: 0.15
+      bordes_min_cerca: 0
+      bordes_min_lejos: 2
+      vistas_min: 3
+      posiciones_min: 2
+      separacion_posiciones_m: 0.3
+      separacion_angulo_rad: 0.26
+      radio_ausencia_m: 1.2
+      ausencias_borrar: 5
+      distancia_pared_m: 0.15
+      centro_pared_min_m: 0.10
