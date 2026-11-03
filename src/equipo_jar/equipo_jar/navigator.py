@@ -1,4 +1,5 @@
 import math
+from collections import deque
 
 import numpy as np
 import rclpy
@@ -10,13 +11,14 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from scipy import ndimage
+from scipy.optimize import minimize
 from scipy.sparse.csgraph import dijkstra
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Empty
 from tf2_ros import Buffer, TransformListener
 
 from equipo_jar.core import Board, _graph, line_of_sight, nearest_drivable, normalize, path_dist, viewpoint_tour, visibility
-from equipo_jar.localizer import MAP_QOS, node_params, yaw_of
+from equipo_jar.localizer import MAP_QOS, Localizer, node_params, turn_source, yaw_of, z_row
 
 # --- Caminos (planificación) ----------------------------------------------
 
@@ -198,6 +200,70 @@ def detect_boxes(grid, pts, x, y, p, rng):
 
     return boxes
 
+# --- Guarda de la cola ----------------------------------------------------
+
+TURN_WEIGHT = 0.2 # en la barrera, 1 rad/s cuesta como 0.2 m/s: prefiere recortar el giro antes que el avance
+
+def tail_barrier(points, cmd, p):
+    """
+    (vx, vy, w) lo más parecido a cmd con el que el chasis (rectángulo body_front x body_rear x body_side) no se acerca a ningún punto más rápido que
+    (distancia - guard_margin) / guard_horizon, giro incluido (QP con SLSQP). Desliza en vez de frenar: solo recorta lo que acerca; dentro del margen, aleja.
+
+    points: el lidar en el frame del robot. Usa solo los de detrás de -tail_start: adelante y a los costados frena el círculo de body_radius (_clear_ahead),
+    que no cubre la cola (0.18 m, esquinas a 0.21; el 92 % de los choques en Gazebo).
+    """
+    pts = np.asarray(points, float).reshape(-1, 2)
+    pts = pts[pts[:, 0] < -p.tail_start]
+
+    # Distancia al rectángulo (negativa adentro) y normal hacia afuera en su punto más cercano
+    rel = pts - ((p.body_front - p.body_rear) / 2, 0.0)
+    q = np.abs(rel) - ((p.body_front + p.body_rear) / 2, p.body_side)
+    out = np.maximum(q, 0)
+    norm = np.linalg.norm(out, axis=1)
+    d = norm + np.minimum(q.max(axis=1), 0)
+    normal = np.sign(rel) * out / np.maximum(norm[:, None], 1e-12)
+    inside = np.nonzero(norm < 1e-10)[0]
+    normal[inside] = 0
+    normal[inside, q[inside].argmax(axis=1)] = np.sign(rel[inside, q[inside].argmax(axis=1)])
+
+    keep = d < p.guard_margin + 2 * p.guard_horizon * p.max_speed # más lejos ninguna restricción se activa
+    if not keep.any(): return cmd
+
+    pts, d, normal = pts[keep], d[keep], normal[keep]
+    a = np.column_stack([normal, (pts[:, 0] * normal[:, 1] - pts[:, 1] * normal[:, 0]) / TURN_WEIGHT]) # velocidad con la que el chasis se acerca a cada punto
+    b = (d - p.guard_margin) / p.guard_horizon
+    scale = np.array([1.0, 1.0, TURN_WEIGHT])
+    wanted = np.asarray(cmd, float) * scale
+    if np.max(a @ wanted - b) <= 1e-8: return cmd
+
+    r = minimize(lambda z: 0.5 * np.sum((z - wanted) ** 2), np.zeros(3), jac=lambda z: z - wanted, method='SLSQP',
+                 bounds=[(-p.max_speed, p.max_speed)] * 2 + [(-TURN_WEIGHT * p.max_turn, TURN_WEIGHT * p.max_turn)],
+                 constraints={'type': 'ineq', 'fun': lambda z: b - a @ z, 'jac': lambda z: -a}, options={'maxiter': 25, 'ftol': 1e-8})
+    if r.success and np.max(a @ r.x - b) < 1e-5: return tuple(map(float, r.x / scale))
+
+    # Sin solución (ya encerrado): lo que menos se acerca, entre lo que dio el QP y quedarse quieto
+    z = r.x if np.isfinite(r.x).all() else np.zeros(3)
+
+    return tuple(map(float, z / scale)) if np.max(a @ z - b) < np.max(-b) else (0.0, 0.0, 0.0)
+
+def slow_down(points, cmd, p):
+    """
+    cmd con la velocidad recortada a (distancia - body_radius - wall_stop) / slow_time por lo más cercano adelante en la franja del círculo, sin bajar de
+    slow_min. El freno (_clear_ahead) ve una pared a wall_stop del chasis: a velocidad plena llega tarde. No frena, así que no tapa el paso.
+    """
+    v = math.hypot(cmd[0], cmd[1])
+    pts = np.asarray(points, float).reshape(-1, 2)
+    if v <= p.slow_min or not len(pts): return cmd
+
+    u = np.array(cmd[:2]) / v
+    a, side = pts @ u, np.abs(pts @ np.array([-u[1], u[0]]))
+    ahead = (a > 0) & (side < p.body_radius) & (np.hypot(*pts.T) > p.self_radius)
+    if not ahead.any(): return cmd
+
+    cap = max(p.slow_min, (a[ahead].min() - p.body_radius - p.wall_stop) / p.slow_time)
+
+    return (cmd[0] * cap / v, cmd[1] * cap / v, cmd[2]) if cap < v else cmd
+
 # --- Misión ---------------------------------------------------------------
 
 class Mission:
@@ -249,11 +315,48 @@ class Mission:
         self.blocker = None # el último punto del lidar que lo frenó (frame del robot)
         self.log = [] # mensajes para el log del nodo
         self.cleared_at = -math.inf # última vez que se olvidaron los obstáculos por quedarse sin camino
+        self.moved, self.guard_off = None, -math.inf # (x, y, yaw, t) de la última vez que se movió; hasta cuándo está suelta la barrera de la cola
+        self.min_speed = self.p.motor_min_speed # m/s: sube si pide moverse y no se mueve (zona muerta mayor que la supuesta)
 
-    def step(self, x, y, yaw, t, lidar=(), reports=(), victims=1, red=()):
+    def step(self, x, y, yaw, t, lidar=(), reports=(), victims=1, red=(), near=None):
+        """
+        Un ciclo de control (_step) con la barrera de la cola (tail_barrier) sobre el comando y, al final, la velocidad según lo que tiene adelante
+        (slow_down). Los mínimos de motor van antes de la barrera, para que vea lo que de verdad se manda, y después, porque puede dejarlo debajo de la zona
+        muerta.
+
+        Si pide moverse y no se mueve en guard_stall s (_step no se entera: para él no está tapado), la barrera lo encierra o la zona muerta es mayor que el
+        mínimo: se suelta la barrera guard_release s (frena solo el círculo; un choque cuesta menos que quedarse quieto) y el mínimo sube motor_min_step.
+        """
+        cmd, done = self._step(x, y, yaw, t, lidar, reports, victims, red, near)
+        if done: return cmd, done
+
+        cmd = self._motors(*cmd)
+        out = cmd if t < self.guard_off else self._motors(*tail_barrier(self.near, cmd, self.p))
+        if self.moved is None or math.hypot(out[0], out[1]) <= 1e-3 or math.hypot(x - self.moved[0], y - self.moved[1]) > 0.03 or \
+           abs(normalize(yaw - self.moved[2])) > 0.1: self.moved = (x, y, yaw, t) # el reloj corre solo mientras pide avanzar
+        if t - self.moved[3] > self.p.guard_stall and math.hypot(out[0], out[1]) > 1e-3:
+            self.moved, self.guard_off = (x, y, yaw, t), t + self.p.guard_release
+            self.min_speed = min(self.min_speed + self.p.motor_min_step, 0.5 * self.p.max_speed)
+            self.log.append(f'pide moverse y no se mueve en ({x:.2f}, {y:.2f}): suelto la barrera de la cola {self.p.guard_release:.0f} s y el mínimo de motor '
+                            f'pasa a {self.min_speed:.2f} m/s')
+
+            return self._motors(*cmd), done
+
+        return slow_down(self.near, out, self.p), done
+
+    def _motors(self, vx, vy, w):
+        """El comando por encima de la zona muerta de los motores: si pide moverse, al menos min_speed; si pide girar, al menos motor_min_turn."""
+        v = math.hypot(vx, vy)
+        if 1e-3 < v < self.min_speed: vx, vy = vx * self.min_speed / v, vy * self.min_speed / v
+        w = 0.0 if abs(w) < self.p.motor_turn_tolerance else math.copysign(max(abs(w), self.p.motor_min_turn), w)
+
+        return float(vx), float(vy), float(w)
+
+    def _step(self, x, y, yaw, t, lidar=(), reports=(), victims=1, red=(), near=None):
         """
         Un ciclo de control. lidar: puntos (M, 2) del scan en el frame map. reports: posiciones (x, y) de lo publicado en /victimas. red: dónde ve
-        rojo la percepción sin haberlo reportado todavía (/jar/rojo).
+        rojo la percepción sin haberlo reportado todavía (/jar/rojo). near: los mismos puntos en el frame del robot (el nodo los corre con las ruedas y el
+        giróscopo, sin pasar por map); None: con la pose.
 
         Returns:
             ((vx, vy, w) en el frame del robot, terminado).
@@ -262,7 +365,7 @@ class Mission:
 
         lidar = np.asarray(lidar, float).reshape(-1, 2)
         c, s = math.cos(yaw), math.sin(yaw)
-        self.near = (lidar - (x, y)) @ np.array([[c, -s], [s, c]])
+        self.near = (lidar - (x, y)) @ np.array([[c, -s], [s, c]]) if near is None else np.asarray(near, float).reshape(-1, 2)
         self.is_wall = self.grid.distance(lidar[:, 0], lidar[:, 1]) < self.p.wall_tolerance
         dt, self.t_prev = (0.0 if self.t_prev is None else t - self.t_prev), t
         turning = dt > 0 and abs(normalize(yaw - self.yaw_prev)) / dt > self.p.turning_rate
@@ -299,7 +402,7 @@ class Mission:
                     if goal is None: self.state = 'returning'
 
         if self.state == 'returning':
-            # Termina apenas la rueda más lejana entra en start_tolerance, sin frenar antes: el nodo publica /done y recién después el freno
+            # Termina apenas la rueda más lejana entra en start_tolerance: el nodo publica /done y recién después el freno
             wheels = max(math.hypot(x + c * a - s * b - self.start[0], y + s * a + c * b - self.start[1])
                          for a in (-self.p.wheel_x, self.p.wheel_x) for b in (-self.p.wheel_y, self.p.wheel_y))
             if wheels <= self.p.start_tolerance:
@@ -309,7 +412,9 @@ class Mission:
             goal = self.start
 
         w = 0.0
-        if target is not None and float(self._clear_at(x, y)) >= self.p.body_radius + self.p.drivable_margin: # en un paso angosto no gira a mirar
+        r = np.hypot(*self.near.T)
+        swept = ((r > self.p.self_radius) & (r < self.p.turn_clearance)).any() # algo donde barren las esquinas de adelante al girar (a 0.155 del centro)
+        if target is not None and float(self._clear_at(x, y)) >= self.p.body_radius + self.p.drivable_margin and not swept: # en un paso angosto o pegado a algo, no gira a mirar
             tx, ty = target['xy']
             w = float(np.clip(self.p.turn_gain * normalize(math.atan2(ty - y, tx - x) - yaw), -self.p.max_turn, self.p.max_turn))
             # Ya está cerca viéndola (al menos media), o la ve entera a menos de look_range y el lidar le pega: solo la mira. Asomándose detrás de una
@@ -691,8 +796,9 @@ class Mission:
                 return 0.0, 0.0
 
         dist = math.hypot(goal[0] - x, goal[1] - y)
-        # Buscando, frena al llegar (speed_gain por metro que falta). Volviendo, a max_speed hasta el /done
-        v = self.p.max_speed if final else min(self.p.max_speed, self.p.speed_gain * dist + self.p.min_speed)
+        # Frena al llegar (speed_gain por metro que falta), también volviendo: con start_tolerance 0.15 el centro tiene que caer a ~4 cm de la largada y a
+        # max_speed (5 cm por ciclo) la salteaba y quedaba dando vueltas
+        v = min(self.p.max_speed, self.p.speed_gain * dist + self.p.min_speed)
 
         # Apunta adelante sobre el camino; si la recta hasta ahí pasa pegada a una pared o a un obstáculo (una esquina, una caja), prueba más cerca:
         # el camino va lejos de las paredes, así que su próximo tramo suele estar libre.
@@ -733,7 +839,8 @@ class Mission:
 
 class Navigator(Node):
     """
-    Le pasa a Mission la pose (TF map -> base_footprint del localizer), el lidar y las posiciones de los reportes, y publica /cmd_vel y /done.
+    Le pasa a Mission la pose (TF map -> base_footprint del localizer), el lidar (en map y, para frenar, en el frame del robot: near) y las posiciones de
+    los reportes, y publica /cmd_vel y /done.
 
     No se mueve antes de /map ni antes de que el localizer publique la largada (/jar/pose). Frena mientras falte /jar/pose o un scan nuevo (sensor_timeout).
     Después de /done no vuelve a publicar.
@@ -787,6 +894,20 @@ class Navigator(Node):
         self.max_blocked = p['max_blocked']
         self.retreat_radius = p['retreat_radius']
         self.retreat_speed = p['retreat_speed']
+
+        # Guarda de la cola y motores
+        self.tail_start = p['tail_start']
+        self.guard_horizon = p['guard_horizon']
+        self.guard_margin = p['guard_margin']
+        self.guard_stall = p['guard_stall']
+        self.guard_release = p['guard_release']
+        self.slow_time = p['slow_time']
+        self.slow_min = p['slow_min']
+        self.turn_clearance = p['turn_clearance']
+        self.motor_min_speed = p['motor_min_speed']
+        self.motor_min_step = p['motor_min_step']
+        self.motor_min_turn = p['motor_min_turn']
+        self.motor_turn_tolerance = p['motor_turn_tolerance']
 
         # Recorrido
         self.lidar_range = p['lidar_range']
@@ -843,6 +964,9 @@ class Navigator(Node):
         self.sensor_timeout = p['sensor_timeout']
         self.start_match = p['start_match']
         self.victims = int(p['victims'])  # N: llega del launch (victimas:=N)
+        self.imu_check = p['imu_check']
+        self.imu_gap = p['imu_gap']
+        self.max_age = p['max_age']
 
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)
@@ -856,6 +980,7 @@ class Navigator(Node):
         self.create_subscription(PoseStamped, '/jar/pose', self.on_pose, 10)
         self.create_subscription(PoseArray, '/jar/rojo', self.on_red, 10)
         self.create_subscription(PointStamped, '/victimas', self.on_victim, 10)
+        self.create_subscription(Imu, '/imu/data', self.on_imu, 50)
         self.create_timer(1.0 / self.rate_hz, self.control)
 
         # Estado inicial
@@ -865,6 +990,10 @@ class Navigator(Node):
         self.scan_t = 0 # ns, hora de los sensores del último scan: la nuestra puede ser otra (el software en otra compu)
         self.pose_at = self.lidar_at = None # cuándo llegó la última /jar/pose y el último scan pasado a map (nuestra hora)
         self.red = [] # dónde ve rojo la percepción sin haberlo reportado (/jar/rojo)
+        self.pending = None # scan cuya TF todavía no llegó: se reintenta en cada ciclo (en el robot real llega ~20 ms después)
+        self.scan_base = None # el último scan para near: (t, pose de las ruedas en t (odom), puntos en base_footprint)
+        self.turns = deque(maxlen=400) # (t, giro integrado del giróscopo)
+        self.imu_yaw, self.imu_t, self.imu_row = 0.0, None, None
 
     # ---------- entradas ----------
     def on_map(self, msg):
@@ -887,20 +1016,50 @@ class Navigator(Node):
     def on_victim(self, msg):
         self.reports.append((msg.point.x, msg.point.y))
 
+    def on_imu(self, msg):
+        """Integra el giróscopo (t, giro) para near, como localizer.on_imu. Sin sesgo: en los ~0.1 s entre el scan y el control, 0.02 rad/s son 0.1°."""
+        if self.imu_row is None:
+            try: self.imu_row = z_row(self.tf.lookup_transform(self.base_frame, msg.header.frame_id, Time()).transform.rotation)
+            except Exception: return
+
+        w, t = msg.angular_velocity, Time.from_msg(msg.header.stamp).nanoseconds * 1e-9
+        if self.imu_t is not None and 0.0 < t - self.imu_t < self.imu_gap: self.imu_yaw += float(self.imu_row @ [w.x, w.y, w.z]) * (t - self.imu_t)
+        self.imu_t = t
+        self.turns.append((t, self.imu_yaw))
+
     def on_scan(self, msg):
         """
-        Guarda los puntos del scan en el frame map (para frenar y para anotar obstáculos).
-
-        Con la TF del instante del scan, no con la última: girando, la diferencia corre las paredes e inventa obstáculos. Si todavía no está, se descarta.
+        Guarda los puntos del scan en el frame map (obstáculos, candidatos) y en base_footprint (near, para frenar), con la TF de su instante (use_scan).
+        Si todavía no llegó, queda pendiente y se reintenta en cada ciclo de control: en el bag, al llegar el scan falta la TF de odom en el 35 % de los
+        casos y llega 18 ms después (mediana; máx. 39). Descartarlos dejaba hasta 0.4 s sin lidar nuevo. Antes de reemplazarlo, el pendiente tiene otra
+        oportunidad.
         """
+        self.use_scan()
+        self.pending = msg
+        self.use_scan()
+
+    def use_scan(self):
+        """
+        Pasa el scan pendiente al frame map con la TF del instante del scan, no con la última: girando, la diferencia corre las paredes e inventa obstáculos.
+        También lo guarda en base_footprint con la pose de las ruedas en ese instante (scan_base, para near). Si la TF todavía no está, sigue pendiente.
+        """
+        msg = self.pending
+        if msg is None: return
+
         t = Time.from_msg(msg.header.stamp) + Duration(seconds=msg.time_increment * (len(msg.ranges) - 1) / 2)
         self.scan_t = t.nanoseconds
-        if self.ready_at is None or self.scan_t <= self.ready_at: return # antes, la TF todavía no tenía la largada: las paredes salían corridas y parecían objetos
+        if self.ready_at is None or self.scan_t <= self.ready_at: # antes, la TF todavía no tenía la largada: las paredes salían corridas y parecían objetos
+            self.pending = None
+            return
 
         try:
             tf = self.tf.lookup_transform('map', msg.header.frame_id, t).transform
+            ob = self.tf.lookup_transform('odom', self.base_frame, t).transform
+            mount = self.tf.lookup_transform(self.base_frame, msg.header.frame_id, Time()).transform # dónde está el lidar en el robot: fijo
         except Exception:
             return
+
+        self.pending = None
 
         r = np.asarray(msg.ranges)
         a = msg.angle_min + np.arange(len(r)) * msg.angle_increment
@@ -909,9 +1068,36 @@ class Navigator(Node):
         c, s = math.cos(th), math.sin(th)
         x, y = r[ok] * np.cos(a[ok]), r[ok] * np.sin(a[ok])
         self.lidar = np.column_stack([tf.translation.x + c * x - s * y, tf.translation.y + s * x + c * y])
+        c, s = math.cos(yaw_of(mount.rotation)), math.sin(yaw_of(mount.rotation))
+        base = np.column_stack([mount.translation.x + c * x - s * y, mount.translation.y + s * x + c * y]) # mismos puntos y orden que lidar (is_wall)
+        self.scan_base = (t.nanoseconds * 1e-9, (ob.translation.x, ob.translation.y, yaw_of(ob.rotation)), base)
         self.lidar_at = self.get_clock().now()
 
     # ---------- control ----------
+    def near(self):
+        """
+        El último scan en el frame del robot ahora, para frenar (_clear_ahead, tail_barrier, slow_down, giro_lidar): corrido lo que se movió el robot desde
+        el scan, con la traslación de las ruedas (odom) y el giro del giróscopo, que no patina. Si la IMU no llega o gira al revés, el giro de las ruedas
+        (turn_source). No pasa por map: una corrección del localizer en el medio no mueve lo que tiene cerca. En el bag, llevando cada scan al siguiente,
+        calza 0.90 cm (p95; 0.62 con la escala del encoder corregida) contra 1.22 pasando por map. None si todavía no hay scan o falta la TF (Mission usa
+        la pose).
+        """
+        if self.scan_base is None: return None
+
+        t0, (x0, y0, th0), pts = self.scan_base
+        try: tf = self.tf.lookup_transform('odom', self.base_frame, Time())
+        except Exception: return None
+
+        t1, x1, y1, th1 = Time.from_msg(tf.header.stamp).nanoseconds * 1e-9, tf.transform.translation.x, tf.transform.translation.y, yaw_of(tf.transform.rotation)
+        a, b = Localizer.interpolate(self.turns, t0, self.max_age), Localizer.interpolate(self.turns, t1, self.max_age)
+        d_odom, d_imu = normalize(th1 - th0), None if a is None or b is None else b[0] - a[0]
+        dth = d_imu if turn_source(d_odom, d_imu, self.imu_check) == 'imu' else d_odom
+        c, s = math.cos(th0), math.sin(th0)
+        dx, dy = c * (x1 - x0) + s * (y1 - y0), -s * (x1 - x0) + c * (y1 - y0) # lo que avanzó, en el frame del robot en el scan
+        c, s = math.cos(dth), math.sin(dth)
+
+        return (pts - (dx, dy)) @ np.array([[c, -s], [s, c]])
+
     def pose(self):
         """Pose (x, y, yaw) del robot en map con la última TF. None si todavía no está."""
         try:
@@ -930,6 +1116,7 @@ class Navigator(Node):
         if self.board is None or self.finished: return # antes del mapa no se mueve; después de /done, tampoco
 
         try:
+            self.use_scan() # el scan que esperaba su TF
             pose = self.pose()
             if pose is None or self.start is None: return
 
@@ -943,14 +1130,14 @@ class Navigator(Node):
             lost = [name for name, at in (('/jar/pose', self.pose_at), ('scan', self.lidar_at)) if at is None or (now - at).nanoseconds * 1e-9 > self.sensor_timeout]
             if lost:
                 self.cmd_pub.publish(Twist())
-                self.mission.t_prev = None # al volver, ese rato no cuenta (dt = 0): ni como tiempo mirando un candidato ni como tapado
+                self.mission.t_prev = self.mission.moved = None # al volver, ese rato no cuenta (dt = 0): ni mirando un candidato, ni tapado, ni sin moverse
                 if self.lidar_at is not None: # al arrancar, hasta el primer scan después de la largada, frena sin avisar
                     self.get_logger().warn(f'freno: hace más de {self.sensor_timeout:.1f} s que no llega {" ni ".join(lost)}', throttle_duration_sec=2.0)
                 return
 
             t = (now - self.t0).nanoseconds * 1e-9
             state = self.mission.state
-            (vx, vy, w), done = self.mission.step(*pose, t, self.lidar, self.reports, self.victims, self.red)
+            (vx, vy, w), done = self.mission.step(*pose, t, self.lidar, self.reports, self.victims, self.red, self.near())
 
             # Log: cambios de estado, candidatos, puntos salteados y qué lo frenó
             if self.mission.state != state:

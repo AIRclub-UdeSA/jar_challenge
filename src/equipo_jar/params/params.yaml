@@ -26,6 +26,7 @@ nodo_equipo:
     rayos_min: 5                    # tramos rojos más cortos se descartan (una caja a 3 m tiene ~14 rayos por cara)
     deskew: -1                      # orden temporal de los rayos, igual que en localizer; 0 lo desactiva
     desfase_foto_max: 0.1           # s: sin foto tan cerca del instante medio del scan, el scan no se usa
+    espera_max: 1.0                 # s: un scan espera hasta esto a que lleguen la TF de su instante y su foto (con el software en otra compu llegan más tarde)
     pared_min: 0.0                  # m: un rayo rojo que pegó a esto o menos de una pared del mapa es la pared; 0: solo en celdas de pared
                                     # (con 0.10 se perdían rayos de una caja apoyada en la pared: test_perception_bag.py)
 
@@ -88,17 +89,21 @@ navigator:
     rate_hz: 10.0
     sensor_timeout: 1.0       # s sin /jar/pose o sin scan nuevo: frena (se cayó el localizer o el lidar y la pose sigue solo con la odometría)
     start_match: 0.05         # m: arranca cuando la TF coincide así con la largada que publicó el localizer
+    # near (el lidar para frenar): giro del giróscopo entre el scan y ahora, como en el localizer
+    imu_check: 0.05           # rad: giro mínimo para comparar el signo de la IMU con el de las ruedas (al revés: usa las ruedas)
+    imu_gap: 0.5              # s: un hueco mayor entre mensajes de la IMU no se integra
+    max_age: 0.25             # s: IMU más vieja que esto: se cayó y el giro sale de las ruedas
 
     # Movimiento
     max_speed: 0.5            # m/s: a 0.6 el chasis pasa a 11 cm de una pared (radio 15)
     max_turn: 1.0             # rad/s
     turn_lead: 0.3            # s: girando mientras avanza, se pide la velocidad para el rumbo que va a tener (los motores tardan); calibrar en pista
     turn_gain: 1.5            # rad/s por rad de error al girar hacia un candidato
-    speed_gain: 0.8           # m/s por m que falta a una meta de búsqueda: frena al llegar (volviendo va a max_speed)
+    speed_gain: 0.8           # m/s por m que falta a la meta: frena al llegar (también a la largada: a max_speed salteaba start_tolerance)
     min_speed: 0.08           # m/s: lo mínimo que pide yendo a una meta
 
     # Cuerpo y camino
-    robot_radius: 0.25        # m: el centro del robot no se acerca más que esto a una pared
+    robot_radius: 0.20        # m: el centro del robot no se acerca más que esto a una pared
     wheel_x: 0.08             # m: centro de las ruedas adelante/atrás del centro del robot (URDF del X3)
     wheel_y: 0.0845           # m: centro de las ruedas a los costados (separación 0.169)
     body_radius: 0.15         # m: el chasis; lo que entre acá adelante es un choque
@@ -136,6 +141,26 @@ navigator:
     max_blocked: 6.0          # s tapado en total yendo a un punto antes de saltearlo
     retreat_radius: 0.35      # m: trabado, se aleja de todo lo que tiene a menos de esto
     retreat_speed: 0.1        # m/s al alejarse: menos no vence la zona muerta de los motores
+
+    # Guarda de la cola (tail_barrier): el círculo de body_radius no cubre la cola (0.18 m atrás, esquinas a 0.21)
+    tail_start: 0.10          # m: la barrera mira solo el lidar detrás de esto; adelante y a los costados frena el círculo
+    guard_horizon: 0.5        # s: el chasis no se acerca a un punto más rápido que (distancia - guard_margin) / guard_horizon
+    guard_margin: 0.025       # m: distancia al chasis que la barrera no deja cruzar
+    guard_stall: 3.0          # s pidiendo moverse sin moverse (encerrado por la barrera o zona muerta mayor) antes de soltar la barrera y subir el mínimo
+    guard_release: 2.0        # s que queda suelta la barrera: frena solo el círculo
+
+    # Velocidad con algo adelante (slow_down): el freno ve una pared a wall_stop del chasis; a velocidad plena, la esquina de adelante rozaba puntas de pared
+    slow_time: 0.3            # s: la velocidad no pasa de (distancia adelante - body_radius - wall_stop) / slow_time
+    slow_min: 0.2             # m/s: y no baja de esto (no frena: frenar lo hace el círculo)
+
+    # Giro a mirar un candidato
+    turn_clearance: 0.18      # m: con el lidar viendo algo más cerca que esto del centro, no gira a mirar (las esquinas de adelante barren 0.155)
+
+    # Motores (zona muerta)
+    motor_min_speed: 0.13     # m/s: si pide avanzar, al menos esto (zona muerta de 0.1, de costado al 80 %); calibrar en el robot
+    motor_min_step: 0.05      # m/s que sube ese mínimo cada vez que pide moverse y no se mueve en guard_stall s (hasta max_speed / 2)
+    motor_min_turn: 0.3       # rad/s: si pide girar, al menos esto (zona muerta de 0.2, giro horario al 70 %); calibrar en el robot
+    motor_turn_tolerance: 0.15 # rad/s: menos que esto es no girar (turn_gain 1.5: 5.7°); más chico, el mínimo lo hace oscilar alrededor del rumbo
 
     # Recorrido
     lidar_range: 4.0          # m: hasta dónde el lidar cubre el laberinto y busca candidatos (más lejos, girando, una pared corrida parece un objeto)
@@ -183,5 +208,5 @@ navigator:
     time_limit: 560.0         # s desde /map para estar de vuelta (la corrida se corta a los 600)
     return_pace: 0.5          # para estimar la vuelta se supone esta fracción de max_speed
     return_margin: 15.0       # s de margen sobre esa estimación
-    start_tolerance: 0.20     # m: /done apenas la rueda más lejana está a menos de esto de la largada, sin frenar antes (bono: las cuatro en 0.25 m)
+    start_tolerance: 0.15     # m: /done apenas la rueda más lejana está a menos de esto de la largada (bono: las cuatro en 0.25 m; 10 cm para el error de pose)
     return_max_blocked: 18.0  # s tapado volviendo antes de olvidar los obstáculos anotados (no hay punto que saltear)

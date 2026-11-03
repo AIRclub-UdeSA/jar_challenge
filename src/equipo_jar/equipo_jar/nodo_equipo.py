@@ -14,7 +14,7 @@ from sensor_msgs.msg import CameraInfo, Image, LaserScan
 
 from equipo_jar.core import Board, DetectionClusterer, normalize
 from equipo_jar.detector import ProcesadorVision
-from equipo_jar.localizer import MAP_QOS, node_params, yaw_of
+from equipo_jar.localizer import MAP_QOS, node_params, seconds, yaw_of
 from equipo_jar.reportes import armar_reporte
 
 UMBRALES = ('hue_rojo_bajo_1', 'hue_rojo_alto_1', 'hue_rojo_bajo_2', 'hue_rojo_alto_2', 'saturacion_min', 'valor_min', 'mitad_caja', 'erosion_px', 'salto_max', 'rayos_min')
@@ -36,6 +36,7 @@ class NodoEquipo(Node):
         self.dispersion_max = p['dispersion_max'] # m: grupos más dispersos no se reportan
         self.observaciones_rojo = int(p['observaciones_rojo']) # para avisarle al navegador que ahí hay rojo (/jar/rojo)
         self.desfase_foto_max = p['desfase_foto_max'] # s: sin foto tan cerca del scan, el scan no se usa
+        self.espera_max = p['espera_max'] # s: un scan espera hasta esto a que lleguen la TF de su instante y su foto; después se descarta
 
         self.clusterer = DetectionClusterer(p['radio_grupo'])
 
@@ -53,8 +54,9 @@ class NodoEquipo(Node):
         self.create_subscription(LaserScan, '/scan', self.al_recibir_scan, qos_profile_sensor_data)
 
         # Estado inicial
-        self.mapa = self.info_camara = self.scan_previo = None
-        self.fotos = [] # las últimas 15 (0.5 s a 30 Hz): de acá sale la más cercana a cada scan
+        self.mapa = self.info_camara = None
+        self.pendientes = [] # scans esperando la TF de su instante o su foto
+        self.fotos = [] # las de los últimos espera_max + desfase_foto_max s (por stamp): de acá sale la más cercana a cada scan
         self.reportes = 0
         self.get_logger().info(f'Hay que encontrar {self.cantidad_victimas} víctimas. Esperando el mapa en /map...')
 
@@ -69,22 +71,41 @@ class NodoEquipo(Node):
         self.info_camara = (msg.k[0], msg.k[4], msg.k[2], msg.k[5]) # fx, fy, cx, cy
 
     def al_recibir_imagen(self, msg):
-        self.fotos = self.fotos[-14:] + [msg] # se convierte a OpenCV solo la que se usa
+        t = seconds(msg.header.stamp)
+        self.fotos = [f for f in self.fotos if t - seconds(f.header.stamp) < self.espera_max + self.desfase_foto_max] + [msg] # se convierte a OpenCV solo la que se usa
+        self.procesar_pendientes()
 
     def al_recibir_scan(self, msg):
-        """Procesa el scan anterior, no este: la TF de su último rayo todavía no llegó (se midió hace instantes) y TF no extrapola."""
-        previo, self.scan_previo = self.scan_previo, msg
-        if previo is None or self.mapa is None or self.info_camara is None or not self.fotos: return
+        """
+        Encola el scan y procesa los que ya se pueden. La TF de su último rayo y la foto llegan después que el scan (TF no extrapola), y con el software en
+        otra compu, más tarde todavía. Antes se procesaba el scan anterior al llegar el siguiente y, si faltaba algo, se perdía: con la TF 0.14 s más
+        atrasada, o las fotos 0.3 s, no se reportaba nada (experimentos/robustez/RESULTADOS.md).
+        """
+        if self.mapa is None or self.info_camara is None: return
 
-        try: self.procesar(previo)
-        except tf2_ros.TransformException: pass # todavía no hay pose (antes de localizarse) o la foto es de antes del buffer
-        except Exception as e: self.get_logger().error(f'percepción: {e!r}', throttle_duration_sec=1.0)
+        self.pendientes.append(msg)
+        self.procesar_pendientes()
         self.publicar_rojo()
+
+    def procesar_pendientes(self):
+        """Procesa los scans pendientes que ya tienen la TF de su instante y su foto. Descarta los que quedaron más de espera_max detrás del más nuevo."""
+        if not self.pendientes: return
+
+        ultimo, quedan = seconds(self.pendientes[-1].header.stamp), []
+        for scan in self.pendientes:
+            try: listo = self.procesar(scan)
+            except tf2_ros.TransformException: listo = False # todavía no llegó la TF de su instante (o no hay pose: antes de localizarse)
+            except Exception as e:
+                self.get_logger().error(f'percepción: {e!r}', throttle_duration_sec=1.0)
+                listo = True
+            if not listo and ultimo - seconds(scan.header.stamp) < self.espera_max: quedan.append(scan)
+        self.pendientes = quedan
 
     # ---------- percepción ----------
     def procesar(self, scan):
         """
-        Detecciones de un scan -> map -> DetectionClusterer -> reportes.
+        Detecciones de un scan -> map -> DetectionClusterer -> reportes. False si tiene que esperar una foto (todavía no llegó ninguna posterior al scan, y
+        la más cercana puede ser esa); tf2_ros.TransformException si falta la TF de su instante.
 
         Usa la foto más cercana al instante medio del scan y lleva cada rayo a ese instante: le suma a su ángulo lo que giró el lidar entre que lo midió y la foto
         (en el robot real los rayos se reparten en 0.13 s; girando, foto y scan se desfasan unos grados). El avance en ese lapso (< 3 cm) no se corrige.
@@ -92,14 +113,16 @@ class NodoEquipo(Node):
         n, dt = len(scan.ranges), scan.time_increment
         t0 = Time.from_msg(scan.header.stamp)
         t_medio = t0 + Duration(seconds=dt * (n - 1) / 2)
+        if not self.fotos or Time.from_msg(self.fotos[-1].header.stamp) < t_medio: return False # puede llegar una foto más cerca
         foto = min(self.fotos, key=lambda f: abs((Time.from_msg(f.header.stamp) - t_medio).nanoseconds))
         t_foto = Time.from_msg(foto.header.stamp)
-        if abs((t_foto - t_medio).nanoseconds) * 1e-9 > self.desfase_foto_max: return # sin foto cerca del scan
+        if abs((t_foto - t_medio).nanoseconds) * 1e-9 > self.desfase_foto_max: return True # sin foto cerca del scan
 
         # Giro del lidar en odom al empezar y terminar el scan y en la foto -> ángulo de cada rayo en el instante de la foto
         laser = scan.header.frame_id
         tf = lambda destino, t: self.tf_buffer.lookup_transform(destino, laser, t).transform
         a, b, c = (yaw_of(tf('odom', t).rotation) for t in (t0, t0 + Duration(seconds=dt * (n - 1)), t_foto))
+        m = tf('map', t_foto) # antes del detector: sin pose todavía, el reintento no procesa la foto
         k = np.arange(n)
         fraccion = 0.5 + self.deskew * (k - (n - 1) / 2) / max(n - 1, 1) # 0 al empezar el scan, 1 al terminar
         angulos = scan.angle_min + k * scan.angle_increment + normalize(a + fraccion * normalize(b - a) - c)
@@ -110,10 +133,9 @@ class NodoEquipo(Node):
         centros = self.procesador_vision.extraer_coordenadas_cajas(
             self.puente_cv.imgmsg_to_cv2(foto, desired_encoding='bgr8'), np.asarray(scan.ranges), angulos,
             Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix(), np.array([v.x, v.y, v.z]), *self.info_camara)
-        if not centros: return
+        if not centros: return True
 
         # A map. El rayo pegó media caja antes del centro: si ahí hay una pared del mapa, era la pared (luz cálida, paralaje)
-        m = tf('map', t_foto)
         th = yaw_of(m.rotation)
         rot = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
         centros = np.asarray(centros)
@@ -127,6 +149,8 @@ class NodoEquipo(Node):
         for g in en_scan.groups: self.clusterer.add(*en_scan.center(g), len(g['obs']))
 
         self.reportar_listas()
+
+        return True
 
     def reportar_listas(self):
         """Reporta cada caja que ready() da por buena y no se reportó, mientras queden reportes. Cada reporte gasta uno de los N (§7.2)."""

@@ -182,3 +182,57 @@ if __name__ == '__main__':
               f'listo {clusterer.ready(g, NODO["rayos_reporte"], NODO["observaciones_min"], NODO["dispersion_max"])}, reportado {g["reported"]}')
     for r in reports:
         print(f'reporte ({r[0]:+.3f}, {r[1]:+.3f}): a {min(math.dist(r, v) for v in victims):.3f} m de una víctima')
+
+def test_node_keeps_scan_until_its_tf_and_photo_arrive():
+    """
+    nodo_equipo con la TF o las fotos atrasadas (el software en otra compu): el scan queda pendiente hasta que llegan la TF de su instante y una foto posterior,
+    y se procesa una sola vez; si esperó más de espera_max detrás del scan más nuevo, se descarta. Antes, con 0.14 s más de demora, no reportaba nada.
+    """
+    import rclpy
+    import tf2_ros
+    from rclpy.time import Time
+    from sensor_msgs.msg import Image, LaserScan
+    from equipo_jar.nodo_equipo import NodoEquipo
+
+    rclpy.init(args=['--ros-args', '--params-file', str(PARAMS), '-p', 'cantidad_victimas:=1'])
+    node = None
+    try:
+        node = NodoEquipo()
+        node.mapa, node.info_camara = object(), (1.0, 1.0, 0.0, 0.0)
+        arrived, used = [False], []
+        identity = SimpleNamespace(transform=SimpleNamespace(translation=SimpleNamespace(x=0.0, y=0.0, z=0.0), rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
+        def lookup(target, source, t):
+            if not arrived[0] and target in ('odom', 'map'): raise tf2_ros.LookupException('todavía no')
+            return identity
+        node.tf_buffer = SimpleNamespace(lookup_transform=lookup)
+        node.puente_cv = SimpleNamespace(imgmsg_to_cv2=lambda foto, desired_encoding: foto)
+        node.procesador_vision.extraer_coordenadas_cajas = lambda foto, *a: used.append(Time.from_msg(foto.header.stamp).nanoseconds * 1e-9) or []
+        def scan(sec):
+            m = LaserScan(angle_min=0.0, angle_increment=0.01, time_increment=0.0, ranges=[1.0] * 5)
+            m.header.frame_id, m.header.stamp = 'laser', Time(seconds=sec).to_msg()
+            return m
+        def photo(sec):
+            m = Image()
+            m.header.frame_id, m.header.stamp = 'camara', Time(seconds=sec).to_msg()
+            return m
+
+        node.al_recibir_imagen(photo(0.98))
+        node.al_recibir_scan(scan(1.0))
+        assert used == [] and len(node.pendientes) == 1 # sin foto posterior: puede llegar una más cerca
+        node.al_recibir_imagen(photo(1.01))
+        assert used == [] and len(node.pendientes) == 1 # foto, pero sin la TF
+        arrived[0] = True
+        node.al_recibir_imagen(photo(1.04))
+        assert used == [1.01] and node.pendientes == [] # la más cercana, una sola vez
+
+        arrived[0] = False
+        node.al_recibir_scan(scan(2.0))
+        node.al_recibir_imagen(photo(2.02))
+        node.al_recibir_scan(scan(2.0 + node.espera_max + 0.1))
+        assert len(node.pendientes) == 1 and seconds_of(node.pendientes[0]) > 2.5 # el de los 2 s esperó demasiado: descartado
+    finally:
+        if node is not None: node.destroy_node()
+        rclpy.shutdown()
+
+def seconds_of(msg):
+    return msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9

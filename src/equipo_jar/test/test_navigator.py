@@ -16,7 +16,7 @@ import yaml
 from scipy import ndimage
 
 from equipo_jar.core import Board, line_of_sight, nearest_drivable, normalize, visibility
-from equipo_jar.navigator import Mission, detect_boxes
+from equipo_jar.navigator import Mission, detect_boxes, slow_down, tail_barrier
 from test_core import RES, maze
 
 PARAMS = Path(__file__).parents[1] / 'params' / 'params.yaml'
@@ -145,9 +145,10 @@ def test_covers_maze_with_lidar_and_returns():
 
 
 def test_does_not_turn_without_candidates():
-    """Sin nada fuera del mapa no hay a qué apuntar la cámara: recorre y vuelve sin girar (el robot real gira lento)."""
+    """Sin nada fuera del mapa no hay a qué apuntar la cámara: recorre y vuelve sin girar (el robot real gira lento). La barrera de la cola puede girar para
+    apartarla: acá se apaga."""
     grid = maze()
-    _, _, done, _, _, turned = simulate(grid, grid)
+    _, _, done, _, _, turned = simulate(grid, grid, SimpleNamespace(**{**NAVIGATOR, 'tail_start': math.inf}))
     assert done and turned < 1.0
 
 
@@ -202,8 +203,8 @@ def test_returns_with_real_motors():
 
 
 @pytest.mark.parametrize('yaw', [0.0, math.pi / 4, math.pi / 2])
-def test_return_goes_full_speed_until_all_wheels_are_inside(yaw):
-    """Volviendo va a max_speed hasta que la rueda más lejana entra en start_tolerance; en ese ciclo termina y pide frenar."""
+def test_return_finishes_when_all_wheels_are_inside(yaw):
+    """Volviendo, termina en el ciclo en que la rueda más lejana entra en start_tolerance y pide frenar; un poco antes, sigue andando."""
     grid = maze()
     ds = np.linspace(0.0, 0.4, 4001)
     reach = [home(np.array([(START[0] + d, START[1], yaw)])) for d in ds]
@@ -213,23 +214,45 @@ def test_return_goes_full_speed_until_all_wheels_are_inside(yaw):
         x = START[0] + float(np.interp(P.start_tolerance + offset, reach, ds)) # rueda más lejana a start_tolerance + offset
         (vx, vy, w), done = m.step(x, START[1], yaw, 1.0, lidar(grid, x, START[1]))
         assert done == expected_done
-        assert math.hypot(vx, vy) == (0.0 if done else pytest.approx(P.max_speed))
+        assert (math.hypot(vx, vy) == 0.0) == done
 
 
 @pytest.mark.parametrize('x, y, yaw', [(1.0, -0.25, 0.0), (-1.0, -0.25, math.pi / 2), (0.7, 0.2, math.pi / 4), (-0.7, -0.7, 3.0), (-0.5, 0.25, -2.0)])
 @pytest.mark.parametrize('real', [False, True])
 def test_return_keeps_all_wheels_inside_when_it_brakes(x, y, yaw, real):
     """
-    Llega desde distintos lados a max_speed (con motores reales, de costado anda más lento y el camino se desvía) y da /done con las cuatro ruedas a
-    menos de start_tolerance. Después siguen en el círculo de 0.25 m si frena en seco, si desliza como en el bag (3-6 cm desde 0.5 m/s: ~0.12 s a la
+    Llega desde distintos lados (con motores reales, de costado anda más lento y el camino se desvía), frenando el último tramo, y da /done con las cuatro
+    ruedas a menos de start_tolerance. Después siguen en el círculo de 0.25 m si frena en seco, si desliza como en el bag (3-6 cm desde 0.5 m/s: ~0.12 s a la
     velocidad que traía), el doble de eso, o lo del bag con 30° de derrape.
     """
     (x, y, yaw), (vx, vy), t, path = come_back(x, y, yaw, real_motors(dt=0.1) if real else None)
-    assert t < path / P.max_speed + (1.0 if real else 0.1) # los motores reales tardan ~0.45 s en arrancar y de costado andan al 80 %
+    # Frenando a speed_gain por metro desde (max_speed - min_speed) / speed_gain hasta ~4 cm: lo que tarda de más contra ir a max_speed
+    slow = (P.max_speed - P.min_speed) / P.speed_gain
+    brake = math.log((P.speed_gain * slow + P.min_speed) / (P.speed_gain * 0.04 + P.min_speed)) / P.speed_gain - slow / P.max_speed
+    assert t < path / P.max_speed + brake + (1.0 if real else 0.1) # los motores reales tardan ~0.45 s en arrancar y de costado andan al 80 %
     assert home(np.array([(x, y, yaw)])) <= P.start_tolerance
     for slide, skid in ((0.0, 0.0), (0.12, 0.0), (0.24, 0.0), (0.12, 0.5), (0.12, -0.5)):
         c, s = math.cos(skid), math.sin(skid)
         assert home(np.array([(x + slide * (c * vx - s * vy), y + slide * (s * vx + c * vy), yaw)])) < 0.25, (slide, skid)
+
+
+def test_tail_barrier_slides_instead_of_backing_into_what_is_behind():
+    """Marcha atrás en diagonal hacia algo a 5 cm de la cola: recorta solo lo que acerca (a (0.05 - guard_margin) / guard_horizon) y deja lo que desliza.
+    Hacia adelante no toca el comando."""
+    behind = np.array([(-P.body_rear - 0.05, 0.0)])
+    vx, vy, w = tail_barrier(behind, (-0.5, 0.3, 0.0), P)
+    assert abs(vx + (0.05 - P.guard_margin) / P.guard_horizon) < 1e-3 and abs(vy - 0.3) < 1e-3 and abs(w) < 1e-3
+    assert tail_barrier(behind, (0.5, 0.0, 0.0), P) == (0.5, 0.0, 0.0)
+
+
+def test_slows_down_with_something_ahead_but_never_stops():
+    """Algo adelante en la franja recorta la velocidad con la distancia, sin bajar de slow_min; de costado o atrás no la toca."""
+    ahead = lambda d: np.array([(d, 0.0)])
+    assert slow_down(ahead(1.0), (0.5, 0.0, 0.3), P) == (0.5, 0.0, 0.3)
+    vx, vy, w = slow_down(ahead(0.3), (0.5, 0.0, 0.3), P)
+    assert abs(vx - (0.3 - P.body_radius - P.wall_stop) / P.slow_time) < 1e-9 and vy == 0.0 and w == 0.3
+    assert slow_down(ahead(P.body_radius), (0.5, 0.0, 0.0), P)[0] == P.slow_min
+    assert slow_down(np.array([(0.0, 0.3), (-0.3, 0.0)]), (0.5, 0.0, 0.0), P) == (0.5, 0.0, 0.0)
 
 
 def test_return_at_full_speed_still_avoids_nearby_obstacle():
@@ -241,7 +264,7 @@ def test_return_at_full_speed_still_avoids_nearby_obstacle():
     scan = np.vstack([lidar(grid, x, y), (x - P.body_radius - P.stop_margin - 0.02, y)])
     (vx, vy, _), done = m.step(x, y, 0.0, 1.0, scan)
     assert not done
-    assert vx > 0 and math.hypot(vx, vy) <= P.retreat_speed + 1e-9
+    assert vx > 0 and math.hypot(vx, vy) <= max(P.retreat_speed, P.motor_min_speed) + 1e-9 # el mínimo de motor sube el retroceso
 
 
 def test_node_publishes_done_before_braking():
@@ -264,8 +287,8 @@ def test_node_publishes_done_before_braking():
         node.lidar = lidar(grid, START[0] + 0.3, START[1])
         node.pose = lambda: (START[0] + 0.3, START[1], math.pi / 4)
         node.control()
-        assert out == [('cmd', pytest.approx(P.max_speed))]
-        node.pose = lambda: (START[0] + 0.05, START[1], math.pi / 4)
+        assert out == [('cmd', pytest.approx(P.speed_gain * 0.3 + P.min_speed))] # todavía afuera: anda, frenando al llegar
+        node.pose = lambda: (START[0] + 0.02, START[1], math.pi / 4) # la rueda más lejana a 0.136 m
         node.control()
         assert out[1:] == [('done', None), ('cmd', 0.0)] and node.finished
         node.control()
@@ -363,6 +386,18 @@ def test_looks_at_candidate_from_where_it_is():
         m.candidates.append({'xy': (2.5, -0.3), 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None})
         (vx, vy, w), _ = m.step(*START, 0.0, lidar(world, *START[:2]))
         assert ((vx, vy) == (0.0, 0.0)) == still
+
+
+def test_does_not_turn_to_look_with_something_where_the_front_corners_sweep():
+    """Girando en el lugar, las esquinas de adelante barren 0.155 m del centro: con el lidar viendo algo a menos de turn_clearance no gira a mirar el
+    candidato (en Gazebo, la esquina rozaba la pared); sin eso, sí."""
+    grid = maze()
+    start = (START[0], START[1], math.pi / 2) # el candidato queda 90° a la derecha
+    for world, turns in ((with_box(grid, START[0] - 0.19, START[1], side=0.05), False), (grid, True)): # a la izquierda, con la cara a 0.165 m del centro
+        m = Mission(grid, START[:2], P)
+        m.candidates.append({'xy': (2.5, -0.3), 'time': 0.0, 'views': [], 'misses': 0, 'done': False, 'why': None})
+        (_, _, w), _ = m.step(*start, 0.0, lidar(world, *START[:2]))
+        assert (abs(w) > 0) == turns
 
 
 def test_passes_beside_a_box_in_the_middle_of_a_corridor():
@@ -520,4 +555,69 @@ def test_node_stops_without_pose_or_scan():
         node.control()
         assert speed() == 0.0 and node.mission.t_prev is None
     finally:
+        rclpy.shutdown()
+
+
+def test_node_retries_scan_until_its_tf_arrives():
+    """Si al llegar el scan todavía no está la TF de su instante (en el robot real, el 35 % de los scans), queda pendiente y se usa en el próximo ciclo."""
+    import rclpy
+    from sensor_msgs.msg import LaserScan
+    from equipo_jar.navigator import Navigator
+
+    rclpy.init(args=['--ros-args', '--params-file', str(PARAMS), '-p', 'victims:=1'])
+    node = None
+    try:
+        node = Navigator()
+        node.ready_at = 0
+        arrived = [False]
+        tf = SimpleNamespace(transform=SimpleNamespace(translation=SimpleNamespace(x=1.0, y=2.0), rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
+        node.tf = SimpleNamespace(lookup_transform=lambda *_: tf if arrived[0] else (_ for _ in ()).throw(LookupError('todavía no')))
+        scan = LaserScan(angle_min=0.0, angle_increment=0.01, time_increment=0.0, ranges=[1.0] * 10)
+        scan.header.frame_id, scan.header.stamp.sec = 'laser', 1
+        node.on_scan(scan)
+        assert len(node.lidar) == 0 and node.pending is scan
+        arrived[0] = True
+        node.use_scan()
+        assert node.pending is None and len(node.lidar) == 10 and node.lidar[0] == pytest.approx((2.0, 2.0))
+    finally:
+        if node is not None: node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_node_near_moves_with_the_wheels_and_the_gyro_not_with_the_localizer():
+    """near: el scan corrido lo que avanzó el robot según las ruedas y lo que giró según el giróscopo, sin pasar por map (un salto del localizer no lo
+    mueve). Con la IMU al revés o sin IMU, el giro de las ruedas."""
+    import rclpy
+    from rclpy.time import Time
+    from sensor_msgs.msg import Imu, LaserScan
+    from equipo_jar.navigator import Navigator
+
+    def tf(x, y, th, sec=0.0):
+        return SimpleNamespace(header=SimpleNamespace(stamp=Time(seconds=sec).to_msg()), transform=SimpleNamespace(
+            translation=SimpleNamespace(x=x, y=y), rotation=SimpleNamespace(x=0.0, y=0.0, z=math.sin(th / 2), w=math.cos(th / 2))))
+
+    rclpy.init(args=['--ros-args', '--params-file', str(PARAMS), '-p', 'victims:=1'])
+    node = None
+    try:
+        node = Navigator()
+        node.ready_at = 0
+        frames = {('map', 'laser'): tf(5.0, 5.0, 1.0), ('odom', 'base_footprint'): tf(0.0, 0.0, 0.0, 1.0), ('base_footprint', 'laser'): tf(0.0, 0.0, 0.0),
+                  ('base_footprint', 'imu'): tf(0.0, 0.0, 0.0)}
+        node.tf = SimpleNamespace(lookup_transform=lambda target, source, t: frames[(target, source)])
+        scan = LaserScan(angle_min=0.0, angle_increment=0.01, time_increment=0.0, ranges=[0.5] * 3)
+        scan.header.frame_id, scan.header.stamp.sec = 'laser', 1
+        node.on_scan(scan)
+        frames[('odom', 'base_footprint')] = tf(0.1, 0.0, 0.2, 2.0) # en 1 s las ruedas: 0.1 m adelante y 0.2 rad
+        frames[('map', 'laser')] = tf(7.0, 7.0, 2.0) # el localizer saltó: no importa
+        rotated = lambda th: (0.4 * math.cos(th), -0.4 * math.sin(th)) # (0.5, 0) del robot en el scan, visto desde el robot ahora
+
+        for wz, th in ((0.1, 0.1), (-0.1, 0.2), (None, 0.2)): # giróscopo: 0.1 rad; al revés que las ruedas; sin IMU
+            node.turns.clear(); node.imu_t = None
+            for k in range(21) if wz is not None else ():
+                m = Imu()
+                m.header.frame_id, m.header.stamp, m.angular_velocity.z = 'imu', Time(seconds=1.0 + 0.05 * k).to_msg(), wz
+                node.on_imu(m)
+            assert node.near()[0] == pytest.approx(rotated(th), abs=1e-6), wz
+    finally:
+        if node is not None: node.destroy_node()
         rclpy.shutdown()
