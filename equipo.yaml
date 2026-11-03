@@ -7,4 +7,4 @@
 # El nombre tiene que ser el mismo con el que se inscribieron (las mayúsculas, los
 # espacios y los signos no importan, las letras sí).
 nombre_equipo: PoliBots
-codigo_inscripcion: COMPLETAR   # el código que recibiste al inscribirte
+codigo_inscripcion: 1   # el código que recibiste al inscribirte
