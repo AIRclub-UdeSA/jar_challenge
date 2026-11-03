@@ -83,6 +83,7 @@ class NodoEquipo(Node):
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
         self.declare_parameter('distancia_encadenar', 0.3)
         self.declare_parameter('inspecciones_maximas', 15)
+        self.declare_parameter('tiempo_quieto_vuelta_s', 35.0)   # s de reloj ROS
         self.declare_parameter('distancia_minima_inspeccion', 0.5)   # m
         # Candidatos que se miran apenas aparecen (aunque se esté navegando): a
         # esta distancia (m) o más de una pared del mapa.
@@ -157,6 +158,7 @@ class NodoEquipo(Node):
         self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
         self.inspecciones_maximas = self.get_parameter('inspecciones_maximas').value
         self.inspecciones_hechas = 0
+        self.tiempo_quieto_vuelta = self.get_parameter('tiempo_quieto_vuelta_s').value
         self.distancia_minima_inspeccion = self.get_parameter('distancia_minima_inspeccion').value
         self.despeje_candidato_claro = self.get_parameter('despeje_candidato_claro').value
         self.recoveries_para_cortar = self.get_parameter('recoveries_para_cortar').value
@@ -172,7 +174,6 @@ class NodoEquipo(Node):
         self.segunda_pasada_hecha = False
         self.tiempo_sin_desplazamiento = self.get_parameter('tiempo_sin_desplazamiento_s').value
         self.ancla = None   # (x, y, yaw, t): última pose desde la que hubo desplazamiento
-        self.ancla_vuelta = None   # (x, y, t de pared) para el tope de la vuelta
         self.recien_llegado = False   # se acaba de llegar a un punto de inspección
         self.despeje_giro = self.get_parameter('despeje_giro').value
         self.giro_minimo = self.get_parameter('giro_minimo_inspeccion').value
@@ -769,13 +770,13 @@ class NodoEquipo(Node):
         if ahora > self.tiempo_corrida - 10.0:
             self.get_logger().warn('Se acaba la corrida: /done donde esté')
             return True
-        if self.ancla_vuelta is None or math.hypot(
-                pose[0] - self.ancla_vuelta[0], pose[1] - self.ancla_vuelta[1]) > 0.10:
-            self.ancla_vuelta = (pose[0], pose[1], ahora)
-            return False
-        if ahora - self.ancla_vuelta[2] > 40.0:
-            # El juez corta a los 60 s sin moverse y sin /done se pierde el +100.
-            self.get_logger().warn('40 s sin moverse en la vuelta: /done donde esté')
+        # Quieto como lo mide el juez (velocidad de /odom, girar también cuenta): el
+        # juez corta a los 60 s y sin /done se pierde el +100. Mientras Nav2 gire en
+        # sus recoveries no se corta (antes se cortaba sin traslación y se perdía).
+        if (self.ultimo_avance is not None
+                and self.ahora() - self.ultimo_avance > self.tiempo_quieto_vuelta):
+            self.get_logger().warn(
+                f'{self.tiempo_quieto_vuelta:.0f} s quieto en la vuelta: /done donde esté')
             return True
         return False
 

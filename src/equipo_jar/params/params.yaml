@@ -16,6 +16,7 @@ nodo_equipo:
     tiempo_sin_avance_s: 20.0       # el juez corta la corrida a los 60 s quieto
     tiempo_sin_desplazamiento_s: 12.0  # s sin moverse en el mapa (amcl) con un objetivo: patina
     distancia_encadenar: 0.45       # m; a esta distancia de un punto de vista se pasa al próximo
+    tiempo_quieto_vuelta_s: 35.0    # s quieto (según /odom) en la vuelta antes de publicar /done donde esté
     inspecciones_maximas: 15        # tope de candidatos a mirar (un mapa corrido arma muchos falsos)
     distancia_minima_inspeccion: 0.5  # m; más cerca la cámara no ve bien la caja
     despeje_candidato_claro: 0.2    # m a la pared: estos se miran apenas aparecen, aunque se esté navegando
