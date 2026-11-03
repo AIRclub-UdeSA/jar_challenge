@@ -246,6 +246,21 @@ def test_object_changes():
     assert last == {}
 
 
+def test_tour_line():
+    stops = [SimpleNamespace(kind='look', object_id=20, xy=(2.561, 4.78), value=0.32, time=8.4,
+                             score=0.0391),
+             SimpleNamespace(kind='explore', object_id=-1, xy=(1.0, -2.0), value=0.1, time=20.0,
+                             score=0.005)]
+    assert log_lines.tour_line('tour', stops) == (
+        'tour: look 20 2.56 4.78 0.32 8 0.039; explore -1 1.00 -2.00 0.10 20 0.005')
+
+
+def test_path_line():
+    poses = [(100.5, 1.0, 2.0, 0.5), (100.6, 1.0126, -2.0, -3.14159)]
+    assert log_lines.path_line(poses, 100.0) == (
+        'path: 0.50 1.000 2.000 0.500; 0.60 1.013 -2.000 -3.142')
+
+
 def test_the_map_comes_back_from_its_lines():
     cells = np.random.default_rng(0).choice([-1, 0, 100], 240 * 200).astype(np.int8)
     msg = SimpleNamespace(data=cells.tolist(), info=SimpleNamespace(
@@ -272,3 +287,15 @@ def test_a_failing_log_step_says_so_once_and_does_not_raise():
     node.step()
     node.step()
     assert len(said) == 1
+
+
+def test_a_log_step_without_a_logger_does_not_raise():
+    class Node:
+        def get_logger(self):
+            raise AttributeError('no logger')
+
+        @log_lines.guarded
+        def step(self):
+            raise RuntimeError('bug')
+
+    Node().step()

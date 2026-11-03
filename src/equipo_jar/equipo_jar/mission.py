@@ -27,8 +27,9 @@ to report from the world model's objects.
   ends with the robot stopped and /done published (finish), never with a dead node.
 - Every timer runs on the ROS clock (sim time in the simulator), so behaviour doesn't depend
   on how fast the simulator runs.
-- State for the run's log (docs/LOGGING.md): the map once, a state line every second, every
-  object every 5 s, and a line when an object appears, goes or its P moves.
+- State for the run's log (docs/LOGGING.md): the map once, a state line and every pose since
+  the last one every second, every object every 5 s, a line when an object appears, goes or
+  its P moves, and every tour.
 """
 import math
 import threading
@@ -47,7 +48,8 @@ from std_msgs.msg import Empty
 
 from equipo_jar.keep_alive import spin
 from equipo_jar.localizer import yaw_of
-from equipo_jar.log_lines import guarded, map_lines, object_changes, objects_line
+from equipo_jar.log_lines import guarded, map_lines, object_changes, objects_line, path_line, \
+    tour_line
 from equipo_jar.planner import DEFAULTS as PLANNER_DEFAULTS, Grid, Planner, \
     expected_missing, reported_objects, shadowed_objects
 from equipo_jar.reportes import armar_reporte, vale_el_bono
@@ -187,7 +189,9 @@ class Mission(Node):
         self.goal = '-'                 # what the robot is going for, for the log
         self.belief_left = None         # search belief left, from /equipo/objetos
         self.logged_p = {}              # object id -> its P in its last line in the log
+        self.path = []                  # poses since the last path line
         self.create_timer(1.0, self.log_state)
+        self.create_timer(1.0, self.log_path)
         self.create_timer(5.0, self.log_objects)
         self.motion_state = None        # the last /equipo/movimiento
         self.create_subscription(EstadoMovimiento, '/equipo/movimiento',
@@ -205,6 +209,7 @@ class Mission(Node):
     def on_pose(self, msg):
         p = msg.pose
         self.pose = (p.position.x, p.position.y, yaw_of(p.orientation))
+        self.note_pose(msg)
 
     def on_occupancy(self, msg):
         self.occupancy = grid_of(msg)
@@ -244,6 +249,19 @@ class Mission(Node):
             f'reports {len(self.reported)}')
 
     @guarded
+    def note_pose(self, msg):
+        if self.map_time is not None:
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            self.path.append((stamp, *self.pose))
+
+    @guarded
+    def log_path(self):
+        """Every pose, one line a second: a logger call per pose would be ten a second."""
+        if self.path:
+            path, self.path = self.path, []
+            self.get_logger().info(path_line(path, self.map_time.nanoseconds * 1e-9))
+
+    @guarded
     def log_objects(self):
         if self.map_time is not None and self.objects is not None:
             self.get_logger().info(objects_line(self.objects))
@@ -253,6 +271,11 @@ class Mission(Node):
         self.belief_left = round(float(msg.busqueda_restante), 4)
         for line in object_changes(self.objects, self.logged_p):
             self.get_logger().info(line)
+
+    @guarded
+    def log_tour(self, name, tour):
+        if tour:
+            self.get_logger().info(tour_line(name, tour))
 
     # Reports.
 
@@ -346,6 +369,7 @@ class Mission(Node):
         self.prefer = None
         objs = self.unreported()
         self.tour = planner.tour(objs, self.n, self.seen_from, failed, prefer, visited)
+        self.log_tour('tour', self.tour)
         self.tour_failed, self.tour_visited = list(failed), list(visited)
         self.tour_objects = self.undecided(objs, planner, failed)
         return planner, self.tour[0] if self.tour else None
@@ -376,6 +400,7 @@ class Mission(Node):
         if not fresh or math.dist(fresh[0].xy, target.xy) <= 0.3:
             return False
         self.prefer = fresh[0].xy
+        self.log_tour('retour', fresh)
         return True
 
     def unreported(self):

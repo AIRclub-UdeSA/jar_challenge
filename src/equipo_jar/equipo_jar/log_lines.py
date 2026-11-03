@@ -20,9 +20,12 @@ def guarded(method):
         try:
             return method(self, *args, **kwargs)
         except Exception as e:
-            if method.__name__ not in self.__dict__.setdefault('_log_failed', set()):
-                self._log_failed.add(method.__name__)
-                self.get_logger().error(f'{method.__name__} failed: {e!r}')
+            try:
+                if method.__name__ not in self.__dict__.setdefault('_log_failed', set()):
+                    self._log_failed.add(method.__name__)
+                    self.get_logger().error(f'{method.__name__} failed: {e!r}')
+            except Exception:
+                pass    # nor can saying so
     return wrapper
 
 
@@ -59,6 +62,19 @@ def object_changes(objects, last):
     for oid in sorted(set(last) - ids):
         lines.append(f'object gone: {oid}, last P {last.pop(oid):.3f}')
     return lines
+
+
+def tour_line(name, tour):
+    """A tour, in order: kind, object id (-1: none), x, y, value, estimated s, score per stop."""
+    return f'{name}: ' + '; '.join(
+        f'{t.kind} {t.object_id} {t.xy[0]:.2f} {t.xy[1]:.2f} {t.value:.2f} {t.time:.0f} '
+        f'{t.score:.3f}' for t in tour)
+
+
+def path_line(poses, t0):
+    """The poses (stamp s, x, y, yaw) since the last line, in one: t since t0, x, y, yaw each."""
+    return 'path: ' + '; '.join(
+        f'{t - t0:.2f} {x:.3f} {y:.3f} {yaw:.3f}' for t, x, y, yaw in poses)
 
 
 def map_lines(msg):
