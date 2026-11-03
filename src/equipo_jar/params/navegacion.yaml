@@ -1,0 +1,417 @@
+# Localización (AMCL) y navegación (Nav2) para el X3. ROS 2 Humble.
+# Solo valores generales: nada del mapa, ninguna coordenada.
+# El mapa llega solo del juez por /map. No hay map_server.
+# Los nombres de los parámetros de amcl son los de Nav2: no se pueden traducir.
+
+# Speed limits: set them only here. navegacion.launch.py copies them into MPPI (vx_max,
+# vy_max, vx_min, wz_max) and the velocity smoother (max/min_velocity). If the robot has
+# its own lower limit (factory), put that limit here: MPPI plans with these numbers, and
+# a robot slower than planned turns late and stops late. JAR driver limits: 0.5 m/s per axis,
+# 1.0 rad/s (physical_rosmaster #72).
+limites:
+  ros__parameters:
+    lineal_max_ms: 0.5                # forward and sideways
+    reversa_max_ms: 0.35
+    giro_max_rads: 1.0
+    margen_giro_smoother: 1.0         # smoother turn limit = giro_max_rads x this
+
+parada:
+  ros__parameters:
+    command_max_age_s: 0.3
+    odom_max_age_s: 0.5
+    still_time_s: 0.5
+    still_linear_mps: 0.01
+    still_angular_rads: 0.02
+    # After the stop request, confirm anyway once zero has been sent this long (s), unless fresh
+    # /odom still shows motion. Without it, /odom stamped by an unsynced robot clock would block
+    # /done (-100).
+    confirm_timeout_s: 3.0
+    # Confirm even if fresh /odom still shows motion after this long (s): odometry noisy at rest
+    # must not block /done forever.
+    confirm_max_s: 10.0
+
+# Run log (registro.py): every node's log in $JAR_LOG_DIR/log.txt or <workspace>/logs_jar/log.txt.
+registro:
+  ros__parameters:
+    max_bytes: 20000000               # stop writing here; the organizers keep up to 25 MB
+    nivel_minimo: 20                  # 20 INFO, 30 WARN
+    repetidas_s: 5.0                  # the same line within this is counted, not written
+    pose_cada_s: 1.0                  # AMCL pose line every this many s
+
+amcl:
+  ros__parameters:
+    global_frame_id: map
+    # Keep the IMU heading: the organizers warn that rotation still has substantial error.
+    # Their encoder fix (physical_rosmaster #70) removes the need for distance scaling.
+    odom_frame_id: odom_fused
+    base_frame_id: base_footprint
+    scan_topic: /scan                 # amcl se suscribe con SensorDataQoS (best effort)
+    map_topic: /map                   # reliable + transient local, como el juez
+    first_map_only: true
+    tf_broadcast: true
+    transform_tolerance: 0.5          # el LiDAR tiene ~136 ms de latencia
+    robot_model_type: nav2_amcl::OmniMotionModel   # mecanum
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    # In OmniMotionModel alpha4 is the x/y noise added per radian turned. With 0.2 an
+    # in-place 90° turn spread the particles ~0.2 m per axis, across walls into the next
+    # corridor (practice run: AMCL 0.54 m off, inside a wall). 0.01: ~0.05 m.
+    alpha4: 0.01
+    alpha5: 0.2                       # solo lo usa el modelo omni
+    laser_model_type: likelihood_field
+    laser_min_range: 0.10
+    laser_max_range: 12.0
+    max_beams: 120                    # de 1080 rayos
+    laser_likelihood_max_dist: 2.0
+    sigma_hit: 0.1                    # 0.2 (Nav2) borroneaba un pasillo entero: ~0.10 m de error
+    z_hit: 0.5
+    z_rand: 0.5
+    z_max: 0.05
+    z_short: 0.05
+    lambda_short: 0.1
+    do_beamskip: false
+    min_particles: 500
+    max_particles: 3000
+    pf_err: 0.05
+    pf_z: 0.99
+    resample_interval: 1
+    update_min_d: 0.05                # actualizar seguido: mapa chico, robot lento
+    update_min_a: 0.1
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+    save_pose_rate: 0.5
+    # El nodo localizacion manda la pose de inicio con margen de error después de /map.
+    # set_initial_pose solo usaría covarianza cero.
+    set_initial_pose: false
+
+odometria_imu:
+  ros__parameters:
+    frame_fusionado: odom_fused       # = amcl odom_frame_id
+    fuente_rumbo: giroscopo           # giroscopo, orientacion, or ruedas (off: odom_fused = odom)
+    signo_giroscopo: 0                # 0: learned from the wheels (the real gyro is inverted)
+    imu_vieja_s: 0.5                  # s without IMU before a step uses the wheels' heading
+    signo_wz_minimo_rads: 0.2         # the sign is learned only while the wheels turn this fast
+    signo_giro_minimo_rad: 0.5        # wheel rotation needed to decide the sign
+    signo_correlacion_minima: 0.7     # |correlation| gyro vs wheels needed (bag: 0.95)
+    # Distance: the wheels' steps times a scale. 0 = learned as IMU turn / wheels turn.
+    # Before the encoder fix, the week-10 bag needed ~0.80; 1.0 disables this workaround.
+    escala_avance: 1.0               # corrected driver: no local distance scaling
+    escala_giro_minimo_rad: 1.0       # wheel turning before the learned scale is used
+    escala_minima: 0.7                # learned scale kept within these
+    escala_maxima: 1.1
+
+localizacion:
+  ros__parameters:
+    x_inicial: 0.0
+    y_inicial: 0.0
+    yaw_inicial: 0.0
+    desvio_xy_inicial: 0.20           # spread sent with the guess (only if the LiDAR match fails)
+    desvio_yaw_inicial: 0.30
+    # Start pose from one LiDAR sweep matched against /map, all headings (pose_inicial.py).
+    # Practice maps, robot up to 0.25 m off and any heading: ~1-2 cm, < 1.5°. false: the guess.
+    buscar_pose_inicial: true
+    radio_busqueda_m: 0.5             # positions searched around the guess
+    paso_busqueda_m: 0.05             # coarse grid, then two finer ones
+    paso_yaw_busqueda_rad: 0.035      # 2°
+    sigma_busqueda_m: 0.05            # a point this far from a wall scores ~0.6
+    rumbo_cercano_rad: 0.8            # a heading farther than this from yaw_inicial must
+    margen_otro_rumbo: 0.10           # score 10 % better to win (symmetric spots)
+    puntaje_minimo_busqueda: 0.5      # practice maps 0.8-0.9, real bag 0.88
+    desvio_xy_encontrada: 0.05        # spread sent to AMCL with the matched pose
+    desvio_yaw_encontrada: 0.05
+    espera_scan_s: 3.0                # no scan or LiDAR TF this long after /map: use the guess
+    # Watch AMCL while still (vigia.py): score the sweep at AMCL's pose, 0..1 (right: 0.8-0.9;
+    # real bag at the reference pose: median 0.71, 0.1 m off 0.33). Below vigia_puntaje_bajo,
+    # search nearby; move AMCL only to a pose seen vigia_confirmaciones times at the same spot.
+    vigia_periodo_s: 2.0
+    vigia_puntaje_bajo: 0.5
+    vigia_puntaje_bueno: 0.7          # the new pose must score at least this
+    vigia_mejora_minima: 0.2          # and this much more than AMCL's pose
+    vigia_distancia_minima_m: 0.10    # and be this far from it (or 0.1 rad)
+    vigia_coincidencia_m: 0.05
+    vigia_confirmaciones: 2
+    vigia_radio_m: 0.5
+    vigia_rango_yaw_rad: 0.35
+    # /odom below both counts as still for the lost check and the fine-tuning. Raise them if
+    # the real /odom is noisy at rest, or those checks never run (docs/team/ON_SITE.md).
+    quieto_lineal_ms: 0.02
+    quieto_angular_rads: 0.05
+    # Fine-tune AMCL while still: if the score is fine, move AMCL to the best pose within
+    # afinar_radio_m when the fit is good and sharp (a plain corridor slides: no fix).
+    afinar_quieto: true
+    afinar_radio_m: 0.15
+    afinar_rango_yaw_rad: 0.1
+    afinar_puntaje_minimo: 0.75
+    afinar_nitidez_minima: 0.03       # score drop 5 cm / 2° away from the best pose
+    afinar_distancia_minima_m: 0.015  # move AMCL only if this far (or 0.015 rad)
+    desvio_xy_afinada: 0.02           # spread sent to AMCL with the fine-tuned pose
+    desvio_yaw_afinada: 0.02
+    actualizaciones_quieto: 10        # 0 = none: ready as soon as AMCL takes the start pose
+    # Keep the existing heading updates: the encoder fix does not eliminate rotation error.
+    # Recalibrate with the new bag before reducing these updates. 0 = off.
+    actualizaciones_giro: 10
+    giro_minimo_rad: 0.3              # signed rotation of one turn that needs a fix
+    girando_rads: 0.3                 # above this the robot is turning, not just correcting
+    max_correccion_s: 4.0             # stop waiting this long after the turn ends
+    max_duda_s: 15.0                  # stop waiting this long after the doubt starts
+    # Planner watch (vigia_planner.py): planner_server's TF view can freeze, so its paths start
+    # where the robot was and MPPI ends up rejecting them all ("0 poses"). If this many paths
+    # in a row start this far from the robot, restart planner_server. <= 0 m = off.
+    vigia_planner_distancia_m: 0.5
+    vigia_planner_veces: 3
+    vigia_planner_espera_s: 30.0      # at most one restart this often
+    vigia_planner_tf_max_s: 1.0       # our own TF must have advanced within this time
+    plazo_arranque_s: 5.0             # s sin respuesta de un nodo de Nav2 antes de volver a preguntar
+    # Check of the Nav2 nodes after start-up, one step this often (s; <= 0 = off; read at
+    # start). A Nav2 process that died is started again by the launch (respawn) and found
+    # here not active: this brings it back up. Each node is asked about every ~6 s.
+    revisar_nav2_s: 0.5
+
+# ---------------------------------------------------------------------------
+# Navegación (Nav2): planner (camino), controller (seguirlo), behaviors
+# (destrabarse), bt_navigator (el que recibe navigate_to_pose) y smoother
+# (único publicador de /cmd_vel).
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    # default_nav_to_pose_bt_xml is set by navegacion.launch.py (behavior_trees/navegar.xml:
+    # Humble's tree with goal_checker_id, needed with two goal checkers). No plugin_lib_names:
+    # Humble's defaults are used; the full list has more than 12 items and CI rejects it.
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001   # el ejemplo de Nav2 usa 0.5: anularía el movimiento lateral
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugin: progress_checker
+    # general: every goal. precise: only the trip back to the start (vuelta_precisa.xml).
+    goal_checker_plugins: [general_goal_checker, precise_goal_checker]
+    controller_plugins: [FollowPath]
+    progress_checker:                 # girar también cuenta: el giro final en el objetivo no
+      plugin: nav2_controller::PoseProgressChecker   # mueve el robot y antes abortaba a los 5 s
+      required_movement_radius: 0.3
+      required_movement_angle: 0.5
+      movement_time_allowance: 5.0     # trabado antes: Nav2 prueba sus recoveries
+    general_goal_checker:
+      plugin: nav2_controller::SimpleGoalChecker
+      stateful: true                  # primero llega a la posición, después gira
+      xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 0.25
+    precise_goal_checker:             # return bonus: 4 wheels inside 0.25 m -> position error < 0.10 m
+      plugin: nav2_controller::SimpleGoalChecker
+      stateful: true
+      xy_goal_tolerance: 0.05         # AMCL itself is ~0.05 m off: tighter does not help
+      yaw_goal_tolerance: 6.28        # any heading: the wheels are symmetric around the center
+    FollowPath:
+      plugin: nav2_mppi_controller::MPPIController
+      motion_model: Omni              # mecanum: también se mueve de costado
+      time_steps: 40                  # 40 x 0.05 s = mira 2 s hacia adelante
+      model_dt: 0.05
+      batch_size: 1000                # trayectorias que imagina por ciclo (2000 saturaba la PC)
+      iteration_count: 1
+      vx_std: 0.2
+      vy_std: 0.2
+      wz_std: 0.8                     # con 0.4 giraba a ~0.7 rad/s (180° en 4.5 s)
+      # vx_max, vx_min, vy_max, wz_max: from `limites` (top of this file)
+      temperature: 0.3
+      gamma: 0.015
+      prune_distance: 1.7
+      transform_tolerance: 0.3
+      enforce_path_inversion: false
+      critics: [ConstraintCritic, CostCritic, GoalCritic, GoalAngleCritic, PathAlignCritic,
+                PathFollowCritic, PathAngleCritic]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      CostCritic:                     # obstáculos según el costmap: pasa mejor por huecos angostos
+        enabled: true                 # que ObstaclesCritic (con ese se trababa en las prácticas)
+        cost_power: 1
+        cost_weight: 1.0              # bajo: en huecos angostos manda el camino (que ya va por el
+                                      # medio). Chocar sigue prohibido: collision_cost no depende de esto
+        critical_cost: 300.0
+        consider_footprint: true      # cerca de obstáculos chequea el rectángulo, no un círculo
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+      # threshold_to_consider: distancia en línea recta al objetivo. Más cerca que eso
+      # MPPI deja de seguir el camino y va derecho al objetivo. Con 1.0 m tiraba contra
+      # la pared cuando el objetivo estaba del otro lado (vuelta en U en una práctica).
+      # 0.4 m: menos que lo que separa dos poses a ambos lados de una pared.
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.4
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.4
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 3
+        threshold_to_consider: 0.4
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 0.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.4
+        max_angle_to_furthest: 0.35   # viaja con el eje largo sobre el camino: llega alineado a los
+                                      # huecos (en uno de 0.35 m solo entran rumbos de ±20°)
+        forward_preference: false     # de frente o de reversa, lo que esté más cerca
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 7.0           # el LiDAR va a ~7.2 Hz
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+      footprint_padding: 0.02         # margen sobre el rectángulo del chasis (footprint: lo arma
+                                      # navegacion.launch.py con las medidas del URDF)
+      transform_tolerance: 0.5
+      plugins: [obstacle_layer, inflation_layer]
+      obstacle_layer:
+        plugin: nav2_costmap_2d::ObstacleLayer
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: LaserScan
+          clearing: true
+          marking: true
+          max_obstacle_height: 2.0
+          raytrace_max_range: 3.5
+          obstacle_max_range: 3.0
+          inf_is_valid: false
+      # El costo sube solo cerca de los obstáculos: MPPI entra en huecos angostos sin
+      # dudar. El camino ya viene por el medio por la inflación del global.
+      inflation_layer:
+        plugin: nav2_costmap_2d::InflationLayer
+        inflation_radius: 0.30          # mínimo: lo que cubre el rectángulo (0.23 m con el margen)
+        cost_scaling_factor: 10.0
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 2.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_footprint
+      resolution: 0.05
+      footprint_padding: 0.02         # igual que el local. El planner trata al robot como un
+                                      # círculo del medio ancho (0.12 m con el margen): los caminos van
+                                      # por el medio igual, por la inflación
+      track_unknown_space: true
+      transform_tolerance: 0.5
+      # Full grid on /global_costmap/costmap every publish (1 Hz, ~14 KB). Without it Nav2 sends
+      # it once and then only costmap_updates: a reader of costmap would never see the boxes.
+      always_send_full_costmap: true
+      plugins: [static_layer, obstacle_layer, inflation_layer]
+      static_layer:
+        plugin: nav2_costmap_2d::StaticLayer
+        map_topic: /map
+        map_subscribe_transient_local: true
+      obstacle_layer:                 # las cajas no están en /map: las marca el LiDAR
+        plugin: nav2_costmap_2d::ObstacleLayer
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: LaserScan
+          clearing: true
+          marking: true
+          max_obstacle_height: 2.0
+          raytrace_max_range: 3.5
+          obstacle_max_range: 3.0
+      inflation_layer:
+        plugin: nav2_costmap_2d::InflationLayer
+        inflation_radius: 0.45          # costo que baja despacio: caminos por el medio
+        cost_scaling_factor: 3.0        # del pasillo y curvas abiertas en las puntas de pared
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 5.0
+    planner_plugins: [GridBased]
+    # Smac 2D (A* on the costmap). NavFn stops tracing its path after 4 x the costmap's longer
+    # side in cells, a limit fixed in Humble's code (navfn_planner.cpp:398): on a ~7 m map that is
+    # ~14 m of path, and a 28 m way back failed 3 times. Smac 2D has no such limit and blocks the
+    # same cells as NavFn (cost >= 253: the center closer than 0.12 m to an obstacle).
+    # The name stays GridBased, so the behavior trees do not change. To go back to NavFn:
+    # plugin nav2_navfn_planner/NavfnPlanner, tolerance 0.05, use_astar false, allow_unknown false.
+    GridBased:
+      plugin: nav2_smac_planner/SmacPlanner2D
+      # Goal in a blocked cell: plan to the closest free cell within this distance (m). Smaller
+      # than xy_goal_tolerance (0.10), so the end of the path counts as arrival. With NavFn, 0.2
+      # left the robot up to 0.28 m away (view over a box: 50 s stuck) and 0 rejected goals at
+      # the edge (+9 s).
+      tolerance: 0.05
+      allow_unknown: false
+      downsample_costmap: false
+      # Weight of the costmap's inflation cost in the path length: paths keep to the middle of
+      # corridors, as NavFn's did. 0 = shortest path along the walls.
+      cost_travel_multiplier: 2.0
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 1.0          # s; a 7 m map plans in a few ms
+      use_final_approach_orientation: false
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0             # el robot frena con 0.5 s sin /cmd_vel
+    behavior_plugins: [spin, backup, wait]
+    spin:
+      plugin: nav2_behaviors/Spin
+    backup:
+      plugin: nav2_behaviors/BackUp
+    wait:
+      plugin: nav2_behaviors/Wait
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.3
+    simulate_ahead_time: 1.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.5           # the real robot does not turn below ~0.5 rad/s from rest
+    rotational_acc_lim: 3.2
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0         # /cmd_vel a >= 10 Hz mientras se mueve
+    scale_velocities: false
+    feedback: OPEN_LOOP
+    # max_velocity, min_velocity: from `limites` (top of this file)
+    max_accel: [1.5, 1.5, 3.2]
+    # Frenar rápido: al llegar, el controller manda cero y el smoother baja en rampa. Con -3.2
+    # el giro final (~0.85 rad/s) tardaba 0.27 s en parar, y la misión manda /done 0.17-0.24 s
+    # después: quedaba un /cmd_vel no nulo tras /done. Con -20 hasta el viejo máximo (1.9) para en
+    # < 0.1 s. Lineal -2.5 (0.25 g): de la velocidad típica al llegar (< 0.15) en < 0.06 s.
+    max_decel: [-2.5, -2.5, -20.0]
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+    odom_topic: /odom
