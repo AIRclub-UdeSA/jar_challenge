@@ -1,79 +1,128 @@
-"""Entrada oficial: AMCL, Nav2, exploración, detección y registro JAR.
-
-Espera /map y acepta victimas:=N. Los parámetros se leen de los YAML instalados
-y los valores variables se pasan por argumentos ROS, sin generar YAML temporales.
-"""
-import json
+"""Entrada oficial: AMCL, Nav2, exploración y detección; espera /map."""
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
     paquete = get_package_share_directory('equipo_jar')
     parametros = os.path.join(paquete, 'params')
-    nav2 = os.path.join(parametros, 'nav2_exploracion.yaml')
-    arbol = os.path.join(paquete, 'behavior_trees', 'navegar_rapido.xml')
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    victimas = LaunchConfiguration('victimas')
+    reloj = ParameterValue(use_sim_time, value_type=bool)
+    cantidad = ParameterValue(victimas, value_type=int)
     remaps_tf = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
+    argumentos_ros = ['--disable-external-lib-logs']
 
-    def nodo(package, executable, *, name=None, archivo=None, overrides=(), remappings=()):
-        argumentos = ['--ros-args', '--disable-external-lib-logs']
-        if archivo:
-            argumentos.extend(['--params-file', archivo])
-        argumentos.extend([
-            '-p', ['use_sim_time:=', LaunchConfiguration('use_sim_time')],
-        ])
-        for override in overrides:
-            argumentos.extend(['-p', override])
-        return Node(
-            package=package, executable=executable, name=name or executable,
-            output='both',
-            arguments=argumentos, remappings=list(remappings),
-        )
-
-    nodos_navegacion = [
-        ('nav2_controller', 'controller_server', [('cmd_vel', 'cmd_vel_nav')]),
-        ('nav2_smoother', 'smoother_server', []),
-        ('nav2_planner', 'planner_server', []),
-        ('nav2_behaviors', 'behavior_server', []),
-        ('nav2_bt_navigator', 'bt_navigator', []),
-        ('nav2_waypoint_follower', 'waypoint_follower', []),
-        ('nav2_velocity_smoother', 'velocity_smoother',
-         [('cmd_vel', 'cmd_vel_nav'), ('cmd_vel_smoothed', 'cmd_vel')]),
-    ]
-    navegacion = [
-        nodo(package, executable, archivo=nav2, remappings=remaps_tf + remaps,
-             overrides=[f'default_nav_to_pose_bt_xml:={arbol}']
-             if executable == 'bt_navigator' else [])
-        for package, executable, remaps in nodos_navegacion
-    ]
-    navegacion.append(nodo(
-        'nav2_lifecycle_manager', 'lifecycle_manager', name='lifecycle_manager_navigation',
-        overrides=['autostart:=true',
-                   'node_names:=' + json.dumps([n[1] for n in nodos_navegacion])],
-    ))
-    cantidad = [['cantidad_victimas:=', LaunchConfiguration('victimas')]]
+    nav2_params = RewrittenYaml(
+        source_file=os.path.join(parametros, 'nav2_exploracion.yaml'),
+        root_key='',
+        param_rewrites={
+            'use_sim_time': use_sim_time,
+            'default_nav_to_pose_bt_xml': os.path.join(
+                paquete, 'behavior_trees', 'navegar_rapido.xml'),
+        },
+        convert_types=True,
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='true solo en simulación'),
         DeclareLaunchArgument('victimas', default_value='5',
                               description='Cantidad N informada por la organización'),
-        nodo('nav2_amcl', 'amcl', archivo=nav2),
-        TimerAction(period=2.0, actions=[
-            nodo('nav2_lifecycle_manager', 'lifecycle_manager',
-                 name='lifecycle_manager_localization',
-                 overrides=['autostart:=true', 'node_names:=[amcl]']),
-        ]),
-        TimerAction(period=4.0, actions=navegacion),
-        TimerAction(period=6.0, actions=[
-            nodo('equipo_jar', 'exploracion',
-                 archivo=os.path.join(parametros, 'exploracion.yaml'), overrides=cantidad),
-        ]),
-        nodo('equipo_jar', 'deteccion_victimas',
-             archivo=os.path.join(parametros, 'victimas.yaml'), overrides=cantidad),
+        Node(
+            package='nav2_amcl', executable='amcl', name='amcl',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[nav2_params],
+        ),
+        Node(
+            package='nav2_lifecycle_manager', executable='lifecycle_manager',
+            name='lifecycle_manager_localization',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[{
+                'use_sim_time': reloj,
+                'autostart': True,
+                'node_names': ['amcl'],
+            }],
+        ),
+        Node(
+            package='nav2_controller', executable='controller_server', name='controller_server',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[nav2_params],
+            remappings=remaps_tf + [('cmd_vel', 'cmd_vel_nav')],
+        ),
+        Node(
+            package='nav2_smoother', executable='smoother_server', name='smoother_server',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[nav2_params],
+            remappings=remaps_tf,
+        ),
+        Node(
+            package='nav2_planner', executable='planner_server', name='planner_server',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[nav2_params],
+            remappings=remaps_tf,
+        ),
+        Node(
+            package='nav2_behaviors', executable='behavior_server', name='behavior_server',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[nav2_params],
+            remappings=remaps_tf,
+        ),
+        Node(
+            package='nav2_bt_navigator', executable='bt_navigator', name='bt_navigator',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[nav2_params],
+            remappings=remaps_tf,
+        ),
+        Node(
+            package='nav2_waypoint_follower', executable='waypoint_follower', name='waypoint_follower',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[nav2_params],
+            remappings=remaps_tf,
+        ),
+        Node(
+            package='nav2_velocity_smoother', executable='velocity_smoother', name='velocity_smoother',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[nav2_params],
+            remappings=remaps_tf + [
+                ('cmd_vel', 'cmd_vel_nav'),
+                ('cmd_vel_smoothed', 'cmd_vel'),
+            ],
+        ),
+        Node(
+            package='nav2_lifecycle_manager', executable='lifecycle_manager',
+            name='lifecycle_manager_navigation',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[{
+                'use_sim_time': reloj,
+                'autostart': True,
+                'node_names': [
+                    'controller_server', 'smoother_server', 'planner_server',
+                    'behavior_server', 'bt_navigator', 'waypoint_follower', 'velocity_smoother',
+                ],
+            }],
+        ),
+        Node(
+            package='equipo_jar', executable='exploracion', name='exploracion',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[os.path.join(parametros, 'exploracion.yaml'), {
+                'use_sim_time': reloj,
+                'cantidad_victimas': cantidad,
+            }],
+        ),
+        Node(
+            package='equipo_jar', executable='deteccion_victimas', name='deteccion_victimas',
+            output='both', ros_arguments=argumentos_ros,
+            parameters=[os.path.join(parametros, 'victimas.yaml'), {
+                'use_sim_time': reloj,
+                'cantidad_victimas': cantidad,
+            }],
+        ),
     ])
