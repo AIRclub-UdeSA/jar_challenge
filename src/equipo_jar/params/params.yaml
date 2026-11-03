@@ -66,6 +66,7 @@ juntar_victimas:
     distancia_minima_reportes: 0.7  # m: un grupo más cerca de una ya reportada es la misma caja
     dispersion_maxima: 0.08         # m: grupos más dispersos no se reportan
     puntos_recientes: 30            # la mediana y la dispersión se calculan con los últimos N puntos
+    distancia_minima_deteccion: 0.35  # m; rojo visto más cerca del robot no cuenta (cara corrida)
     radio_grupo: 0.30               # m, distancia máxima a la mediana del grupo
     # Media caja (m): corre cada detección de la cara al centro. Las cajas del
     # simulador miden 0.25 m; las del robot real del workshop, ~0.18 (0.09).

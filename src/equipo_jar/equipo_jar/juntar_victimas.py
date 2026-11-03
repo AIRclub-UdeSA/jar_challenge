@@ -44,6 +44,7 @@ class JuntarVictimas(Node):
         # durante un giro) no se reporta todavía.
         self.declare_parameter('dispersion_maxima', 0.08)
         self.declare_parameter('puntos_recientes', 30)
+        self.declare_parameter('distancia_minima_deteccion', 0.35)
         # Al final de la corrida (equipo/vaciar_reportes) se publican los
         # mejores grupos que no llegaron a detecciones_minimas: un reporte
         # errado da 0 y no resta, así que los lugares que sobran se usan.
@@ -56,6 +57,7 @@ class JuntarVictimas(Node):
         self.distancia_minima_reportes = self.get_parameter('distancia_minima_reportes').value
         self.dispersion_maxima = self.get_parameter('dispersion_maxima').value
         self.puntos_recientes = self.get_parameter('puntos_recientes').value
+        self.distancia_minima_deteccion = self.get_parameter('distancia_minima_deteccion').value
         self.minimas_final = self.get_parameter('detecciones_minimas_final').value
         self.reportadas = []        # medianas ya publicadas
 
@@ -108,7 +110,9 @@ class JuntarVictimas(Node):
             dx = x - robot_x
             dy = y - robot_y
             d = math.hypot(dx, dy)
-            if d < 1e-6:
+            if d < self.distancia_minima_deteccion:
+                # Muy de cerca la cámara y el lidar no coinciden y los puntos rojos
+                # caen corridos (un reporte salió a 0.39 m con el robot pegado a la caja).
                 continue
             x += self.mitad * dx / d
             y += self.mitad * dy / d

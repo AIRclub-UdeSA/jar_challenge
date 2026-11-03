@@ -621,12 +621,15 @@ class NodoEquipo(Node):
         yaw_laser = yaw_de_quaternion(tf.transform.rotation)
         tx, ty = tf.transform.translation.x, tf.transform.translation.y
         ex = ey = 0.0
+        puntos = []
         for i, r in enumerate(scan.ranges):
             if not (scan.range_min < r < scan.range_max):
                 continue
             a = scan.angle_min + i * scan.angle_increment + yaw_laser
             px, py = tx + r * math.cos(a), ty + r * math.sin(a)
             d = math.hypot(px, py)
+            if 0.12 < d < 1.0:
+                puntos.append((px, py))
             if 0.05 < d < self.radio_destrabe:
                 peso = (self.radio_destrabe - d) / d
                 ex -= px * peso
@@ -634,11 +637,28 @@ class NodoEquipo(Node):
         norma = math.hypot(ex, ey)
         if norma < 1e-6:
             return
+        ex, ey = ex / norma, ey / norma
+        # El empuje promedio puede mandar al robot contra una punta de pared fina
+        # (una caja al lado aporta muchos más puntos que la punta). Se elige la
+        # dirección, entre 16, con más espacio libre para el ancho del robot; ante
+        # empates, la más parecida al empuje.
+        mejor, libre_mejor = (ex, ey), -1.0
+        for k in range(16):
+            ux, uy = math.cos(k * math.pi / 8), math.sin(k * math.pi / 8)
+            libre = 0.6
+            for px, py in puntos:
+                adelante = px * ux + py * uy
+                if adelante > 0 and abs(py * ux - px * uy) < 0.17:
+                    libre = min(libre, adelante - 0.18)
+            puntaje = libre + 0.03 * (ux * ex + uy * ey)
+            if puntaje > libre_mejor:
+                mejor, libre_mejor = (ux, uy), puntaje
+        if libre_mejor > 0.05:
+            ex, ey = mejor
         v = self.velocidad_destrabe
-        self.destrabe = (v * ex / norma, v * ey / norma, self.ahora() + self.tiempo_destrabe)
+        self.destrabe = (v * ex, v * ey, self.ahora() + self.tiempo_destrabe)
         self.get_logger().info(
-            f'Destrabe en {self.texto_pose()}: alejándose de la pared hacia '
-            f'({ex / norma:.2f}, {ey / norma:.2f})')
+            f'Destrabe en {self.texto_pose()}: hacia ({ex:.2f}, {ey:.2f}), el lado más libre')
 
     def texto_pose(self):
         pose = self.pose_robot()
