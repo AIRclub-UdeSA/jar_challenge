@@ -9,9 +9,9 @@ competencia:   # not a node: the choices competencia.launch.py reads, to switch 
     # launch argument perfil:= overrides it.
     perfil: normal
     # Where home is: origen (the map origin) or inicio (where the robot started: its pose once
-    # localized, before it moves). The organizers have said both; the 10-27 email: they tape
-    # the point the robot starts from. The launch passes it to the mission.
-    casa: inicio
+    # localized, before it moves). The organizers have said both; their latest word is the
+    # map origin. The launch passes it to the mission.
+    casa: origen
 
 localizer:   # scan_matcher.py: scan-to-map matcher (publishes map -> odom)
   ros__parameters:
