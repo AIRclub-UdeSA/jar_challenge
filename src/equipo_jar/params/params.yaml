@@ -248,8 +248,13 @@ controller_server:
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
       desired_linear_vel: 0.30      # m/s
-      lookahead_dist: 0.40
-      min_lookahead_dist: 0.25
+      # Punto del camino al que apunta RPP. Con 0,40, en las U alrededor de la punta de un panel
+      # cortaba la curva ~10 cm hacia adentro (con 0,25, ~3 cm): rozaba la punta y se trababa.
+      # Tandas del 2/11 (4 mapas x 3 spawns): trabas en maze_2/3 de 21 a 5, choques con la caja
+      # distractora de maze_1 de 2-3 por corrida a 0, mismos puntos. Sin velocidad en el
+      # lookahead (use_velocity_scaled_lookahead_dist: false) se usa este valor fijo.
+      lookahead_dist: 0.25
+      min_lookahead_dist: 0.20
       max_lookahead_dist: 0.60
       lookahead_time: 1.2
       use_velocity_scaled_lookahead_dist: false
