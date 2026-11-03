@@ -156,6 +156,7 @@ class NodoPercepcion(Node):
 
         self.puente = CvBridge()
         self.mapa = None              # GrillaMapa, cuando llega /map
+        self.mensaje_mapa = None      # el /map recibido, hasta que paso() arma la GrillaMapa
         self.scan = None
         self.imagen = None
         self.stamp_imagen = None
@@ -207,8 +208,17 @@ class NodoPercepcion(Node):
     # --- Sensores: los callbacks solo guardan el último dato; decide el timer ---------------
 
     def al_recibir_mapa(self, msg):
+        self.mensaje_mapa = msg
+
+    def armar_mapa(self):
+        """Arma la GrillaMapa con el /map recibido. Va en paso() y no en el callback: /map llega
+        una sola vez, así que si esto falla adentro del callback no hay segunda oportunidad: el
+        nodo sigue vivo (ver ejecucion.py) pero sin mapa, y no se ubica ninguna caja en toda la
+        corrida. En paso(), el error lo atrapa ciclo() y se reintenta en el ciclo siguiente."""
+        msg = self.mensaje_mapa
         self.mapa = GrillaMapa.desde_mensaje(msg)
         self.info_mapa = msg.info
+        self.mensaje_mapa = None  # recién acá: si falló, se reintenta
 
     def al_recibir_scan(self, scan):
         self.scan = scan
@@ -322,6 +332,8 @@ class NodoPercepcion(Node):
                 throttle_duration_sec=5.0)
 
     def paso(self):
+        if self.mensaje_mapa is not None:
+            self.armar_mapa()
         if self.mapa is None:
             return  # nada antes del mapa (§5)
         self.geometria_del_robot()
