@@ -1,0 +1,47 @@
+{
+  "maquina": "x86_64",
+  "procesador": "x86_64",
+  "forma": [
+    898,
+    380
+  ],
+  "construccion_grafo_s": 0.09363708700038842,
+  "mediciones": [
+    {
+      "referencia": {
+        "segundos": 3.900180102000377,
+        "costo": 1074.0572826370953,
+        "puntos": 576
+      },
+      "compilado": {
+        "segundos": 0.19324690800021926,
+        "costo": 1074.0572826370953,
+        "puntos": 576
+      }
+    },
+    {
+      "compilado": {
+        "segundos": 0.18394006099879334,
+        "costo": 1074.0572826370953,
+        "puntos": 576
+      },
+      "referencia": {
+        "segundos": 3.4130648039990774,
+        "costo": 1074.0572826370953,
+        "puntos": 576
+      }
+    },
+    {
+      "referencia": {
+        "segundos": 3.162457166999957,
+        "costo": 1074.0572826370953,
+        "puntos": 576
+      },
+      "compilado": {
+        "segundos": 0.17445310600123776,
+        "costo": 1074.0572826370953,
+        "puntos": 576
+      }
+    }
+  ]
+}

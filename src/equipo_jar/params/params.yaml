@@ -1,12 +1,117 @@
-# Parámetros del equipo (reglamento §9.1).
+# Parámetros del equipo para el robot real (reglamento §9.1).
 #
-# Acá solo van valores GENERALES: umbrales, ganancias, límites de velocidad,
-# rangos de color. Nada que dependa del mapa de la competencia: nada de
-# coordenadas, rutas ni posiciones de víctimas. El CI (tools/verificar_params.py)
-# rechaza estos archivos si rompen la regla.
-#
-nodo_equipo:
+# Solo valores generales: umbrales, ganancias, límites. Nada del mapa de la
+# competencia. En el simulador, simulacion.yaml pisa lo que cambia allí.
+# Esta carpeta es lo único que se puede retocar después del cierre de entregas:
+# en el lugar, calibrar escala_avance y escala_giro con medir_odometria
+# (ver README de jar_localizacion).
+
+campo_verosimilitud:
   ros__parameters:
-    frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.30      # m/s
-    velocidad_angular_max: 1.00     # rad/s
+    sigma_sensor: 0.2
+
+localizador:
+  ros__parameters:
+    map_frame: map
+    odom_frame: odom
+    base_frame: base_footprint
+    num_particulas: 300
+    # Los jueces ubican el robot cerca del origen, no exactamente ahí (§1):
+    # la nube inicial cubre ±30 cm y ±17°.
+    pose_inicial_x: 0.0
+    pose_inicial_y: 0.0
+    pose_inicial_theta: 0.0
+    dispersion_inicial_xy: 0.3
+    dispersion_inicial_theta: 0.3
+    # Medidas en el robot real (bag de la semana 10): avance 0.744 m según el
+    # lidar contra 0.949 m según /odom, giro 1076.5° según el IMU contra 1339.0°.
+    escala_avance: 0.784
+    escala_giro: 0.804
+    submuestreo_scan: 15
+    ruido_remuestreo_xy: 0.01
+    ruido_remuestreo_theta: 0.01
+    # Si el filtro no es confiable, seguir con odometría (README de jar_localizacion).
+    respaldo_odometria: true
+    dispersion_maxima: 0.15
+    tolerancia_calidad: 5.0
+    scans_para_resembrar: 10
+    dispersion_resembrado: 0.05
+
+# Percepción: rachas rojas del scan según la cámara -> objetos -> reportes.
+detector_scan_color:
+  ros__parameters:
+    hue_rojo_bajo_1: 0.0
+    hue_rojo_alto_1: 10.0
+    hue_rojo_bajo_2: 170.0
+    hue_rojo_alto_2: 180.0
+    saturacion_min: 120.0
+    valor_min: 80.0
+    # rad/s: girando, la imagen y el scan no son del mismo instante.
+    giro_maximo: 0.3
+
+detector_rojos:
+  ros__parameters:
+    map_frame: map
+    # Los puntos ya son rojos: el umbral deja pasar todos (cajas junto a paredes).
+    umbral_probabilidad: 101.0
+    racha_minima: 3
+    distancia_minima_valida: 0.25
+
+juntar_victimas:
+  ros__parameters:
+    # La cantidad N llega por el argumento victimas:=N del launch.
+    detecciones_minimas: 30
+    radio_grupo: 0.30
+    mitad_caja: 0.09
+    # Reporta cada caja al confirmarla (bono de rescate veloz, §8) y, al volver
+    # a la largada, completa con los mejores grupos restantes.
+    modo_reporte: inmediato
+    tiempo_limite_s: 0.0
+    detecciones_minimas_final: 10
+    separacion_reportes: 0.5
+    map_frame: map
+    base_frame: base_footprint
+
+grilla_cobertura:
+  ros__parameters:
+    map_frame: map
+    base_frame: base_footprint
+    factor_escala: 4
+    timeout_scan_s: 0.5
+    tiempo_asentamiento_s: 3.0
+
+explorador:
+  ros__parameters:
+    map_frame: map
+    base_frame: base_footprint
+    velocidad_maxima: 0.3
+    largo_robot: 0.37
+    ancho_robot: 0.24
+    timeout_pose_s: 0.5
+    velocidad_pasillo: 0.10
+    horizonte_colision_s: 0.8
+    desaceleracion_segura: 0.4
+    subdivisiones_mapa: 2
+    timeout_sin_avance_s: 15.0
+    margen_seguridad: 0.03
+    timeout_scan_s: 0.5
+    tiempo_asentamiento_s: 3.0
+    porcentaje_objetivo: 98.0
+    # Sin clic de RViz: con /map y el LiDAR andando, siembra la pose cerca del origen.
+    confirmar_pose_automatica: true
+    distancia_entre_miradas: 1.5
+    pasos_mirada: 8
+    pausa_mirada_s: 0.6
+    velocidad_mirada: 0.6
+    distancia_pared_conocida: 0.15
+    margen_obstaculos_scan: 0.02
+    alcance_obstaculos_scan: 1.0
+    impactos_minimos_scan: 3
+    radio_escape: 0.20
+    velocidad_escape: 0.06
+    # Corrida de 10 min desde /map (§5): a los 7.5 min reporta lo que tenga y
+    # vuelve a la largada para publicar /done (bono de regreso, §8).
+    tiempo_regreso_s: 450.0
+    regresar_con_todas: true
+    # El jurado corta la corrida tras 60 s sin moverse (§11.3).
+    espera_inmovil_s: 40.0
