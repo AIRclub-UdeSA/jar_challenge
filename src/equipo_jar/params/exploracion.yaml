@@ -1,0 +1,217 @@
+# Parámetros del nodo `exploracion` (explorador Next-Best-View de competencia).
+#
+# Solo valores generales (reglamento §9.1, §10): nada de coordenadas del mapa.
+# La cantidad de víctimas N NO va acá: llega por el launch (victimas:=N).
+exploracion:
+  ros__parameters:
+    # --- Misión ---
+    duracion_corrida_s: 600.0   # 10 min desde /map (§5)
+    done_forzado_s: 599.0       # a los 9:59 inicia el cierre esté donde esté
+    margen_regreso_s: 25.0      # colchón extra al calcular si llego a volver a tiempo
+    volver_al_inicio: true      # bono +100 (§8): volver a ≤ 0.25 m de la largada
+    publicar_done: true         # al llegar a la largada publica /done (termina la corrida)
+    espera_reportes_finales_s: 0.7 # espera máxima al detector antes de /done; no supera los 10 min
+
+    # --- Cámara: qué cuenta como "visto" ---
+    fov_camara_deg: 70.0        # campo de visión horizontal de la cámara RGB
+    rango_vision: 2.0           # m que cuentan como "visto". Con 2.5 daba por vistas zonas que el
+                                # detector (rango_maximo 2.0) no confirma, y de lejos ubica mal la caja
+    rayos_360: 72               # rayos por candidato (cada 5°)
+    peso_lejos: 0.5             # valor de una celda vista en el borde del alcance (1.0 a <= 1 m):
+                                # el NBV prefiere puntos que miren de cerca
+    giro_maximo_visto: 1.0      # rad/s (odometría; igual que el detector): girando más rápido no cuenta como visto
+
+    # --- Confirmar cajas vistas de lejos ---
+    # El detector publica en /deteccion/pendientes las cajas vistas pero sin
+    # reportar (solo de lejos). El explorador va a mirarlas a 0.6-1.2 m con vista
+    # libre antes de seguir: menos reportes mal ubicados.
+    confirmar_cajas: true
+    intentos_confirmacion: 1    # una visita por caja; no insistir con la misma posición
+    tiempo_mirar_caja_s: 0.8    # s quieto mirándola al llegar
+
+    # --- Next-Best-View ---
+    paso_candidatos: 0.30       # m entre candidatos
+    margen_transito: 0.13       # m a las paredes para el cálculo de caminos (BFS): pasos de >= 26 cm
+                                # (robot: 20 cm de ancho). Con 0.17 descartaba pasos de < 34 cm
+    margen_candidato: 0.17      # m mínimos de un candidato a paredes/obstáculos (antes 0.22)
+    lambda_distancia: 0.70      # utilidad = ganancia * exp(-lambda * distancia): prefiere terminar la zona cercana
+    peso_giro_nbv: 0.35        # entre ganancias parecidas, prefiere la vista que requiere menos giro
+    ganancia_minima: 25         # celdas nuevas mínimas para que una vista valga la pena
+    fraccion_agotado: 0.30      # goal que ya perdió el 70% de su ganancia en el camino -> siguiente
+    cobertura_objetivo: 0.97    # objetivo del modo NBV global
+    modo_exploracion: sectores_nbv # sectores_nbv: BCD y NBV dentro de cada sector; nbv: modo global original
+    cobertura_objetivo_sector: 0.68 # pasar al siguiente sector cuando se vio el 68% de su piso libre
+    area_residual_ignorable_m2: 0.09 # omitir hasta 30x30 cm pendientes tras revisar al menos la mitad del sector
+    area_caja_m2: 0.09          # huecos aislados sin ver de menos de 30x30 cm cuentan como vistos
+                                # (antes 0.04 = una caja de 20x20: el robot iba a mirar rincones mínimos)
+    tolerancia_cerca_destino_m: 0.20 # a menos de esto del destino final cuenta como llegado
+    radio_entrada_sector_m: 0.30 # a menos de esto del sector ya cuenta como "entré": no espera el
+                                 # último tramo del portal (Nav2 oscilaba ~20 s en cada cambio de zona)
+    radio_alejar_guia_m: 0.25   # cada guía (portal o punto entre portales) se corre hasta esto hacia donde
+                                # hay más lugar a paredes/obstáculos, sin cambiar de sector y en línea recta
+    holgura_guia_m: 0.30        # buscar al menos esta distancia a la pared (más no suma)
+    peso_holgura_nbv: 0.6       # NBV: un punto pegado a la pared vale 40% del mismo punto a holgura_guia_m
+    holgura_paso_estrecho_m: 0.25 # si se atasca donde hay menos holgura que esto, las rutas evitan ese paso
+    radio_paso_fallido_m: 0.15
+    margen_objeto_ruta_m: 0.22  # las rutas pasan a >= esto de cajas/objetos aunque a paredes dejen 13 cm
+                                # (entre una caja y la punta de una pared quedaba un hueco de ~30 cm)
+    desvio_maximo_por_objetos_m: 4.0 # cuánto más larga puede ser una ruta para respetar ese margen
+    cerrar_huecos_objetos: false # true: cierra en el mapa propio los huecos caja-pared < ancho_paso_minimo_m.
+                                # Apagado: obligaba a rodeos más angostos que el hueco (corridas 15:21-16:12)
+    ancho_paso_minimo_m: 0.40   # huecos entre una caja y una pared más angostos que esto se cierran en el
+                                # mapa del equipo (Nav2 lo usa para el plan global), salvo que sean el único paso
+    # Corrección de objetos del mapa local: cada lectura del LiDAR que cae a menos de
+    # radio_correccion_objeto_m de un objeto guardado (y a menos de distancia_max_correccion_m
+    # del robot) se acumula; con lecturas_minimas_correccion, el objeto se mueve a la mediana de
+    # las últimas lecturas_correccion si difiere más de correccion_minima_objeto_m.
+    corregir_objetos: true
+    radio_correccion_objeto_m: 0.35
+    distancia_max_correccion_m: 1.8
+    lecturas_correccion: 40     # mediana de las últimas 40 lecturas (antes 25: saltaba según el lado desde el que se veía)
+    lecturas_por_evaluacion: 6  # se recalcula cada 6 lecturas; se mueve sólo si dos cálculos seguidos coinciden
+    paso_max_correccion_m: 0.05 # cuánto se puede mover por vez
+    correccion_total_max_m: 0.10 # lo más que se aleja de donde se lo detectó (trabado contra la caja, se iba 25 cm)
+    lecturas_minimas_correccion: 6
+    correccion_minima_objeto_m: 0.03
+    profundidad_objeto_m: 0.12  # semidimensión nominal: de la cara LiDAR al centro, por su normal;
+                                # si se ven dos caras se intersectan sus planos interiores
+    # (Modo anterior: entrada -> intermedio -> salida, máximo cinco guías por zona.)
+    # Cada acción manda DOS poses por zona nueva: el portal de entrada y el medio de la zona
+    # (o el destino, si es la última). Nav2 traza el camino entre ellas con su costmap.
+    guias_portal_y_medio: true
+    radio_portal_guia_m: 0.35   # el portal se corre hasta esto dentro de la zona, hacia donde hay más lugar
+    # (false = modo anterior: entrada/medio/salida + uniones, hasta seis poses por acción)
+    # Nav2 traza el camino entre referencias; nunca se envía la ruta completa.
+    paso_maximo_portal_m: 0.50  # muestreo de ruta antes de elegir entrada/medio/salida por zona
+    margen_parada_portal_m: 0.22 # prefiere paradas lejos de paredes; reduce margen si el paso es angosto
+    desvio_maximo_ruta_m: 0.30  # límite absoluto para preferir más holgura o menos giros
+    fraccion_desvio_ruta: 0.15  # además, el desvío no puede superar el 15% de la ruta más corta
+    anticipacion_portal_m: 0.30 # actualiza al siguiente tramo cerca de la salida, sin detenerse en cada guía
+    area_minima_sector_m2: 0.35
+    ancho_minimo_sector_m: 0.45
+    inspeccionar_objetos: true  # observa obstáculos persistentes ausentes del mapa
+    lado_bloque_objeto_m: 0.26 # bloque cuadrado por objeto confirmado (cajas de 25 cm; 0.30 angostaba
+                                # de más el paso junto a la caja roja de maze_1)
+    distancia_pared_bloque_m: 0.20 # más cerca de una pared: no se bloquea (probable eco),
+                                # aunque la cámara aporte un color
+    celdas_max_cortadas_por_bloque: 20 # un bloque nunca puede dejar zonas libres sin camino
+    tiempo_observacion_objeto_s: 0.8 # mirada breve; si falta cámara conserva la posición del LiDAR y sigue
+    imagenes_observacion_minimas: 2 # suficientes para anotar color; no bloquea si faltan
+    distancia_observacion_min_m: 0.45
+    distancia_observacion_ideal_m: 0.85
+    distancia_observacion_max_m: 1.60
+    porcentaje_vel_observacion: 25.0 # Nav2 ajusta la distancia a un máximo del 25% (0.125 m/s)
+    timeout_observacion_objeto_s: 10.0 # un solo giro/acercamiento; al cerrar se recuerda durante toda la corrida
+    separacion_pared_objeto_m: 0.16 # ignora ecos cercanos a paredes ya dibujadas (0.12 dejaba pasar
+                                # la punta de una pared real como "objeto"; una caja de 25 cm pegada
+                                # a la pared igual muestra su cara de enfrente a 25 cm)
+    radio_lista_negra: 0.35     # m alrededor de un goal fallido/visitado que no se re-elige
+    costo_obstaculo: 100        # solo ocupación letal; 99 es margen inflado de Nav2 y no se infla dos veces
+
+    # --- Ejecución ---
+    periodo_decision: 0.5
+    tolerancia_llegada: 0.30
+    girar_al_llegar: true       # Spin para apuntar la cámara al llegar (solo si hace falta)
+    # Tolerancias de ángulo (antes 23°, 10° y 7°: el robot giraba de más y se demoraba)
+    tolerancia_giro_llegada_deg: 35.0   # en una vista: gira solo si el rumbo pedido está a más de esto
+    tolerancia_mirar_caja_deg: 25.0     # al ir a confirmar una caja: dentro de esto ya está en cuadro
+    tolerancia_centrar_objeto_deg: 25.0 # basta con tenerlo en cuadro; evita correcciones alternadas
+    radio_visto_robot_m: 0.15   # solo la huella próxima: el resto exige el cono óptico real de la cámara
+    radio_visto_objeto_m: 0.45  # al confirmar un objeto fuera del mapa, su alrededor (y la sombra que
+                                # deja detrás) cuenta como visto: no se lo rodea para mirar atrás
+    giro_inicial: true          # vuelta completa al largar (AMCL converge + mira alrededor)
+    velocidad_estimada: 0.20    # m/s hasta medir la velocidad real
+
+    # --- Localización y velocidad segura ---
+    # El nodo mide cada 0.2 s el percentil 70 de la distancia de los puntos del
+    # láser a las paredes del mapa (bien localizado: 1-3 cm). Si pasa de
+    # error_loc_malo durante segundos_loc_mala (y no está girando rápido):
+    #   1) frena y prueba una corrección LOCAL (scan-match ±0.35 m / ±0.70 m),
+    #      que tarda ~2 s y no pierde lo explorado;
+    #   2) si a los 1.5 s el láser no volvió a calzar (error_reloc_ok), reparte
+    #      las partículas de AMCL alrededor de donde creía estar (pose al
+    #      perderse + odometría), como en la largada, con σ std_reubicar_xy_m;
+    #      cada reintento la abre factor_std_reintento veces (tope max_std...).
+    #      Ya no se reinicia en todo el mapa: lo ubicaba en lugares imposibles.
+    #      Tampoco gira (el LiDAR ya ve 360°): espera quieto y, si no converge,
+    #      se traslada tramos cortos hacia donde hay lugar. Una pose a más de
+    #      3σ de donde creía estar no se acepta.
+    # Los fallos de navegación (fallos_para_relocalizar) solo disparan esto si
+    # el láser ya empezó a despegarse: en pasos angostos Nav2 falla seguido
+    # aunque la pose esté bien.
+    # Velocidad: máxima (0.50 m/s) salvo cuando avanza HACIA un obstáculo. Se
+    # miran los metros libres que tiene el chasis en la dirección en que se
+    # mueve (odometría + láser); las paredes al costado no frenan:
+    #   libre adelante < distancia_lenta     -> porcentaje_lenta     (70% = 0.35 m/s)
+    #   libre adelante < distancia_muy_lenta -> porcentaje_muy_lenta (50% = 0.25 m/s)
+    #   localización mala                    -> porcentaje_loc_mala (100: no frena;
+    #                                           si se pierde, la relocalización ya lo detiene)
+    error_loc_malo: 0.08        # bag real: bien localizado 1-3 cm, perdido 9-13 cm. En maze_3 rondaba
+                                # 6-7 cm y con 0.07 frenaba/bajaba la velocidad de más. Ver líneas [loc].
+    error_reloc_ok: 0.05
+    segundos_loc_mala: 1.5
+    espera_entre_relocalizaciones: 12.0
+    rango_laser_localizacion_m: 8.0 # incluye extremos de pasillos; el escape sigue usando 3 m
+    relocalizacion_std_xy_m: 0.18
+    relocalizacion_std_yaw_rad: 0.25
+    confirmacion_relocalizacion_s: 2.5
+    timeout_relocalizacion_s: 45.0
+    std_reubicar_xy_m: 0.5      # σ de la nube de partículas al reubicar (1er intento)
+    std_reubicar_yaw_rad: 0.6
+    factor_std_reintento: 1.6   # cada reintento: σ x 1.6 (0.5 -> 0.8 -> 1.2 m)
+    max_std_reubicar_xy_m: 1.2
+    espera_mover_reloc_s: 2.5   # quieto esto antes de trasladarse para ayudar a AMCL
+    distancia_mover_reloc_m: 0.35
+    movimientos_reloc: 3        # tramos por intento
+    velocidad_mover_reloc: 0.12
+    fallos_para_relocalizar: 3 # también detecta hipótesis equivocadas en pasillos repetidos
+    ventana_fallos_relocalizacion_s: 90.0
+    distancia_lenta: 0.25       # m libres delante del chasis, en la dirección de avance
+    distancia_muy_lenta: 0.12   # m libres delante del chasis, en la dirección de avance
+    porcentaje_lenta: 70.0      # % de 0.5 m/s a menos de distancia_lenta
+    porcentaje_muy_lenta: 50.0  # % de 0.5 m/s a menos de distancia_muy_lenta
+    porcentaje_loc_mala: 100.0  # antes 50: con 8-9 cm de error (frecuente) andaba a media velocidad
+    # Al salir de una zona (llegó al sector, se cerró el sector o la vista ya no rinde)
+    # no cancela el goal (Nav2 frenaba en seco): lo deja andar y el próximo goal lo
+    # reemplaza en marcha (preempción de NavigateThroughPoses).
+    cambio_sin_frenar: true
+    giro_previo_deg: 135.0      # gira en el lugar antes de salir sólo si la ruta arranca más atrás que esto (antes 100°)
+    holgura_minima_giro_previo_m: 0.03 # sin esta holgura para girar en el lugar, no hace el giro previo (arranca Nav2)
+
+    # --- Anti-atascos ---
+    # Aviso temprano: reduce sólo el radio de inflación global/local, sin cambiar
+    # el footprint ni las lecturas de obstáculos. Los giros/inspecciones no cuentan.
+    inflacion_adaptativa: true
+    inflacion_desde_nav2: true  # el radio normal es el inflation_radius de nav2_exploracion.yaml (se lee
+                                # del global_costmap al arrancar): cambialo SOLO allá
+    espera_radio_nav2_s: 15.0   # si Nav2 no lo informa en este tiempo, se usa inflacion_normal_m
+    inflacion_normal_m: 0.27  # SÓLO respaldo si Nav2 no responde (o con inflacion_desde_nav2: false)
+    inflacion_minima_m: 0.23  # nunca por debajo del radio de giro del chasis + padding (0.22 m):
+                                # con 0.15 Nav2 planificaba donde la esquina trasera choca (4 de 4 reducciones
+                                # a 0.15 terminaron en atasco en la corrida de las 15:33)
+    paso_inflacion_m: 0.02  # 0.27 -> 0.25 -> 0.23 m
+    tiempo_pre_atasco_s: 4.0   # s de navegación sin progresar antes de la primera reducción
+    intervalo_inflacion_s: 3.0 # s mínimos entre reducciones; también evita restaurar enseguida
+    distancia_restaurar_inflacion_m: 0.40 # avance neto desde la última reducción para volver al radio normal
+    # Si navegando pasa `tiempo_atascado` s sin trasladarse más de
+    # `distancia_atascado` m: cancela el goal (lista negra), limpia costmaps,
+    # se desencaja moviéndose `distancia_escape` m hacia donde el LiDAR ve más
+    # espacio libre, y elige otro punto (o recalcula el regreso).
+    tiempo_atascado: 10.0       # s (reloj de sim) sin avanzar con el MISMO goal
+    tiempo_atascado_global: 16.0  # s sin avanzar aunque se cambie de goal (Nav2 los rechaza)
+    distancia_atascado: 0.12
+    distancia_escape: 0.15      # se duplica/triplica si se traba seguido en el mismo lugar
+    velocidad_escape: 0.10
+
+    # --- Localización y largada ---
+    std_xy: 0.25                # incertidumbre de la pose inicial que se le da a AMCL
+    std_yaw: 0.30
+    std_convergido: 0.06        # AMCL convergido -> se fija la largada
+    max_espera_convergencia_s: 30.0
+    tolerancia_final: 0.06      # m de error con el que termina la aproximación final
+    velocidad_aproximacion: 0.12
+    max_reintentos_regreso: 3
+
+    base_frame: base_footprint
+    odom_frame: odom
+    publicar_debug: true        # /exploracion/visto y /exploracion/marcadores para RViz

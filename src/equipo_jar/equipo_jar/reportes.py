@@ -1,9 +1,4 @@
-"""Formato oficial de los reportes de víctimas (reglamento §7.2).
-
-Un mensaje en /victimas es un reporte y gasta uno de los reportes disponibles,
-puntúe o no. Por eso conviene pasar siempre por acá: construye el mensaje con
-el formato que espera el juez y se niega a armar uno mal formado.
-"""
+"""Formato oficial de los reportes de víctimas."""
 import math
 
 from geometry_msgs.msg import PointStamped

@@ -1,0 +1,73 @@
+# Víctimas rojas -> /victimas; objetos de cualquier color -> información a navegación.
+#
+# Solo valores generales. La cantidad N llega por el launch (victimas:=N).
+deteccion_victimas:
+  ros__parameters:
+    # --- Color (HSV de OpenCV ---
+    tono_rojo_bajo_max: 10      
+    tono_rojo_alto_min: 165     
+    tono_naranja_max: 20
+    tono_amarillo_max: 35
+    tono_verde_max: 85
+    tono_cian_max: 95
+    tono_azul_max: 135
+    tono_violeta_max: 150
+    saturacion_minima: 120      
+    brillo_minimo: 50           
+    fraccion_color_minima: 0.60 
+    objetos_por_color: true     
+                                
+    ancho_maximo_mancha: 0.6    
+    area_minima_px: 40          
+
+    # --- Geometría ---
+    medio_lado_caja: 0.10       # m: de la cara que ve el láser al centro de la caja. Cajas reales (bags):
+                                # ~18-20 cm -> 0.09; simulador: 25 cm -> 0.125. 0.10 anda bien en los dos.
+    rango_maximo: 2.0           # m: más lejos no se confía en la detección (bags reales: las
+                                # detecciones falsas venían de ~1.9-2.2 m)
+    separacion_pared_objeto_m: 0.16 # superficies LiDAR libres del mapa; independiente del color
+    # Filtros contra el mapa (las víctimas NO están en /map):
+    margen_frente_pared: 0.07   # m: si lo rojo está a ±esto de la pared que el mapa pone en esa
+                                # dirección, es algo pintado/pegado en la pared -> se descarta
+    angulo_rasante_deg: 30.0    # si el láser llega más lejos que la pared del mapa, se acepta solo
+                                # si la superficie roja no es casi paralela al rayo (pared de costado)
+    max_dentro_pared: 0.10      # m: cara y centro pueden "pisar" la pared del mapa hasta esto (el
+                                # mapa es de 5 cm y una caja pegada a la pared pisa la primera fila)
+    max_laser_detras_suelo: 0.20 # m: si el láser marca la cara más lejos que la base de la caja en el piso
+                                # (vista por la cámara) por más que esto, pegó en otra cosa: se descarta
+    margen_borde_px: 3          # manchas que tocan el borde izquierdo/derecho de la imagen se ignoran
+                                # (caja cortada: el láser agarra lo de al lado). Probado con el bag real.
+
+    # --- Confirmación y reporte ---
+    periodo_procesamiento: 0.1  # s entre imágenes procesadas (10 Hz; antes 0.2 por CPU)
+    max_desfase_scan_imagen_s: 0.25 # no localizar con un barrido viejo; compensa movimiento con odom
+    edad_maxima_imagen_s: 0.75   # rechaza imágenes atrasadas o repetidas
+    espera_tf_vision_s: 0.12    # deja recibir odometría/TF sin bloquear callbacks de sensores
+    radio_agrupamiento: 0.40    # m: detecciones más cerca que esto son la misma víctima
+    detecciones_minimas: 8      # para reportar "confirmada"
+    dispersion_maxima: 0.10     # m (mediana de distancias a la mediana)
+    segundos_minimos_vista: 0.8
+    detecciones_minimas_paso: 4   # "vista de pasada": se reporta si ya no se la ve hace...
+    segundos_sin_ver_paso: 15.0   # ...este tiempo
+    separacion_minima_cajas: 0.40 # m: un grupo a menos de esto de una víctima YA reportada es la misma
+                                  # caja vista corrida: no se reporta (no se gasta uno de los N)
+    distancia_confirmacion: 1.6   # m: para reportar (salvo al final) la caja tuvo que verse al menos
+                                  # una vez desde menos de esto; si no, el explorador se acerca a mirarla
+    descartar_no_vistas: true     # una posible víctima que de cerca (< distancia_confirmacion), entera en
+    imagenes_para_descartar: 10   # cuadro y sin nada delante según el láser, NO muestra rojo en esta cantidad
+    margen_fov_deg: 3.0           # de imágenes, se borra de las posibles (no se reporta ni se va a mirar)
+    radio_huella_m: 0.12          # por donde pasó el centro del robot no puede haber una caja: un grupo
+                                  # ahí es la misma caja vista con la pose corrida -> no se reporta
+    error_loc_max: 0.07           # con el láser a más de esto del mapa (o relocalizando) no se toman
+                                  # detecciones: la caja quedaría ubicada en otro lugar
+    segundos_reporte_final: 480.0 # desde /map: los reportes que sobran se usan con lo mejor que haya
+    estimar_al_cerrar: true     # antes de /done: detecciones débiles y luego posiciones probables sin confirmar
+    separacion_estimaciones_m: 0.75 # repartir las hipótesis finales evitando víctimas y objetos ya conocidos
+    giro_maximo: 1.0            # rad/s: girando más rápido no se procesa (imagen movida). El desfase
+                                # cámara-láser se compensa con la odometría (frame_odom)
+
+    frame_base: base_footprint
+    frame_odom: odom
+    retardo_camara: 0.0         # s: la foto es de este tiempo antes que su stamp (con el bag: 0 es lo mejor)
+    diagnostico: false          # true: cada 3 s imprime por qué se descartan las manchas rojas
+    publicar_debug: true        # /deteccion/marcadores para RViz
