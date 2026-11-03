@@ -33,7 +33,7 @@ from geometry_msgs.msg import (PointStamped, PoseArray, PoseStamped,
                                PoseWithCovarianceStamped, Twist)
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ManageLifecycleNodes
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from sensor_msgs.msg import LaserScan
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -83,6 +83,15 @@ class NodoEquipo(Node):
         self.declare_parameter('tiempo_sin_avance_s', 20.0)
         self.declare_parameter('distancia_encadenar', 0.3)
         self.declare_parameter('inspecciones_maximas', 15)
+        # Puntas de pared: si navegando el robot no avanza `avance_minimo_atasco` m en
+        # `tiempo_atasco_s`, se le da un subobjetivo sobre el camino global a
+        # `distancia_subobjetivo` m (del otro lado de la punta). Con el objetivo local
+        # de DWB lejos (forward_prune_distance) el robot va rápido en lo abierto, pero
+        # en una vuelta en U el objetivo queda del otro lado de la pared y no se anima.
+        self.declare_parameter('tiempo_atasco_s', 4.0)
+        self.declare_parameter('avance_minimo_atasco', 0.08)
+        self.declare_parameter('distancia_subobjetivo', 0.5)
+        self.declare_parameter('tiempo_subobjetivo_s', 8.0)
         self.declare_parameter('tiempo_quieto_vuelta_s', 35.0)   # s de reloj ROS
         self.declare_parameter('distancia_minima_inspeccion', 0.5)   # m
         # Candidatos que se miran apenas aparecen (aunque se esté navegando): a
@@ -158,6 +167,13 @@ class NodoEquipo(Node):
         self.distancia_encadenar = self.get_parameter('distancia_encadenar').value
         self.inspecciones_maximas = self.get_parameter('inspecciones_maximas').value
         self.inspecciones_hechas = 0
+        self.tiempo_atasco = self.get_parameter('tiempo_atasco_s').value
+        self.avance_minimo_atasco = self.get_parameter('avance_minimo_atasco').value
+        self.distancia_subobjetivo = self.get_parameter('distancia_subobjetivo').value
+        self.tiempo_subobjetivo = self.get_parameter('tiempo_subobjetivo_s').value
+        self.plan_global = None
+        self.subobjetivo = None    # {'original': (x, y, yaw), 't': inicio}
+        self.ancla_atasco = None   # (x, y, t)
         self.tiempo_quieto_vuelta = self.get_parameter('tiempo_quieto_vuelta_s').value
         self.distancia_minima_inspeccion = self.get_parameter('distancia_minima_inspeccion').value
         self.despeje_candidato_claro = self.get_parameter('despeje_candidato_claro').value
@@ -262,6 +278,8 @@ class NodoEquipo(Node):
         self.create_subscription(
             PoseArray, 'objetos_no_mapeados', self.al_objetos_no_mapeados, 10)
         self.create_subscription(PoseArray, 'objetos_rojos', self.al_objetos_rojos, 10)
+        # Camino global de Nav2: para los subobjetivos en las puntas de pared.
+        self.create_subscription(Path, 'plan', lambda m: setattr(self, 'plan_global', m), 10)
         self.pub_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_done = self.create_publisher(Empty, '/done', 10)
         self.pub_vaciar = self.create_publisher(Empty, 'equipo/vaciar_reportes', 10)
@@ -512,6 +530,8 @@ class NodoEquipo(Node):
 
     def cancelar(self):
         self.id_objetivo += 1   # las respuestas pendientes quedan viejas
+        self.subobjetivo = None
+        self.ancla_atasco = None
         self.reintentar_objetivo = False
         for gh in (self.goal_handle, self.goal_previo):
             if gh is not None:
@@ -521,6 +541,9 @@ class NodoEquipo(Node):
         self.navegando = False
 
     def al_terminar_objetivo(self, exito):
+        if self.subobjetivo is not None:
+            self.retomar_objetivo('llegó' if exito else 'falló')
+            return
         if not exito:
             self.empezar_destrabe()
         if self.estado == EXPLORANDO and self.objetivo_es_inspeccion:
@@ -673,6 +696,9 @@ class NodoEquipo(Node):
             self.reintentar_objetivo = False
             self.ir_a(self.objetivo[0], self.objetivo[1], self.yaw_objetivo, nuevo=False)
 
+        if self.navegando and self.estado in (EXPLORANDO, VOLVIENDO):
+            self.revisar_atasco(pose)
+
         if self.navegando and self.cortar_por_recovery:
             self.get_logger().warn(f'Nav2 entró en recovery en {self.texto_pose()}: se corta')
             self.cancelar()
@@ -823,8 +849,62 @@ class NodoEquipo(Node):
         self.exploracion = nueva
         return True
 
+    def revisar_atasco(self, pose):
+        """Subobjetivo cercano sobre el camino global si el robot no avanza (punta de pared)."""
+        ahora = self.ahora()
+        if self.subobjetivo is not None:
+            if ahora - self.subobjetivo['t'] > self.tiempo_subobjetivo:
+                self.retomar_objetivo('se acabó el tiempo')
+            return
+        ancla = self.ancla_atasco
+        if ancla is None or math.hypot(pose[0] - ancla[0], pose[1] - ancla[1]) > \
+                self.avance_minimo_atasco:
+            self.ancla_atasco = (pose[0], pose[1], ahora)
+            return
+        if ahora - self.ancla_atasco[2] < self.tiempo_atasco:
+            return
+        self.ancla_atasco = None
+        punto = self.punto_adelante_en_plan(pose)
+        if punto is None:
+            return
+        original = (self.objetivo[0], self.objetivo[1], self.yaw_objetivo)
+        self.get_logger().info(
+            f'Atascado en {self.texto_pose()}: subobjetivo ({punto[0]:.2f}, {punto[1]:.2f}) '
+            'sobre el camino global')
+        es_inspeccion = self.objetivo_es_inspeccion
+        if self.ir_a(punto[0], punto[1], punto[2], nuevo=False):
+            self.subobjetivo = {'original': original, 't': ahora, 'inspeccion': es_inspeccion}
+
+    def punto_adelante_en_plan(self, pose):
+        """Punto del camino global a distancia_subobjetivo (por el camino) del robot."""
+        plan = self.plan_global
+        if plan is None or len(plan.poses) < 3:
+            return None
+        xy = [(p.pose.position.x, p.pose.position.y) for p in plan.poses]
+        i0 = min(range(len(xy)), key=lambda i: math.hypot(xy[i][0] - pose[0], xy[i][1] - pose[1]))
+        if math.hypot(xy[i0][0] - pose[0], xy[i0][1] - pose[1]) > 0.3:
+            return None   # el plan no es de donde está el robot
+        recorrido = 0.0
+        for i in range(i0 + 1, len(xy)):
+            recorrido += math.dist(xy[i - 1], xy[i])
+            if recorrido >= self.distancia_subobjetivo:
+                yaw = math.atan2(xy[i][1] - xy[i - 1][1], xy[i][0] - xy[i - 1][0])
+                return xy[i][0], xy[i][1], yaw
+        return None   # el objetivo ya está más cerca que eso
+
+    def retomar_objetivo(self, motivo):
+        sub = self.subobjetivo
+        self.subobjetivo = None
+        self.ancla_atasco = None
+        self.get_logger().info(f'Subobjetivo: {motivo}; se retoma el objetivo')
+        x, y, yaw = sub['original']
+        self.objetivo_es_inspeccion = sub['inspeccion']
+        if not self.ir_a(x, y, yaw, nuevo=False):
+            self.navegando = False
+
     def cerca_del_punto_de_vista(self, pose):
         return (pose is not None and not self.objetivo_es_inspeccion
+                and self.subobjetivo is None
                 and math.dist(pose[:2], self.objetivo) < self.distancia_encadenar
                 and self.exploracion.linea_de_vista(pose[:2], self.objetivo))
 
