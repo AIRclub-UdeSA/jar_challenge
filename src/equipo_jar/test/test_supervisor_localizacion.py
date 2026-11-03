@@ -1,4 +1,7 @@
 import math
+import re
+
+import pytest
 
 from equipo_jar.geometria import componer, diferencia, inversa
 from equipo_jar.supervisor_localizacion import (
@@ -189,3 +192,71 @@ def test_si_amcl_se_relocaliza_de_verdad_se_acepta():
     estados = correr(sup, 5.0, 16.0, lambda t: nueva)  # 11 s y 3,3 m: firme y andando
     assert estados[0][1].fuente == RESPALDO
     assert estados[-1][1].fuente == AMCL and estados[-1][1].correccion == nueva
+
+
+def numeros_del_motivo(motivo):
+    """(d_m, d_deg, hace_m, tol_m, tol_deg) de 'AMCL se apartó ... (tolera ...)'."""
+    m = re.search(r'se apartó ([\d.]+) m y (\d+)° de la referencia de hace ([\d.]+) m '
+                  r'\(tolera ([\d.]+) m y (\d+)°\)', motivo)
+    assert m, motivo
+    return tuple(float(g) for g in m.groups())
+
+
+def test_el_motivo_del_respaldo_informa_la_referencia_que_lo_dispara():
+    # AMCL deriva 0,2 m por metro avanzado (0,06 m/s a 0,3 m/s): contra la última referencia
+    # (a menos de 0,5 m) cabe en la tolerancia, contra una de hace ~1 m ya no. Antes, el motivo
+    # medía contra la última y decía "se apartó 0,10 m" (o 0,00 m) aunque esa no lo disparaba.
+    sup = convergido()
+
+    def amcl(t):
+        corrimiento = max(0.0, t - 10.0) * 0.06
+        return (CORRECCION[0], CORRECCION[1] + corrimiento, CORRECCION[2])
+
+    t = 0.0
+    while True:
+        antes = list(sup.referencias)  # al entrar en respaldo se descartan: copia
+        estado = sup.actualizar(t, recta(t), amcl(t), t, CONVERGIDA)
+        if estado.fuente == RESPALDO:
+            break
+        t += 0.1
+        assert t < 30.0, 'nunca entró en respaldo'
+    # El caso: coincide con la última referencia, no con alguna más vieja.
+    odom = recta(t)
+
+    def coincide(ref_mov):
+        ref, mov = ref_mov
+        return sup.coinciden(amcl(t), ref, odom, sup.mov.desde(mov))
+    assert coincide(antes[-1])
+    assert not all(coincide(r) for r in antes[:-1])
+    # Y el motivo informa la que lo dispara, no la última.
+    d_m, _, hace_m, tol_m, _ = numeros_del_motivo(estado.motivo)
+    assert d_m >= tol_m and d_m > 0.05
+    assert hace_m > sup.c.paso_referencia_m
+    assert 'respaldo n.º 1' in estado.motivo
+
+
+def test_peor_referencia_elige_la_que_mas_se_pasa_de_su_tolerancia():
+    sup = convergido()
+    correr(sup, 0.0, 10.0, lambda t: CORRECCION)  # 3 m en línea recta: varias referencias
+    assert len(sup.referencias) > 1
+    vieja = sup.referencias[0][0]
+    sup.referencias[0] = (componer((0.0, 0.5, 0.0), vieja), sup.referencias[0][1])
+    d_m, _, tol_m, _, hace_m = sup.peor_referencia(CORRECCION, recta(10.0))
+    assert d_m == pytest.approx(0.5, abs=1e-6) and d_m > tol_m
+    assert hace_m == pytest.approx(sup.mov.avance - sup.referencias[0][1].avance)
+
+
+def test_cuenta_los_respaldos_y_cuanto_duran():
+    sup = convergido()
+    perdida = componer((1.0, -3.0, 2.1), CORRECCION)
+
+    def amcl(t):
+        return perdida if 20.0 <= t < 29.0 or 40.0 <= t < 43.0 else CORRECCION
+
+    estados = correr(sup, 0.0, 60.0, amcl)
+    assert sup.respaldos == 2
+    vueltas = [e.motivo for _, e in estados if e.motivo.startswith('AMCL volvió a coincidir')]
+    duraciones = [float(re.search(r'tras ([\d.]+) s en respaldo', m).group(1)) for m in vueltas]
+    # 9 s y 3 s perdido, más los confirmar_regreso_s (2 s) que tiene que coincidir quieto.
+    assert duraciones == pytest.approx([11.0, 5.0], abs=0.25)
+    assert 'n.º 1' in vueltas[0] and 'n.º 2' in vueltas[1]

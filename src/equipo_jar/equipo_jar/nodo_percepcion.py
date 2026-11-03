@@ -393,7 +393,10 @@ class NodoPercepcion(Node):
                 estado.fuente, estado.confiable):
             return
         self.agrupador.olvidar_pendientes()
-        texto = f'Pose: {estado.fuente} ({estado.motivo})'
+        # t: tiempo del reloj del nodo (de simulación con use_sim_time), para cruzar el log con
+        # la pose real de pruebas/<corrida>/localizacion.jsonl (scripts/analizar_respaldos.py).
+        t = self.get_clock().now().nanoseconds * 1e-9
+        texto = f'Pose: {estado.fuente} ({estado.motivo}) t={t:.1f}'
         if estado.confiable:
             self.get_logger().info(texto)
         else:
