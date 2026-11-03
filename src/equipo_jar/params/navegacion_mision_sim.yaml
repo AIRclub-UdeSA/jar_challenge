@@ -1,0 +1,9 @@
+# Perfil opt-in M4 en simulación. Conserva aceleración, frenado y latencia.
+# No cambia los perfiles sim de M2 ni real del robot físico.
+nodo_equipo:
+  ros__parameters:
+    nav_velocidad_max: 0.25
+    nav_aceleracion_max: 0.4
+    nav_velocidad_cerca_pared: 0.05
+    nav_desaceleracion: 0.5
+    nav_latencia_s: 0.15
