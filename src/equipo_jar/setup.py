@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'nodo_equipo = equipo_jar.nodo_equipo:main',
             'juntar_victimas = equipo_jar.juntar_victimas:main',
+            'registro = equipo_jar.registro:main',
         ],
     },
 )

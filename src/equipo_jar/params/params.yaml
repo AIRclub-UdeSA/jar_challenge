@@ -107,3 +107,12 @@ detector_no_mapeados:
     racha_minima: 4
     distancia_minima_valida: 0.25
     giro_maximo_deteccion: 0.4
+
+# Registro de la corrida para ajustar params/ entre las dos corridas de la clasificación
+# (plan_de_trabajo/LOGS_CLASIFICACION.md). Solo lee tópicos y escribe archivos chicos.
+registro:
+  ros__parameters:
+    registrar: true
+    carpeta: "~/.ros/polibots"      # se crea una subcarpeta por corrida (fecha-hora)
+    periodo_imagen_s: 5.0           # una imagen achicada (320x240) cada tantos segundos
+    periodo_color_s: 1.0            # estadísticas de color de los pixeles rojizos

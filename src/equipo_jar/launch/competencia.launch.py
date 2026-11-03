@@ -150,6 +150,16 @@ def generate_launch_description():
         }],
     )
 
+    # Registro de la corrida (plan_de_trabajo/LOGS_CLASIFICACION.md): solo lee tópicos y
+    # escribe archivos chicos. Se apaga con `registrar: false` en params.yaml.
+    registro = Node(
+        package='equipo_jar',
+        executable='registro',
+        name='registro',
+        output='screen',
+        parameters=[params, {'use_sim_time': use_sim_time}],
+    )
+
     lifecycle_nodes = []
 
     # Controller
@@ -261,6 +271,7 @@ def generate_launch_description():
         detector_obstaculos,
         detector_no_mapeados,
         juntar_victimas,
+        registro,
         controller,
         planner,
         behavior,
