@@ -21,7 +21,7 @@ nodo_equipo:
 
 detector_scan:
   ros__parameters:
-    saturacion_min: 90.0
+    saturacion_min: 100.0
     giro_maximo: 0.5                # rad/s (IMU): girando más rápido no se marca rojo; 0 = apagado
     erosion_mascara: 1              # px que se achica cada mancha roja (bordes de las cajas)
     pixeles_rojo_minimos: 150       # px rojos para avisar "rojo a la vista" (de 320x240)
