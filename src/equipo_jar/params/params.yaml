@@ -198,7 +198,7 @@ fusion:
 
 mision:
   ros__parameters: 
-    extra_search_enabled: false
+    extra_search_enabled: true       # qualy run 2: after the plan, look at the floor the camera did not see
     extra_history_max: 1200
     extra_history_interval_s: 1.0
     extra_history_shift_m: 0.10
@@ -209,12 +209,12 @@ mision:
     return_estimate_overhead_s: 8.0
     return_reserve_s: 45.0
     extra_look_s: 2.0
-    extra_max_goals: 6
+    extra_max_goals: 10              # sim trials hit 6 with near-repeated views; the time budget still limits it
     extra_max_failed: 2
-    extra_goal_timeout_s: 30.0
-    extra_plan_timeout_s: 5.0
+    extra_goal_timeout_s: 45.0       # a trip to the upper third through a door can pass 30 s
+    extra_plan_timeout_s: 15.0       # the venue laptop took 10 s for the coverage plan
     extra_costmap_max_age_s: 2.5
-    extra_failed_shift_m: 0.40
+    extra_failed_shift_m: 1.0        # do not go back behind the cone where three trips failed in run 1
     extra_range_m: 2.0
     extra_fov_deg: 61.0
     extra_heading_count: 8
@@ -223,7 +223,7 @@ mision:
     extra_max_positions: 256
     extra_max_targets: 2048
     extra_max_views: 80
-    extra_transit_radius_m: 0.21
+    extra_transit_radius_m: 0.16     # same transit as coverage (0.13 + 0.03): doors from 0.34 m
     extra_view_clearance_m: 0.24
     extra_preferred_clearance_m: 0.30
     extra_turn_speed_rads: 0.7
