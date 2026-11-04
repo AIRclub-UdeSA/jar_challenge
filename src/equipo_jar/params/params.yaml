@@ -173,7 +173,7 @@ nodo_mision:
     frame_odom: odom
     frame_robot: base_footprint
     radio_paso_m: 0.17              # por dónde puede pasar el centro del robot: igual al radio de Nav2
-    despeje_meta_m: 0.25            # distancia mínima a un obstáculo de cada meta (m)
+    despeje_meta_m: 0.22            # distancia mínima a un obstáculo de cada meta (m)
     tiempo_regreso_s: 480.0         # a los cuántos segundos se deja de explorar y se vuelve
     # Tiempo para llegar a una meta: max(tiempo_max_meta_s, camino / velocidad_min_meta_mps); más
     # que eso, se abandona. Por camino el robot avanza 0,14 m/s de mediana (tandas del 1/11): 45 s
