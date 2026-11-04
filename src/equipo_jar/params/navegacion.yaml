@@ -10,8 +10,11 @@
 # 1.0 rad/s (physical_rosmaster #72).
 limites:
   ros__parameters:
-    lineal_max_ms: 0.5                # forward and sideways
-    reversa_max_ms: 0.35
+    # Final: 0.35 (was 0.5). The real robot answers commands ~0.4 s late: at 0.5 m/s it runs 20 cm
+    # past what MPPI planned. Qualy run 2 touched walls 16 times at 0.25-0.44 m/s. Grupo_de_Lie
+    # used 0.35 m/s and a 4 cm margin and touched nothing (docs/team/ajuste/README.md).
+    lineal_max_ms: 0.35               # forward and sideways
+    reversa_max_ms: 0.25
     giro_max_rads: 1.0
     margen_giro_smoother: 1.0         # smoother turn limit = giro_max_rads x this
 
@@ -309,7 +312,11 @@ local_costmap:
           obstacle_max_range: 3.0
           # Conos finos: a 0.18 m miden ~5 cm (una celda) y los rayos de al lado los borran.
           # Marca lo que el LiDAR vio en el último segundo, no solo el último barrido.
-          observation_persistence: 1.0
+          # Final: 0.3 s in the local costmap (was 1.0). It lives in the odom frame, and the real
+          # odometry is off in turns: 1 s of old scans drew ghost walls after each turn (qualy run 2:
+          # 3.5x more MPPI failures, 3 in 4 right after a turn, each one a Spin/BackUp near a wall).
+          # 0.3 s still keeps a thin cone through one missed scan. The global costmap keeps 1.0.
+          observation_persistence: 0.3
           inf_is_valid: false
       # El costo sube solo cerca de los obstáculos: MPPI entra en huecos angostos sin
       # dudar. El camino ya viene por el medio por la inflación del global.
@@ -401,8 +408,11 @@ behavior_server:
     global_frame: odom
     robot_base_frame: base_footprint
     transform_tolerance: 0.3
-    simulate_ahead_time: 1.0
-    max_rotational_vel: 1.0
+    # Final: Spin slower and checking further ahead (were 1.0 s and 1.0 rad/s). In qualy run 2,
+    # 10 of 16 wall contacts started right after a Spin, BackUp or Wait: with ~0.4 s of delay the
+    # robot kept turning after "Collision Ahead". Must stay above min_rotational_vel.
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.6
     min_rotational_vel: 0.5           # the real robot does not turn below ~0.5 rad/s from rest
     rotational_acc_lim: 3.2
 
