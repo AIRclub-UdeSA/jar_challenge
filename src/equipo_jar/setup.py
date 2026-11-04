@@ -16,14 +16,18 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='Nombre del equipo',
+    maintainer='Equipo CHANGUITRON',
     maintainer_email='equipo@example.com',
     description='Software del equipo para el Challenge JAR 2026.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'nodo_arranque = equipo_jar.nodo_arranque:main',
             'nodo_equipo = equipo_jar.nodo_equipo:main',
+            'nodo_mision = equipo_jar.nodo_mision:main',
+            'nodo_pose_inicial = equipo_jar.nodo_pose_inicial:main',
+            'nodo_percepcion = equipo_jar.nodo_percepcion:main',
         ],
     },
 )

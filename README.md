@@ -1,5 +1,9 @@
 # jar_challenge
 
+> **Equipo CHANGUITRON:** antes de arrancar, leé la [guía del equipo](docs/GUIA_EQUIPO.md)
+> (setup, flujo de trabajo y entrega) y la [propuesta de arquitectura](docs/ARQUITECTURA.md).
+> El resto de este README es el del template oficial.
+
 Repositorio base del **Challenge JAR 2026** (búsqueda y rescate, Jornada Argentina de Robótica, Rosario, 3 al 6 de noviembre). Lo organiza el [AIR Club UdeSA](https://github.com/AIRclub-UdeSA).
 
 Este repositorio es el punto de partida y a la vez la vía de entrega: hacés un **fork**, desarrollás tu software ahí y abrís un **pull request**. Ese PR es tu entrega.

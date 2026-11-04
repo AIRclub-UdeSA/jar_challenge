@@ -10,3 +10,415 @@ nodo_equipo:
     frecuencia_control_hz: 10.0
     velocidad_lineal_max: 0.30      # m/s
     velocidad_angular_max: 1.00     # rad/s
+    # Recorrer el laberinto siguiendo la pared (workshop de la semana 03).
+    angulo_frente_deg: 180.0        # el frente del robot en el /scan (el lidar simulado está al revés)
+    ancho_frontal_deg: 40.0         # ancho del sector frontal que mira el lidar
+    ancho_lateral_deg: 20.0         # ancho del sector que mira justo a la derecha, para seguir la pared
+    distancia_choque_m: 0.45        # algo de frente a menos de esto (m): hay que girar
+    despeje_extra_m: 0.15           # lugar extra (m) que hace falta para dejar de girar
+    distancia_pared_m: 0.45         # a qué distancia (m) se sigue la pared de la derecha
+    pared_perdida_m: 1.20           # más lejos que esto (m) se considera que la pared se terminó
+    memoria_pared_s: 2.0            # cuánto se recuerda (s) que la pared de la derecha se terminó
+    ganancia_pared: 2.0             # cuánto corrige el giro por cada metro de error
+    amortiguacion_pared: 4.0        # cuánto frena la corrección según qué tan rápido cambia el error
+
+    # Localización (workshop de la semana 06): de dónde sale la pose en el mapa.
+    frame_mapa: map
+    frame_robot: base_footprint
+    espera_localizacion_s: 15.0     # sin AMCL después de esto (s) desde el mapa, se usa /odom
+
+# Percepción: encontrar las cajas rojas y ubicarlas en el mapa (workshop de la semana 04).
+# Los filtros están explicados en equipo_jar/deteccion.py. Para ver por qué se descarta cada
+# vista, poné log_descartes en true.
+nodo_percepcion:
+  ros__parameters:
+    frecuencia_hz: 10.0
+    angulo_frente_deg: 180.0        # frente del robot en el /scan, solo si TF no lo da (sale de TF)
+    # Cuándo se mira
+    velocidad_lineal_min_deteccion: 0.0   # m/s: más lento que esto no se mira. En 0: se mira quieto (inspección)
+    giro_max_deteccion: 0.7         # rad/s: girando más rápido, no se mira (más lento, el giro se compensa con TF)
+    # Color: qué cuenta como rojo (HSV de OpenCV, H de 0 a 180)
+    saturacion_min: 120             # S mínima (0-255) para contar un píxel como rojo
+    valor_min: 80                   # V mínimo (0-255)
+    hue_max_bajo: 10                # rojo en H [0, esto]. Subirlo deja pasar naranjas
+    hue_min_alto: 165               # rojo en H [esto, 180]. Bajarlo deja pasar magentas
+    limpieza_px: 3                  # borra de la máscara lo más fino que esto (bordes de otros colores)
+    # Forma: que la mancha parezca una caja entera
+    area_minima_px: 400.0           # una mancha roja más chica que esto (px) se descarta
+    margen_borde_px: 0              # a menos de esto (px) de un borde, la mancha está cortada (de costado: se descarta)
+    relleno_min: 0.65               # área / rectángulo: una caja da ~0,9, un hilo o una L mucho menos
+    proporcion_min: 0.55            # ancho / alto de la mancha. Caja entera: 0,83 a 1,18
+    proporcion_max: 1.6
+    # Lidar
+    fraccion_central: 0.6           # qué parte del ancho de la caja mira el lidar (el centro)
+    tramo_min_deg: 3.0              # ancho mínimo (grados) de ese tramo
+    tolerancia_tramo_m: 0.10        # un rayo a menos de esto de la mediana es "parejo"
+    fraccion_tramo_min: 0.6         # menos rayos parejos que esto: es un borde, se descarta
+    ancho_oclusion_deg: 1.5         # cuánto se mira al costado de la mancha buscando algo delante
+    salto_oclusion_m: 0.15          # algo al costado más cerca que la caja por esto: la tapa
+    distancia_min_deteccion_m: 0.35 # rango de distancias donde la medición sirve
+    distancia_max_deteccion_m: 3.0
+    # Caja y cámara
+    semilado_caja_m: 0.125          # medio lado de la caja: del frente al centro (medilo)
+    alto_caja_m: 0.30               # alto de la caja (medilo): da una segunda estimación de la distancia
+    tolerancia_distancia: 0.25      # cuánto pueden diferir (fracción) la profundidad del lidar y la de la imagen
+    tolerancia_piso: 0.25           # cuánto (fracción del alto) puede estar corrida la mancha de donde estaría en el piso
+    # Mapa: descartar cajas adentro de paredes o vistas a través de ellas
+    usar_mapa: true
+    radio_libre_m: 0.15             # tiene que haber piso libre a menos de esto del centro de la caja
+    margen_vista_inicio_m: 0.15     # paredes a menos de esto del robot no cuentan (error de pose)
+    margen_vista_fin_m: 0.20        # ni a menos de esto de la caja (cajas contra la pared)
+    # Confirmación: vistas que se juntan en una caja
+    confirmaciones: 5               # vistas (imágenes distintas) que tiene que juntar una caja para reportarla
+    radio_grupo_m: 0.30             # una vista a menos de esto de un grupo se suma a él
+    dispersion_max_m: 0.15          # las vistas de un grupo tienen que estar así de juntas (mediana, m)
+    olvido_s: 3.0                   # un grupo sin vistas nuevas en este tiempo se olvida
+    radio_duplicado_m: 0.60         # a menos de esto de una caja ya confirmada, es la misma
+    # Qué miró la cámara (equipo_jar/memoria_camara.py): dónde pegan los rayos del lidar que caen
+    # adentro de la imagen y si ahí había rojo. Misión lo usa para no inspeccionar lo que no es rojo.
+    anotar_vistas: true
+    distancia_max_vista_m: 3.0      # más lejos no se anota: la caja se ve chica y el rojo puede no salir
+    margen_rojo_px: 8               # rojo a menos de esto (px) de la columna del rayo cuenta como rojo ahí
+    periodo_vistas_s: 0.5           # cada cuánto se publica la grilla en /equipo/vistas_camara
+    frame_mapa: map
+    frame_odom: odom
+    frame_robot: base_footprint
+    log_descartes: true             # loguea (1 por s) por qué se descarta una vista con rojo
+    # Localización: cuándo creerle a AMCL y cuándo usar el respaldo con /odom
+    # (equipo_jar/supervisor_localizacion.py). Todos con punto decimal: son double.
+    # Al arrancar no se le cree a AMCL hasta que nodo_mision avisa que convergió
+    # (distancia_convergencia_m y espera_convergencia_s, en nodo_mision): un solo criterio.
+    loc_max_antiguedad_s: 1.5       # map -> odom más viejo que esto: AMCL no publica
+    loc_margen_m: 0.10              # diferencia AMCL vs /odom que se tolera siempre
+    loc_margen_deg: 8.0
+    loc_tolerancia_por_metro_m: 0.08   # más lo que puede derivar /odom por metro avanzado...
+    loc_tolerancia_por_metro_deg: 10.0
+    loc_tolerancia_por_radian_deg: 4.0 # ...y en ángulo por radián girado (girar no corre x, y)
+    loc_tolerancia_max_m: 0.60
+    loc_tolerancia_max_deg: 30.0
+    loc_paso_referencia_m: 0.50
+    loc_ventana_referencias_m: 2.0  # se compara contra lo que decía AMCL en los últimos 2 m
+    loc_confirmar_regreso_s: 2.0    # AMCL tiene que coincidir y estar quieto esto para dejar el respaldo
+    loc_sigma_xy_convergida_m: 0.12 # covarianza chica de AMCL: solo para aceptar una relocalización
+    loc_sigma_yaw_convergida_deg: 6.0
+    loc_espera_sin_amcl_s: 15.0     # sin AMCL tras esto, /odom como mapa (igual que nodo_equipo)
+    loc_avance_max_respaldo_m: 6.0  # en respaldo, desde la referencia: más que esto, no se ubican cajas
+    loc_giro_max_respaldo_deg: 1800.0  # ...ni girando más que esto (en el robot real, medir el error de giro de /odom)
+    loc_estable_para_reaceptar_s: 10.0 # AMCL firme en otro lugar este tiempo...
+    loc_avance_para_reaceptar_m: 3.0   # ...y con el robot avanzando esto: se relocalizó, se acepta
+
+# Pose inicial que se le da a AMCL: una gaussiana centrada en el origen del mapa, donde arranca
+# el robot (§1). Las sigmas son cuánto puede estar corrido el robot de ahí.
+nodo_pose_inicial:
+  ros__parameters:
+    sigma_xy_inicial_m: 0.15        # desvío en x e y (m)
+    sigma_yaw_inicial_deg: 10.0     # desvío del ángulo (grados)
+    periodo_pose_inicial_s: 1.0     # cada cuánto se reintenta hasta que AMCL se localiza
+    actualizaciones_sin_movimiento: 10  # después, cuántas veces se le pide a AMCL que corrija quieto
+    periodo_actualizacion_s: 0.3    # cada cuánto (s): ~3 s en total, alcanza para varios scans
+    frame_mapa: map
+    frame_odom: odom
+
+# AMCL (nav2_amcl): filtro de partículas que compara el lidar con /map y publica map -> odom.
+# Los alpha son el ruido que se le supone a la odometría; si el robot real gira peor de lo que
+# dice /odom, subir alpha1 (giro que genera más giro) y alpha2 (avance que genera giro).
+amcl:
+  ros__parameters:
+    robot_model_type: nav2_amcl::OmniMotionModel  # mecanum: también se mueve de costado
+    alpha1: 0.4                     # ruido de giro por giro
+    alpha2: 0.2                     # ruido de giro por avance
+    alpha3: 0.2                     # ruido de avance por avance
+    alpha4: 0.02                    # ruido de avance por giro
+    alpha5: 0.2                     # ruido del desplazamiento lateral (solo omni)
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    global_frame_id: map
+    scan_topic: scan
+    map_topic: map
+    set_initial_pose: false         # la manda nodo_pose_inicial, con covarianza
+    tf_broadcast: true
+    transform_tolerance: 0.5        # s
+    laser_model_type: likelihood_field
+    laser_max_range: -1.0           # -1: usar el rango que informa el /scan
+    laser_min_range: -1.0
+    laser_likelihood_max_dist: 2.0
+    max_beams: 180                  # rayos del scan que se usan por actualización
+    z_hit: 0.8                      # cuánto se confía en que el rayo pega en una pared del mapa...
+    z_rand: 0.2                     # ...y cuánto en que es ruido (ventanas, obstáculos fuera del mapa)
+    sigma_hit: 0.1                  # desvío del lidar contra el mapa (m): 0.2 dejaba perderse a AMCL en pasillos largos
+    min_particles: 500
+    max_particles: 2000
+    pf_err: 0.05
+    pf_z: 0.99
+    update_min_d: 0.05              # se actualiza cada 5 cm de avance...
+    update_min_a: 0.05              # ...o cada 0,05 rad de giro
+    resample_interval: 1
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
+    save_pose_rate: 0.5
+
+# Activa los nodos con ciclo de vida en este orden: AMCL primero, porque Nav2 necesita la pose.
+nodo_arranque:
+  ros__parameters:
+    nodos: [amcl, controller_server, planner_server, behavior_server, bt_navigator, velocity_smoother]
+    periodo_s: 0.2
+    espera_respuesta_s: 1.0         # sin respuesta en este tiempo (s), se vuelve a preguntar
+    espera_transicion_s: 1.0        # mínimo (s) entre pedidos de transición al mismo nodo
+
+# Misión: recorre el laberinto, reporta las cajas y vuelve. Único dueño de /cmd_vel y /victimas.
+nodo_mision:
+  ros__parameters:
+    frecuencia_hz: 20.0
+    frame_mapa: map
+    frame_odom: odom
+    frame_robot: base_footprint
+    radio_paso_m: 0.17              # por dónde puede pasar el centro del robot: igual al radio de Nav2
+    despeje_meta_m: 0.25            # distancia mínima a un obstáculo de cada meta (m)
+    tiempo_regreso_s: 480.0         # a los cuántos segundos se deja de explorar y se vuelve
+    # Tiempo para llegar a una meta: max(tiempo_max_meta_s, camino / velocidad_min_meta_mps); más
+    # que eso, se abandona. Por camino el robot avanza 0,14 m/s de mediana (tandas del 1/11): 45 s
+    # fijos cortaban metas de 8 a 12 m mientras iba llegando.
+    tiempo_max_meta_s: 45.0         # mínimo (s), también si no se sabe el largo del camino
+    velocidad_min_meta_mps: 0.10    # más lento que esto (m/s) en promedio: algo anda mal
+    espera_nav2_s: 25.0             # antes de esto (s) desde el mapa no se considera traba
+    distancia_convergencia_m: 0.4   # hay que moverse esto (m) para que AMCL converja...
+    espera_convergencia_s: 4.0      # ...y esperar esto (s) antes de confiar en la pose (también percepción)
+    radio_llegada_m: 0.15           # a esto (m) de la largada se publica /done
+    intentos_regreso: 6             # metas de regreso antes de publicar /done de todos modos
+    tiempo_inspeccion_s: 3.0        # cuánto se mira un objeto (s)
+    despeje_giro_m: 0.25            # con menos que esto (m) no se gira para mirar
+    radio_duplicado_m: 0.40         # a menos de esto (m) de una caja ya reportada, es la misma
+    radio_objeto_conocido_m: 0.50   # a menos de esto (m) de un objeto ya visto, es el mismo
+    margen_pared_objetos_m: 0.10    # lo que el lidar ve a menos de esto (m) de una pared del mapa no es objeto
+    # No inspeccionar lo que la cámara ya vio sin rojo (distractoras, señuelos, paredes que faltan
+    # en el mapa). Con false, se inspecciona todo objeto, como antes.
+    descartar_con_camara: true
+    veces_sin_rojo: 3               # imágenes sin rojo que tiene que tener cada celda del objeto...
+    celdas_sin_rojo: 3              # ...y cuántas celdas así, para darlo por visto sin rojo
+    rango_min_lidar_m: 0.05
+    rango_max_lidar_m: 3.5
+    # Rectángulo del robot respecto de base_footprint: tiene que coincidir con la huella de Nav2.
+    frente_robot_m: 0.13
+    atras_robot_m: 0.195
+    semiancho_robot_m: 0.125
+    # Traba: tanto tiempo sin moverse ni girar. El juez corta la corrida a los 60 s.
+    traba_radio_m: 0.08
+    traba_giro_rad: 0.30
+    traba_tiempo_s: 6.0
+    traba_radio_avance_m: 0.15      # aunque gire: tanto tiempo sin alejarse esto (m) también es traba
+    traba_tiempo_avance_s: 15.0
+    trabas_por_meta: 2              # a la segunda traba en la misma meta, se abandona
+    # Escape: despacio, porque se va muy cerca de las paredes.
+    escape_velocidad_mps: 0.13
+    escape_despeje_objetivo_m: 0.15 # con esto (m) a lo más cercano, Nav2 vuelve a poder moverse
+    escape_margen_m: 0.02           # no acercarse a menos de esto (m) de nada
+    escape_alcance_m: 0.25          # hasta dónde se mira en cada dirección (m)
+    escape_duracion_max_s: 6.0
+
+# Nav2 (workshop de la semana 09). Smac planifica en el mapa y RPP sigue el camino mirando hacia
+# adelante, para que la cámara vea lo que tiene enfrente. Las recuperaciones del árbol por defecto
+# (Spin, BackUp, Wait) quedan: si no alcanzan, actúa el escape de nodo_mision.
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugin: progress_checker
+    goal_checker_plugins: [general_goal_checker]
+    controller_plugins: [FollowPath]
+    progress_checker:
+      plugin: nav2_controller::SimpleProgressChecker
+      required_movement_radius: 0.5
+      movement_time_allowance: 10.0
+    general_goal_checker:
+      plugin: nav2_controller::SimpleGoalChecker
+      stateful: true
+      xy_goal_tolerance: 0.15
+      yaw_goal_tolerance: 3.15      # la orientación final no importa: para mirar gira nodo_mision
+    FollowPath:
+      plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
+      desired_linear_vel: 0.40      # m/s
+      # Punto del camino al que apunta RPP. Con 0,40, en las U alrededor de la punta de un panel
+      # cortaba la curva ~10 cm hacia adentro (con 0,25, ~3 cm): rozaba la punta y se trababa.
+      # Tandas del 2/11 (4 mapas x 3 spawns): trabas en maze_2/3 de 21 a 5, choques con la caja
+      # distractora de maze_1 de 2-3 por corrida a 0, mismos puntos. Sin velocidad en el
+      # lookahead (use_velocity_scaled_lookahead_dist: false) se usa este valor fijo.
+      lookahead_dist: 0.25
+      min_lookahead_dist: 0.20
+      max_lookahead_dist: 0.60
+      lookahead_time: 1.2
+      use_velocity_scaled_lookahead_dist: false
+      rotate_to_heading_angular_vel: 1.0
+      transform_tolerance: 0.5
+      min_approach_linear_velocity: 0.13
+      approach_velocity_scaling_dist: 0.40
+      # Apagado: con los huecos justos de las cajas, la huella real toca el costmap y RPP frena
+      # en pasos por los que el robot entra. Con la detección prendida daba 200 de media, sin ella 350.
+      use_collision_detection: false
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.55
+      regulated_linear_scaling_min_speed: 0.13
+      inflation_cost_scaling_factor: 3.0
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.6
+      allow_reversing: false
+      max_angular_accel: 3.2
+      max_robot_pose_search_dist: 2.0
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 20.0
+    planner_plugins: [GridBased]
+    # Smac y no NavFn: en los pasos justos NavFn encontraba que había camino pero no podía
+    # trazarlo ("failed to create a plan from potential") y el robot quedaba sin salida.
+    GridBased:
+      plugin: nav2_smac_planner/SmacPlanner2D
+      tolerance: 0.25               # m
+      downsample_costmap: false
+      downsampling_factor: 1
+      allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0        # s
+      cost_travel_multiplier: 2.0   # cuánto prefiere alejarse de las paredes
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 0.0000000001
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: [spin, backup, wait]
+    spin:
+      plugin: nav2_behaviors/Spin
+    backup:
+      plugin: nav2_behaviors/BackUp
+    wait:
+      plugin: nav2_behaviors/Wait
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.1
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.2
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: OPEN_LOOP
+    max_velocity: [0.40, 0.21, 1.0]
+    min_velocity: [-0.15, -0.21, -1.0]
+    max_accel: [2.5, 2.5, 3.2]
+    max_decel: [-2.5, -2.5, -3.2]
+    odom_topic: odom
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+# Costmap global: el radio es chico a propósito. Las cajas dejan huecos de 0,25 a 0,50 m y con el
+# radio real (0,26 m) quedaba sin alcanzar casi todo el laberinto. A cambio, el camino puede pasar
+# cerca de las paredes: por eso existe el escape.
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      global_frame: map
+      robot_base_frame: base_footprint
+      robot_radius: 0.17
+      footprint_padding: 0.0
+      resolution: 0.05
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      transform_tolerance: 0.5
+      track_unknown_space: true
+      always_send_full_costmap: true
+      plugins: [static_layer, obstacle_layer, inflation_layer]
+      static_layer:
+        plugin: nav2_costmap_2d::StaticLayer
+        map_subscribe_transient_local: true
+      obstacle_layer:
+        plugin: nav2_costmap_2d::ObstacleLayer
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: LaserScan
+          marking: true
+          clearing: true
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 2.5
+          raytrace_min_range: 0.0
+          raytrace_max_range: 3.0
+      # Con 3,0 el costo baja lento y a Smac le salía más barato rodear la punta de una pared
+      # pegado a la zona letal que abrirse: el centro del robot terminaba adentro ("Starting
+      # point in lethal space") en las 103 trabas de las tandas del 1/11, todas en U alrededor de
+      # una punta. Con 8,0 el costo se concentra cerca de la pared y abrirse sale barato; en una
+      # simulación de esas U sobre los mapas, el centro pasa a 0,22-0,28 m en vez de 0,10-0,16 m.
+      # Solo el global (planificación): RPP usa el local, con su inflation_cost_scaling_factor.
+      inflation_layer:
+        plugin: nav2_costmap_2d::InflationLayer
+        inflation_radius: 0.55
+        cost_scaling_factor: 8.0
+
+# Costmap local: acá sí va la huella real (m). El centro de giro no es el centro del robot.
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      transform_tolerance: 0.5
+      footprint: '[[0.13, 0.125], [0.13, -0.125], [-0.195, -0.125], [-0.195, 0.125]]'
+      footprint_padding: 0.0
+      always_send_full_costmap: true
+      plugins: [static_layer, voxel_layer, inflation_layer]
+      static_layer:
+        plugin: nav2_costmap_2d::StaticLayer
+        map_subscribe_transient_local: true
+      voxel_layer:
+        plugin: nav2_costmap_2d::VoxelLayer
+        enabled: true
+        publish_voxel_map: true
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        mark_threshold: 0
+        max_obstacle_height: 2.0
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: LaserScan
+          marking: true
+          clearing: true
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 2.5
+          raytrace_min_range: 0.0
+          raytrace_max_range: 3.0
+      inflation_layer:
+        plugin: nav2_costmap_2d::InflationLayer
+        inflation_radius: 0.55
+        cost_scaling_factor: 3.0

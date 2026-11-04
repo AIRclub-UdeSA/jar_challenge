@@ -10,3 +10,18 @@ __pycache__/
 .venv/
 .vscode/
 .idea/
+
+# Python (extra, del .gitignore inicial del repo)
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints
+
+# Salidas de pruebas locales (rosbags, resultados del juez de práctica)
+rosbag2_*/
+resultado*.json
+
+# Corridas de scripts/probar.sh (logs, gráficos e historial local)
+pruebas/
