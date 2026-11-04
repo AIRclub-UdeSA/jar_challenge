@@ -77,7 +77,7 @@ nodo_percepcion:
     # Qué miró la cámara (equipo_jar/memoria_camara.py): dónde pegan los rayos del lidar que caen
     # adentro de la imagen y si ahí había rojo. Misión lo usa para no inspeccionar lo que no es rojo.
     anotar_vistas: true
-    distancia_max_vista_m: 2.5      # más lejos no se anota: la caja se ve chica y el rojo puede no salir
+    distancia_max_vista_m: 3.0      # más lejos no se anota: la caja se ve chica y el rojo puede no salir
     margen_rojo_px: 8               # rojo a menos de esto (px) de la columna del rayo cuenta como rojo ahí
     periodo_vistas_s: 0.5           # cada cuánto se publica la grilla en /equipo/vistas_camara
     frame_mapa: map
@@ -161,9 +161,9 @@ amcl:
 nodo_arranque:
   ros__parameters:
     nodos: [amcl, controller_server, planner_server, behavior_server, bt_navigator, velocity_smoother]
-    periodo_s: 0.5
-    espera_respuesta_s: 2.0         # sin respuesta en este tiempo (s), se vuelve a preguntar
-    espera_transicion_s: 3.0        # mínimo (s) entre pedidos de transición al mismo nodo
+    periodo_s: 0.2
+    espera_respuesta_s: 1.0         # sin respuesta en este tiempo (s), se vuelve a preguntar
+    espera_transicion_s: 1.0        # mínimo (s) entre pedidos de transición al mismo nodo
 
 # Misión: recorre el laberinto, reporta las cajas y vuelve. Único dueño de /cmd_vel y /victimas.
 nodo_mision:
@@ -173,7 +173,7 @@ nodo_mision:
     frame_odom: odom
     frame_robot: base_footprint
     radio_paso_m: 0.17              # por dónde puede pasar el centro del robot: igual al radio de Nav2
-    despeje_meta_m: 0.22            # distancia mínima a un obstáculo de cada meta (m)
+    despeje_meta_m: 0.25            # distancia mínima a un obstáculo de cada meta (m)
     tiempo_regreso_s: 480.0         # a los cuántos segundos se deja de explorar y se vuelve
     # Tiempo para llegar a una meta: max(tiempo_max_meta_s, camino / velocidad_min_meta_mps); más
     # que eso, se abandona. Por camino el robot avanza 0,14 m/s de mediana (tandas del 1/11): 45 s
@@ -181,11 +181,11 @@ nodo_mision:
     tiempo_max_meta_s: 45.0         # mínimo (s), también si no se sabe el largo del camino
     velocidad_min_meta_mps: 0.10    # más lento que esto (m/s) en promedio: algo anda mal
     espera_nav2_s: 25.0             # antes de esto (s) desde el mapa no se considera traba
-    distancia_convergencia_m: 0.6   # hay que moverse esto (m) para que AMCL converja...
-    espera_convergencia_s: 8.0      # ...y esperar esto (s) antes de confiar en la pose (también percepción)
+    distancia_convergencia_m: 0.4   # hay que moverse esto (m) para que AMCL converja...
+    espera_convergencia_s: 4.0      # ...y esperar esto (s) antes de confiar en la pose (también percepción)
     radio_llegada_m: 0.15           # a esto (m) de la largada se publica /done
     intentos_regreso: 6             # metas de regreso antes de publicar /done de todos modos
-    tiempo_inspeccion_s: 4.0        # cuánto se mira un objeto (s)
+    tiempo_inspeccion_s: 3.0        # cuánto se mira un objeto (s)
     despeje_giro_m: 0.25            # con menos que esto (m) no se gira para mirar
     radio_duplicado_m: 0.40         # a menos de esto (m) de una caja ya reportada, es la misma
     radio_objeto_conocido_m: 0.50   # a menos de esto (m) de un objeto ya visto, es el mismo
@@ -209,7 +209,7 @@ nodo_mision:
     traba_tiempo_avance_s: 15.0
     trabas_por_meta: 2              # a la segunda traba en la misma meta, se abandona
     # Escape: despacio, porque se va muy cerca de las paredes.
-    escape_velocidad_mps: 0.10
+    escape_velocidad_mps: 0.13
     escape_despeje_objetivo_m: 0.15 # con esto (m) a lo más cercano, Nav2 vuelve a poder moverse
     escape_margen_m: 0.02           # no acercarse a menos de esto (m) de nada
     escape_alcance_m: 0.25          # hasta dónde se mira en cada dirección (m)
@@ -247,7 +247,7 @@ controller_server:
       yaw_goal_tolerance: 3.15      # la orientación final no importa: para mirar gira nodo_mision
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
-      desired_linear_vel: 0.50      # m/s
+      desired_linear_vel: 0.40      # m/s
       # Punto del camino al que apunta RPP. Con 0,40, en las U alrededor de la punta de un panel
       # cortaba la curva ~10 cm hacia adentro (con 0,25, ~3 cm): rozaba la punta y se trababa.
       # Tandas del 2/11 (4 mapas x 3 spawns): trabas en maze_2/3 de 21 a 5, choques con la caja
@@ -260,15 +260,15 @@ controller_server:
       use_velocity_scaled_lookahead_dist: false
       rotate_to_heading_angular_vel: 1.0
       transform_tolerance: 0.5
-      min_approach_linear_velocity: 0.08
+      min_approach_linear_velocity: 0.13
       approach_velocity_scaling_dist: 0.40
       # Apagado: con los huecos justos de las cajas, la huella real toca el costmap y RPP frena
       # en pasos por los que el robot entra. Con la detección prendida daba 200 de media, sin ella 350.
       use_collision_detection: false
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.40
-      regulated_linear_scaling_min_speed: 0.10
+      regulated_linear_scaling_min_radius: 0.55
+      regulated_linear_scaling_min_speed: 0.13
       inflation_cost_scaling_factor: 3.0
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.6
@@ -324,7 +324,7 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [0.50, 0.21, 1.0]
+    max_velocity: [0.40, 0.21, 1.0]
     min_velocity: [-0.15, -0.21, -1.0]
     max_accel: [2.5, 2.5, 3.2]
     max_decel: [-2.5, -2.5, -3.2]
