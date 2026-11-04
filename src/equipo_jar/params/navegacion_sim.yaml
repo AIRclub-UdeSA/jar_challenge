@@ -1,0 +1,8 @@
+# Perfil de simulación: velocidades de desarrollo en Gazebo.
+nodo_equipo:
+  ros__parameters:
+    nav_velocidad_max: 0.35
+    nav_aceleracion_max: 0.4
+    nav_velocidad_cerca_pared: 0.05
+    nav_desaceleracion: 0.5
+    nav_latencia_s: 0.15

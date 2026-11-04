@@ -1,0 +1,25 @@
+# Política general de M4: sin mundos, coordenadas ni rutas de práctica.
+nodo_equipo:
+  ros__parameters:
+    mision_duracion_s: 600.0
+    mision_reserva_regreso_s: 45.0
+    mision_velocidad_regreso_m_s: 0.10
+    mision_observacion_s: 3.0
+    mision_plazo_meta_s: 90.0
+    mision_separacion_vistas_m: 0.20
+    mision_separacion_minima_m: 0.10
+    mision_sondeos_se2: 1
+    mision_plazo_sondeo_se2_s: 5.0
+    mision_ganancia_min: 2
+    # Tamaño de lote: se evalúan todos los lotes, sin truncar el mapa.
+    mision_max_candidatas: 100
+    mision_max_solicitudes_vista: 3  # vistas alcanzadas; fallos de navegación no consumen
+    mision_distancia_asociacion_m: 0.30
+    mision_lado_caja_reportada_m: 0.20
+    # Terminar zonas cercanas sin excluir destinos lejanos con ganancia útil.
+    mision_exponente_distancia: 1.0
+    mision_region_min_muestras: 6  # 100000 desactiva la región objetivo
+    mision_radio_exclusion_reportada_m: 0.60
+    mision_interrupciones_lidar_max: 1
+    mision_cobertura_lidar_alcance_m: 5.0
+    mision_cobertura_lidar_radio_m: 0.06  # < mitad de la caja más chica (0,15 m)

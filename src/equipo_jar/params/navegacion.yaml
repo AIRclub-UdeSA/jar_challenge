@@ -1,0 +1,37 @@
+# Navegación hacia una meta y regreso (M2). Solo valores generales: velocidades,
+# márgenes, plazos y ganancias. Ninguna coordenada, meta ni ruta (reglamento §9.1).
+nodo_equipo:
+  ros__parameters:
+    # inactivo | ida_vuelta_prueba | meta_externa | mision. Entrega: misión autónoma.
+    modo_navegacion: mision
+    # true: calcula todo pero publica cero en /cmd_vel (primer paso en el robot real).
+    prueba_en_seco: false
+    # Envolvente física del X3: chasis y ruedas esféricas del URDF.
+    # Separado del margen de giro de M1 (0,10 m): navegación con frenado.
+    nav_margen_m: 0.04
+    nav_huella_convexa: true
+    nav_chasis_semi_ancho_m: 0.070
+    nav_rueda_x_m: 0.080
+    nav_rueda_y_m: 0.0845
+    nav_rueda_radio_m: 0.033
+    nav_rueda_semi_ancho_visual_m: 0.018
+    nav_alcance_blando_m: 0.25
+    nav_peso_costo: 5.0
+    nav_distancia_mira_m: 0.20
+    nav_tolerancia_meta_m: 0.03
+    nav_ganancia_yaw: 1.5
+    nav_velocidad_angular_max: 0.5
+    nav_espacio_lento_m: 0.25
+    nav_espacio_rapido_m: 0.45
+    nav_dt_max_s: 0.2
+    nav_desaceleracion_angular: 0.5
+    nav_plazo_detenido_s: 20.0
+    nav_espera_bloqueo_s: 1.0
+    nav_max_replanificaciones: 5
+    nav_plazo_bloqueo_total_s: 30.0
+    nav_pausa_en_meta_s: 0.5
+    nav_tolerancia_largada_m: 0.05
+    nav_vida_obstaculo_s: 600.0  # Retener lo visto durante la corrida; liberar con rayos nuevos.
+    meta_distancia_min_m: 1.5
+    meta_distancia_max_m: 3.0
+    meta_espacio_min_m: 0.35

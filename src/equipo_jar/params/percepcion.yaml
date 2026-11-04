@@ -1,0 +1,30 @@
+# Umbrales generales; nunca posiciones ni dimensiones de un mundo concreto.
+percepcion:
+  ros__parameters:
+    vista_separacion_m: 0.9
+    vista_despeje_m: 0.30
+    frecuencia_hz: 2.0
+    frescura_s: 0.8
+    rafaga_s: 2.0
+    tono_rojo_max: 8
+    saturacion_min: 120
+    brillo_min: 45
+    pixeles_min: 30
+    puntos_min: 35
+    voxel_m: 0.015
+    conexion_m: 0.055
+    lado_min_m: 0.09
+    # Prior común de práctica, sólo si asumir_base_cuadrada=true. No es medida
+    # ni garantía reglamentaria: punto medio de bases de 15/25 cm observadas.
+    # Separa el fondo oculto del fragmento visible; no cambia el gate de 15 cm.
+    lado_prior_oculto_m: 0.20
+    lado_max_m: 0.65
+    altura_min_m: 0.07
+    altura_max_m: 0.85
+    distancia_max_m: 3.5
+    error_objetivo_m: 0.15
+    error_reporte_max_m: 0.50
+    plazo_respaldo_s: 270.0
+    error_sensor_m: 0.025
+    error_centro_m: 0.025
+    asociacion_m: 0.30

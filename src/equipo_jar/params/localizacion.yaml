@@ -1,0 +1,83 @@
+# Ajustes generales; no contiene mapas ni ubicaciones de víctimas.
+amcl:
+  ros__parameters:
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    global_frame_id: map
+    map_topic: /map
+    scan_topic: /scan
+    robot_model_type: nav2_amcl::OmniMotionModel
+    tf_broadcast: true
+    transform_tolerance: 0.3
+    set_initial_pose: false
+    always_reset_initial_pose: true
+    first_map_only: true
+    min_particles: 500
+    max_particles: 2000
+    max_beams: 60
+    laser_model_type: likelihood_field
+    laser_min_range: -1.0
+    laser_max_range: -1.0
+    sigma_hit: 0.10
+    z_hit: 0.95
+    z_rand: 0.05
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+    update_min_d: 0.05
+    update_min_a: 0.05
+    resample_interval: 1
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
+    save_pose_rate: -1.0
+
+inicializar_localizacion:
+  ros__parameters:
+    initial_std_xy: 0.30
+    initial_std_yaw: 0.35
+    rpc_timeout_s: 2.0
+    startup_timeout_s: 15.0
+
+nodo_equipo:
+  ros__parameters:
+    localizacion_activa: true
+    scan_topic: /scan
+    frescura_pose_s: 3.0
+    # Recuperación post-LISTA; adquisición inicial y calidad sin cambios.
+    recuperacion_activa_post_lista: true
+    espera_recuperacion_activa_s: 3.0
+    giro_recuperacion_rad: 0.6108652381980153  # 35°, alterna el sentido
+    max_intentos_recuperacion_activa: 3
+    recuperacion_std_xy_m: 0.30
+    recuperacion_std_yaw_rad: 0.35
+    plazo_recuperacion_s: 15.0
+    max_recuperaciones: 2
+    giro_velocidad_rad_s: 0.75
+    giro_objetivo_rad: 0.3490658504
+    max_giros: 3
+    presupuesto_localizacion_s: 35.0
+    plazo_giro_s: 12.0
+    plazo_verificacion_s: 5.0
+    # Cota conservadora de colisiones del modelo X3 en base_footprint.
+    huella_x_min_m: -0.19
+    huella_x_max_m: 0.13
+    huella_semi_ancho_m: 0.12
+    margen_giro_m: 0.10
+    reserva_detencion_giro_rad: 0.12
+    max_std_xy_m: 0.15
+    max_std_yaw_rad: 0.15
+    concordancia_min: 0.80
+    concordancia_min_supervision: 0.70  # Sólo tras la primera LISTA
+    estabilidad_xy_m: 0.03
+    estabilidad_yaw_rad: 0.035
+    frescura_sensores_s: 0.6
+    tolerancia_mapa_m: 0.10
+    min_rayos_validos: 30
+    # M2: un hueco breve de datos o de calidad detiene sin gastar una recuperación.
+    plazo_falta_datos_s: 2.0
+    plazo_falla_calidad_s: 1.0
+    # Rayos que quedan más de esto antes de la pared esperada no cuentan (obstáculo).
+    deficit_obstaculo_m: 0.40
+    muestra_rayos: 120

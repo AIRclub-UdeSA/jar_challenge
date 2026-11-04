@@ -1,0 +1,9 @@
+# Perfil del robot real (por defecto): aceleración prudente y mayor latencia supuesta
+# hasta medir el robot. Ajustar solo con evidencia de ensayos físicos.
+nodo_equipo:
+  ros__parameters:
+    nav_velocidad_max: 0.35
+    nav_aceleracion_max: 0.2
+    nav_velocidad_cerca_pared: 0.05
+    nav_desaceleracion: 0.3
+    nav_latencia_s: 0.25
