@@ -91,7 +91,7 @@ explorador:
     velocidad_pasillo: 0.10
     horizonte_colision_s: 0.8
     desaceleracion_segura: 0.4
-    subdivisiones_mapa: 2
+    subdivisiones_mapa: 1
     timeout_sin_avance_s: 15.0
     margen_seguridad: 0.03
     timeout_scan_s: 0.5
