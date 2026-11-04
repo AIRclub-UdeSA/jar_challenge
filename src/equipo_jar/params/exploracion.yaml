@@ -40,7 +40,7 @@ exploracion:
     fraccion_agotado: 0.30      # goal que ya perdió el 70% de su ganancia en el camino -> siguiente
     cobertura_objetivo: 0.97    # objetivo del modo NBV global
     modo_exploracion: sectores_nbv # sectores_nbv: BCD y NBV dentro de cada sector; nbv: modo global original
-    cobertura_objetivo_sector: 0.68 # pasar al siguiente sector cuando se vio el 68% de su piso libre
+    cobertura_objetivo_sector: 0.70 # pasar al siguiente sector cuando se vio el 68% de su piso libre
     area_residual_ignorable_m2: 0.09 # omitir hasta 30x30 cm pendientes tras revisar al menos la mitad del sector
     area_caja_m2: 0.09          # huecos aislados sin ver de menos de 30x30 cm cuentan como vistos
                                 # (antes 0.04 = una caja de 20x20: el robot iba a mirar rincones mínimos)
@@ -51,7 +51,7 @@ exploracion:
                                 # hay más lugar a paredes/obstáculos, sin cambiar de sector y en línea recta
     holgura_guia_m: 0.30        # buscar al menos esta distancia a la pared (más no suma)
     peso_holgura_nbv: 0.6       # NBV: un punto pegado a la pared vale 40% del mismo punto a holgura_guia_m
-    holgura_paso_estrecho_m: 0.25 # si se atasca donde hay menos holgura que esto, las rutas evitan ese paso
+    holgura_paso_estrecho_m: 0.11 # si se atasca donde hay menos holgura que esto, las rutas evitan ese paso
     radio_paso_fallido_m: 0.15
     margen_objeto_ruta_m: 0.22  # las rutas pasan a >= esto de cajas/objetos aunque a paredes dejen 13 cm
                                 # (entre una caja y la punta de una pared quedaba un hueco de ~30 cm)
@@ -92,7 +92,7 @@ exploracion:
     inspeccionar_objetos: true  # observa obstáculos persistentes ausentes del mapa
     lado_bloque_objeto_m: 0.26 # bloque cuadrado por objeto confirmado (cajas de 25 cm; 0.30 angostaba
                                 # de más el paso junto a la caja roja de maze_1)
-    distancia_pared_bloque_m: 0.20 # más cerca de una pared: no se bloquea (probable eco),
+    distancia_pared_bloque_m: 0.10 # más cerca de una pared: no se bloquea (probable eco),
                                 # aunque la cámara aporte un color
     celdas_max_cortadas_por_bloque: 20 # un bloque nunca puede dejar zonas libres sin camino
     tiempo_observacion_objeto_s: 0.8 # mirada breve; si falta cámara conserva la posición del LiDAR y sigue
@@ -166,8 +166,8 @@ exploracion:
     velocidad_mover_reloc: 0.12
     fallos_para_relocalizar: 3 # también detecta hipótesis equivocadas en pasillos repetidos
     ventana_fallos_relocalizacion_s: 90.0
-    distancia_lenta: 0.25       # m libres delante del chasis, en la dirección de avance
-    distancia_muy_lenta: 0.12   # m libres delante del chasis, en la dirección de avance
+    distancia_lenta: 0.40       # m libres delante del chasis, en la dirección de avance
+    distancia_muy_lenta: 0.20   # m libres delante del chasis, en la dirección de avance
     porcentaje_lenta: 70.0      # % de 0.5 m/s a menos de distancia_lenta
     porcentaje_muy_lenta: 50.0  # % de 0.5 m/s a menos de distancia_muy_lenta
     porcentaje_loc_mala: 100.0  # antes 50: con 8-9 cm de error (frecuente) andaba a media velocidad

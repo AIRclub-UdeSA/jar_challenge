@@ -31,7 +31,7 @@ deteccion_victimas:
                                 # dirección, es algo pintado/pegado en la pared -> se descarta
     angulo_rasante_deg: 30.0    # si el láser llega más lejos que la pared del mapa, se acepta solo
                                 # si la superficie roja no es casi paralela al rayo (pared de costado)
-    max_dentro_pared: 0.10      # m: cara y centro pueden "pisar" la pared del mapa hasta esto (el
+    max_dentro_pared: 0.05      # m: cara y centro pueden "pisar" la pared del mapa hasta esto (el
                                 # mapa es de 5 cm y una caja pegada a la pared pisa la primera fila)
     max_laser_detras_suelo: 0.20 # m: si el láser marca la cara más lejos que la base de la caja en el piso
                                 # (vista por la cámara) por más que esto, pegó en otra cosa: se descarta
@@ -44,14 +44,14 @@ deteccion_victimas:
     edad_maxima_imagen_s: 0.75   # rechaza imágenes atrasadas o repetidas
     espera_tf_vision_s: 0.12    # deja recibir odometría/TF sin bloquear callbacks de sensores
     radio_agrupamiento: 0.40    # m: detecciones más cerca que esto son la misma víctima
-    detecciones_minimas: 8      # para reportar "confirmada"
+    detecciones_minimas: 6      # para reportar "confirmada"
     dispersion_maxima: 0.10     # m (mediana de distancias a la mediana)
     segundos_minimos_vista: 0.8
     detecciones_minimas_paso: 4   # "vista de pasada": se reporta si ya no se la ve hace...
     segundos_sin_ver_paso: 15.0   # ...este tiempo
     separacion_minima_cajas: 0.40 # m: un grupo a menos de esto de una víctima YA reportada es la misma
                                   # caja vista corrida: no se reporta (no se gasta uno de los N)
-    distancia_confirmacion: 1.6   # m: para reportar (salvo al final) la caja tuvo que verse al menos
+    distancia_confirmacion: 1.9   # m: para reportar (salvo al final) la caja tuvo que verse al menos
                                   # una vez desde menos de esto; si no, el explorador se acerca a mirarla
     descartar_no_vistas: true     # una posible víctima que de cerca (< distancia_confirmacion), entera en
     imagenes_para_descartar: 10   # cuadro y sin nada delante según el láser, NO muestra rojo en esta cantidad
