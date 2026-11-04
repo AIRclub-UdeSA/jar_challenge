@@ -10,3 +10,6 @@ __pycache__/
 .venv/
 .vscode/
 .idea/
+
+# Scripts de análisis del equipo (no son parte de la entrega)
+experimentos/
