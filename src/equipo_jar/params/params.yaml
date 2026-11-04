@@ -23,10 +23,10 @@ localizador:
     pose_inicial_theta: 0.0
     dispersion_inicial_xy: 0.3
     dispersion_inicial_theta: 0.3
-    # Medidas en el robot real (bag de la semana 10): avance 0.744 m según el
-    # lidar contra 0.949 m según /odom, giro 1076.5° según el IMU contra 1339.0°.
-    escala_avance: 0.784
-    escala_giro: 0.804
+    # 0.784 / 0.804 salían del bag de la semana 10, grabado con encoder_cpr 1040.
+    # Desde el 30/10 el robot corre 1320 y /odom ya viene corregido: escala 1.0.
+    escala_avance: 1.0
+    escala_giro: 1.0
     submuestreo_scan: 15
     ruido_remuestreo_xy: 0.01
     ruido_remuestreo_theta: 0.01
