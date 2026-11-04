@@ -307,6 +307,9 @@ local_costmap:
           max_obstacle_height: 2.0
           raytrace_max_range: 3.5
           obstacle_max_range: 3.0
+          # Conos finos: a 0.18 m miden ~5 cm (una celda) y los rayos de al lado los borran.
+          # Marca lo que el LiDAR vio en el último segundo, no solo el último barrido.
+          observation_persistence: 1.0
           inf_is_valid: false
       # El costo sube solo cerca de los obstáculos: MPPI entra en huecos angostos sin
       # dudar. El camino ya viene por el medio por la inflación del global.
@@ -348,6 +351,9 @@ global_costmap:
           max_obstacle_height: 2.0
           raytrace_max_range: 3.5
           obstacle_max_range: 3.0
+          # Conos finos: a 0.18 m miden ~5 cm (una celda) y los rayos de al lado los borran.
+          # Marca lo que el LiDAR vio en el último segundo, no solo el último barrido.
+          observation_persistence: 1.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         inflation_radius: 0.45          # costo que baja despacio: caminos por el medio

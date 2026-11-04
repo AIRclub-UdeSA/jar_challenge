@@ -230,7 +230,8 @@ mision:
     visit_min_shift_m: 0.4
     visit_box_margin_m: 0.25
     localization_wait_max_s: 10.0
-    goal_timeout_s: 90.0
+    # Hard cap per trip (s). Good trips in the qualification took <= 15 s; return legs ~20 s.
+    goal_timeout_s: 60.0
     goal_accept_timeout_s: 5.0
     stop_confirm_max_age_s: 0.5
     stuck_time_s: 20.0
@@ -246,7 +247,9 @@ mision:
     visit_transit_radius_m: 0.15
     visit_free_threshold: 25
     settle_s: 0.0
-    max_recoveries: 10
+    # Give up a trip after this many Nav2 recoveries. Good trips used <= 3; the trips blocked
+    # by a cone reached 10 after 37-66 s each. 4 gives up after ~15-20 s.
+    max_recoveries: 4
     return_tolerance_m: 0.05
     return_max_tries: 3
     return_still_s: 2.0
