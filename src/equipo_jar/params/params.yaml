@@ -51,7 +51,7 @@ mision:
     giro_localizacion_rad: 6.3
     tiempo_max_localizacion_s: 15.0
     tolerancia_orientacion_rad: 0.25
-    ganancia_giro: 2.5
+    ganancia_giro: 3.0
     vel_giro_max: 1.0
     tiempo_max_orientacion_s: 8.0
     tiempo_max_goal_s: 60.0
@@ -78,7 +78,7 @@ mision:
     margen_m: 0.02
     periodo_limpieza_costmap_s: 4.0
     tiempo_sin_moverse_s: 30.0
-    vel_giro_escape: 0.3
+    vel_giro_escape: 0.45
     margen_giro_m: 0.005
     usar_paso_angosto: true
     ancho_minimo_creible_m: 0.20
@@ -122,10 +122,10 @@ explorador:
     fov_camara_rad: 1.0
     giro_max_marcado: 0.4
     despeje_min_m: 0.10
-    despeje_goal_m: 0.35
+    despeje_goal_m: 0.25
     separacion_candidatos_m: 0.30
     costo_distancia: 30.0
-    ganancia_minima: 15.0
+    ganancia_minima: 8.0
     radio_local_m: 1.5
     ganancia_local: 10.0
     fraccion_local: 0.5
