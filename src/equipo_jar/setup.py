@@ -13,17 +13,18 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/params', glob('params/*.yaml')),
+        ('share/' + package_name + '/scripts', glob('scripts/*.sh')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='Nombre del equipo',
+    maintainer='RealBoBots',
     maintainer_email='equipo@example.com',
     description='Software del equipo para el Challenge JAR 2026.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'nodo_equipo = equipo_jar.nodo_equipo:main',
+            'mision = equipo_jar.mision:main',
         ],
     },
 )

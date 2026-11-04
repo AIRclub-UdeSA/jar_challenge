@@ -4,7 +4,7 @@
   <name>equipo_jar</name>
   <version>0.1.0</version>
   <description>Software del equipo para el Challenge JAR 2026 (búsqueda y rescate).</description>
-  <maintainer email="equipo@example.com">Nombre del equipo</maintainer>
+  <maintainer email="equipo@example.com">RealBoBots</maintainer>
   <license>MIT</license>
 
   <exec_depend>rclpy</exec_depend>
@@ -12,8 +12,35 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+
+  <!-- Nodos propios -->
+  <exec_depend>jar_supervisor</exec_depend>
+  <exec_depend>jar_exploracion</exec_depend>
+  <exec_depend>jar_percepcion</exec_depend>
+
+  <!-- AMCL y Nav2 sin map_server (ADR-0003, ADR-0004) -->
+  <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_smac_planner</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_mppi_controller</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
+  <exec_depend>nav2_costmap_2d</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 
