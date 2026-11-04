@@ -1,12 +1,39 @@
 # Parámetros del equipo (reglamento §9.1).
 #
-# Acá solo van valores GENERALES: umbrales, ganancias, límites de velocidad,
-# rangos de color. Nada que dependa del mapa de la competencia: nada de
-# coordenadas, rutas ni posiciones de víctimas. El CI (tools/verificar_params.py)
-# rechaza estos archivos si rompen la regla.
-#
+# Solo valores GENERALES: umbrales, ganancias, límites de velocidad, rangos de
+# color. Nada que dependa del mapa de la competencia.
 nodo_equipo:
   ros__parameters:
     frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.30      # m/s
-    velocidad_angular_max: 1.00     # rad/s
+    velocidad_lineal_max: 0.15        # m/s (0.20 en corrida 1: hubo un choque)
+    velocidad_angular_max: 0.80       # rad/s
+
+    # LiDAR y navegación (seguidor de pared derecha)
+    offset_angulo_lidar: 3.14159      # rad, montaje del LiDAR en el Rosmaster
+    distancia_seguridad: 0.35         # m, frena y gira si hay algo más cerca adelante
+    distancia_liberacion: 0.50        # m, histéresis para dejar de girar
+    distancia_pared: 0.30             # m, distancia deseada a la pared derecha
+    ganancia_pared: 2.0
+
+    # Atascos
+    tiempo_atasco_s: 8.0
+    distancia_atasco: 0.05            # m
+    tiempo_escape_s: 2.0
+
+    # Visión (rojo en HSV de OpenCV, H en 0..179)
+    hz_vision: 5.0
+    fov_horizontal_deg: 69.4          # solo se usa si no llega camera_info
+    rojo_s_min: 100
+    rojo_v_min: 80
+    rojo_h_bajo_max: 10
+    rojo_h_alto_min: 170
+    area_min_px: 400.0
+    distancia_max_deteccion: 1.2      # m (2.0 en corrida 1: reporte a 1.8 m errado)
+    ventana_rumbo_rad: 0.05
+    profundidad_caja: 0.05            # m, de la cara visible al centro de la caja
+    giro_max_para_detectar: 0.3       # rad/s
+    radio_agrupado: 0.50              # m
+    observaciones_min: 8
+
+    # Fin de corrida
+    tiempo_max_s: 540.0
