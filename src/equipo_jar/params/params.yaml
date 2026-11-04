@@ -239,7 +239,7 @@ mision:
     finish_time_s: 570.0
     idle_spin_s: 10.0
     idle_spin_rad: 1.57
-    visit_min_observations: 3
+    visit_min_observations: 2         # run 1 had no inspection of a 2-observation candidate: no reason to change it
     visit_distance_m: 0.8
     visit_clearance_m: 0.25
     visit_angles: 12
