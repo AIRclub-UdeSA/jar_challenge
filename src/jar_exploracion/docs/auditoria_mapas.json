@@ -1,0 +1,177 @@
+[
+  {
+    "mapa": "cafe.yaml",
+    "forma": [
+      449,
+      190
+    ],
+    "orientaciones": [
+      {
+        "yaw": 0.0,
+        "celdas_seguras": 271760,
+        "componentes": 7,
+        "rutas_comprobadas": 3
+      },
+      {
+        "yaw": 1.5707963267948966,
+        "celdas_seguras": 274060,
+        "componentes": 5,
+        "rutas_comprobadas": 3
+      }
+    ],
+    "forma_planificacion": [
+      898,
+      380
+    ]
+  },
+  {
+    "mapa": "laberinto_1.yaml",
+    "forma": [
+      117,
+      117
+    ],
+    "orientaciones": [
+      {
+        "yaw": 0.0,
+        "celdas_seguras": 12956,
+        "componentes": 10,
+        "rutas_comprobadas": 3
+      },
+      {
+        "yaw": 1.5707963267948966,
+        "celdas_seguras": 12336,
+        "componentes": 10,
+        "rutas_comprobadas": 3
+      }
+    ],
+    "forma_planificacion": [
+      234,
+      234
+    ]
+  },
+  {
+    "mapa": "laberinto_simple.yaml",
+    "forma": [
+      119,
+      119
+    ],
+    "orientaciones": [
+      {
+        "yaw": 0.0,
+        "celdas_seguras": 37608,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      },
+      {
+        "yaw": 1.5707963267948966,
+        "celdas_seguras": 37188,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      }
+    ],
+    "forma_planificacion": [
+      238,
+      238
+    ]
+  },
+  {
+    "mapa": "maze_1_6x5.yaml",
+    "forma": [
+      101,
+      122
+    ],
+    "orientaciones": [
+      {
+        "yaw": 0.0,
+        "celdas_seguras": 23268,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      },
+      {
+        "yaw": 1.5707963267948966,
+        "celdas_seguras": 22092,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      }
+    ],
+    "forma_planificacion": [
+      202,
+      244
+    ]
+  },
+  {
+    "mapa": "maze_2_6x5.yaml",
+    "forma": [
+      101,
+      121
+    ],
+    "orientaciones": [
+      {
+        "yaw": 0.0,
+        "celdas_seguras": 23680,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      },
+      {
+        "yaw": 1.5707963267948966,
+        "celdas_seguras": 22696,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      }
+    ],
+    "forma_planificacion": [
+      202,
+      242
+    ]
+  },
+  {
+    "mapa": "maze_3_6x6.yaml",
+    "forma": [
+      123,
+      122
+    ],
+    "orientaciones": [
+      {
+        "yaw": 0.0,
+        "celdas_seguras": 28012,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      },
+      {
+        "yaw": 1.5707963267948966,
+        "celdas_seguras": 28000,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      }
+    ],
+    "forma_planificacion": [
+      246,
+      244
+    ]
+  },
+  {
+    "mapa": "maze_4_metal_6x6.yaml",
+    "forma": [
+      123,
+      122
+    ],
+    "orientaciones": [
+      {
+        "yaw": 0.0,
+        "celdas_seguras": 28084,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      },
+      {
+        "yaw": 1.5707963267948966,
+        "celdas_seguras": 28048,
+        "componentes": 1,
+        "rutas_comprobadas": 3
+      }
+    ],
+    "forma_planificacion": [
+      246,
+      244
+    ]
+  }
+]

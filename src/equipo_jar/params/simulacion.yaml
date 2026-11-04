@@ -1,0 +1,8 @@
+# Lo que cambia en el simulador respecto de params.yaml. El launch lo carga
+# después de params.yaml solo con use_sim_time:=true.
+
+localizador:
+  ros__parameters:
+    # La odometría simulada no tiene error de escala.
+    escala_avance: 1.0
+    escala_giro: 1.0
