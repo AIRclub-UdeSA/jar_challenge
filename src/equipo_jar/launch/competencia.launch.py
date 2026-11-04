@@ -18,7 +18,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -27,23 +29,257 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     params = os.path.join(
         get_package_share_directory('equipo_jar'), 'params', 'params.yaml')
+
+    nav2_params = os.path.join(
+        get_package_share_directory('equipo_jar'), 'params', 'nav2_params.yaml')
+    
+    pkg_nav2_bringup = get_package_share_directory('nav2_bringup')
+
+    pkg_equipo = get_package_share_directory('equipo_jar')
+
+    config_rviz = os.path.join(pkg_equipo, 'params', 'realrobot.rviz')
+
+    declarar_sim = DeclareLaunchArgument(
+        'use_sim_time', default_value='false')
+    declarar_victimas = DeclareLaunchArgument(
+        'victimas', default_value='5',
+        description='cantidad de víctimas a buscar (N)')
+    # declarar_sigma = DeclareLaunchArgument(
+    #     'sigma_sensor', default_value='0.2',
+    #     description='Ancho (m) del halo de probabilidad alrededor de cada pared.')
+    # declarar_particulas = DeclareLaunchArgument(
+    #     'num_particulas', default_value='300',
+    #     description='Cantidad de partículas del filtro.')
+    # declarar_gamma = DeclareLaunchArgument(
+    #     'gamma', default_value='0.0025',
+    #     description='Varianza de ruido del modelo de movimiento (gamma1-gamma6).')
+    # declarar_escala_avance = DeclareLaunchArgument(
+    #     'escala_avance', default_value='1.0',
+    #     description='Escala de correccion sobre el avance de la odometria.')
+    # declarar_escala_giro = DeclareLaunchArgument(
+    #         'escala_giro', default_value='1.0',
+    #         description='Escala de correccion sobre el giro de la odometria.')
+    declarar_autostart = DeclareLaunchArgument('autostart', default_value='true')
+    # Apagado por defecto: en la corrida oficial el launch corre en un
+    # contenedor sin pantalla y RViz no puede abrir ventana.
+    declarar_rviz = DeclareLaunchArgument(
+        'rviz', default_value='false',
+        description='true para abrir RViz con params/realrobot.rviz')
+
+
     use_sim_time = LaunchConfiguration('use_sim_time')
     victimas = LaunchConfiguration('victimas')
+    autostart = LaunchConfiguration('autostart')
+
+    equipo = Node(
+        package='equipo_jar',
+        executable='nodo_equipo',
+        name='nodo_equipo',
+        output='screen',
+        parameters=[params, {
+            'use_sim_time': use_sim_time,
+            'cantidad_victimas': ParameterValue(victimas, value_type=int),
+        }],
+    )
+
+
+    # navegacion_nav2 = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource(
+    #         os.path.join(pkg_nav2_bringup, 'launch', 'navigation_launch.py')
+    #     ),
+    #     launch_arguments={
+    #         'params_file': nav2_params,
+    #         'use_sim_time': use_sim_time,
+    #         'autostart': autostart,
+    #     }.items(),
+    # )
+
+    # El nodo `detector` de deteccion_color no se lanza: solo publica la
+    # máscara /mascara_rojo para mirar en RViz y consume CPU que hace falta
+    # para amcl, DWB y detector_scan. detector_scan arma su propia máscara.
+    detector_scan = Node(
+        package='deteccion_color',
+        executable='detector_scan',
+        name='detector_scan',
+        output='screen',
+        # Rangos HSV del rojo en params.yaml: en la arena real hay que
+        # recalibrarlos con la iluminación del lugar.
+        parameters=[params, {'use_sim_time': use_sim_time}],
+    )
+
+    # Hasta que localizador publique la primera map → odom, este nodo avisa
+    # "Todavía no hay tf" y descarta los scans; después arranca solo.
+    detector_obstaculos = Node(
+        package='obstaculos_no_mapeados',
+        executable='obstaculos_no_mapeados',
+        name='detector_obstaculos',
+        output='screen',
+        # umbral_probabilidad, racha_minima y distancia_minima_valida están en
+        # params.yaml (detector_obstaculos), así se pueden ajustar en la arena.
+        parameters=[params, {'use_sim_time': use_sim_time}],
+    )
+
+    # El mismo detector sobre el /scan completo (cualquier color): cada
+    # objeto que no está en el mapa es un candidato (víctima, señuelo o
+    # distractor). La misión gira la cámara hacia los candidatos para ver si
+    # son rojos: el lidar los ve en 360° y desde lejos, la cámara no.
+    detector_no_mapeados = Node(
+        package='obstaculos_no_mapeados',
+        executable='obstaculos_no_mapeados',
+        name='detector_no_mapeados',
+        output='screen',
+        parameters=[params, {'use_sim_time': use_sim_time}],
+        remappings=[
+            ('scan_rojo', '/scan'),
+            ('objetos_rojos', 'objetos_no_mapeados'),
+            ('objetos_rojos_markers', 'objetos_no_mapeados_markers'),
+            ('scan_no_mapeado', 'scan_no_mapeado_todo'),
+        ],
+    )
+
+    # Semana 10, paso 5: junta /objetos_rojos en una posición por caja y
+    # publica cada una en /victimas, como mucho `victimas` reportes.
+    juntar_victimas = Node(
+        package='equipo_jar',
+        executable='juntar_victimas',
+        name='juntar_victimas',
+        output='screen',
+        parameters=[params, {
+            'use_sim_time': use_sim_time,
+            'cantidad_victimas': ParameterValue(victimas, value_type=int),
+        }],
+    )
+
+    # Registro de la corrida (plan_de_trabajo/LOGS_CLASIFICACION.md): solo lee tópicos y
+    # escribe archivos chicos. Se apaga con `registrar: false` en params.yaml.
+    registro = Node(
+        package='equipo_jar',
+        executable='registro',
+        name='registro',
+        output='screen',
+        parameters=[params, {'use_sim_time': use_sim_time}],
+    )
+
+    lifecycle_nodes = []
+
+    # Controller
+    controller = Node(
+        package='nav2_controller',
+        executable='controller_server',
+        name='controller_server',
+        output='log',
+        # El dict va último: con varios archivos de parámetros gana el último,
+        # y use_sim_time tiene que venir del launch (false en el robot real).
+        parameters=[
+            nav2_params,
+            {'use_sim_time': use_sim_time},
+        ],
+    )
+    lifecycle_nodes.append('controller_server')
+
+    # Planner
+    planner = Node(
+        package='nav2_planner',
+        executable='planner_server',
+        name='planner_server',
+        output='log',
+        # El dict va último: con varios archivos de parámetros gana el último,
+        # y use_sim_time tiene que venir del launch (false en el robot real).
+        parameters=[
+            nav2_params,
+            {'use_sim_time': use_sim_time},
+        ]
+    )
+    lifecycle_nodes.append('planner_server')
+
+    # Behavior
+    behavior = Node(
+        package='nav2_behaviors',
+        executable='behavior_server',
+        name='behavior_server',
+        output='screen',
+        # El dict va último: con varios archivos de parámetros gana el último,
+        # y use_sim_time tiene que venir del launch (false en el robot real).
+        parameters=[
+            nav2_params,
+            {'use_sim_time': use_sim_time},
+        ]
+    )
+    lifecycle_nodes.append('behavior_server')
+
+    navigator = Node(
+        package='nav2_bt_navigator',
+        executable='bt_navigator',
+        name='bt_navigator',
+        output='screen',
+        # El dict va último: con varios archivos de parámetros gana el último,
+        # y use_sim_time tiene que venir del launch (false en el robot real).
+        parameters=[
+            nav2_params,
+            {'use_sim_time': use_sim_time},
+        ]
+    )
+    lifecycle_nodes.append('bt_navigator')
+
+    amcl = Node(
+        package='nav2_amcl',
+        executable='amcl',
+        name='amcl',
+        output='screen',
+        parameters=[
+            nav2_params,
+            {'use_sim_time': use_sim_time},
+        ],
+        # La pose inicial con dispersión la publica nodo_equipo en un tópico
+        # propio, para no cruzarse con un /initialpose de RViz o de afuera.
+        remappings=[('initialpose', 'equipo/pose_inicial')],
+    )
+    # amcl va primero: los costmaps no terminan de activarse hasta que
+    # exista map -> odom, y esa transformada la publica amcl.
+    lifecycle_nodes.insert(0, 'amcl')
+
+    lifecycle = Node(
+        package='nav2_lifecycle_manager', 
+        executable='lifecycle_manager',
+        # nav2_params primero (bond_timeout ajustable desde params/), el dict último.
+        parameters=[nav2_params, {
+            'use_sim_time': use_sim_time, 
+            'autostart': autostart, 
+            'node_names': lifecycle_nodes
+        }]
+    )
+
+    rviz = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='log',
+        arguments=['-d', config_rviz],
+        parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(LaunchConfiguration('rviz')),
+    )
 
     return LaunchDescription([
-        DeclareLaunchArgument('use_sim_time', default_value='false'),
-        DeclareLaunchArgument('victimas', default_value='5',
-                              description='cantidad de víctimas a buscar (N)'),
-        Node(
-            package='equipo_jar',
-            executable='nodo_equipo',
-            name='nodo_equipo',
-            output='screen',
-            parameters=[params, {
-                'use_sim_time': use_sim_time,
-                'cantidad_victimas': ParameterValue(victimas, value_type=int),
-            }],
-        ),
+        declarar_sim,
+        declarar_victimas,
+        declarar_autostart,
+        declarar_rviz,
+        equipo,
         # Acá se agregan el resto de los nodos del equipo (localización,
         # navegación, percepción...). Todos con el mismo `parameters=[params, ...]`.
+        detector_scan,
+        detector_obstaculos,
+        detector_no_mapeados,
+        juntar_victimas,
+        registro,
+        controller,
+        planner,
+        behavior,
+        navigator,
+        amcl,
+        # El lifecycle_manager arranca unos segundos después: si intenta
+        # configurar los nodos de Nav2 antes de descubrir sus servicios, el
+        # pedido falla, aborta todo el bringup y el robot no se mueve.
+        TimerAction(period=3.0, actions=[lifecycle]),
+        rviz,
     ])

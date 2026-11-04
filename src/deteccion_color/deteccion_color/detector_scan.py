@@ -1,0 +1,379 @@
+import collections
+import math
+
+import cv2
+import numpy as np
+import rclpy
+import tf2_ros
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
+from sensor_msgs.msg import CameraInfo, Image, LaserScan
+from cv_bridge import CvBridge
+
+
+def mascara_rojo(imagen_hsv, hue_bajo_1, hue_alto_1, hue_bajo_2, hue_alto_2,
+                  saturacion_min, valor_min):
+    """Máscara binaria (255 = rojo). Es la misma función que ya escribiste
+    en detector.py — la repetimos acá tal cual para que detector_scan sea
+    un nodo independiente (no depende de importar detector.py)."""
+    bajo1 = np.array([hue_bajo_1, saturacion_min, valor_min])
+    alto1 = np.array([hue_alto_1, 255, 255])
+    bajo2 = np.array([hue_bajo_2, saturacion_min, valor_min])
+    alto2 = np.array([hue_alto_2, 255, 255])
+    mascara1 = cv2.inRange(imagen_hsv, bajo1, alto1)
+    mascara2 = cv2.inRange(imagen_hsv, bajo2, alto2)
+    return cv2.bitwise_or(mascara1, mascara2)
+
+
+def cuaternion_a_rotacion(x, y, z, w):
+    """Matriz de rotación 3x3 equivalente a un quaternion (x, y, z, w).
+    Álgebra de siempre, no es el objetivo de este workshop."""
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w)],
+        [2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y)],
+    ])
+
+
+def puntos_laser_a_pixeles(rangos, angulos, rotacion, traslacion, fx, fy, cx, cy):
+    """
+    TODO: el corazón geométrico del workshop. Convertir cada punto del
+    lidar (dado como range/angulo) en el pixel (u, v) donde caería si la
+    cámara lo estuviera mirando.
+
+    Parámetros: rangos y angulos son arrays de igual largo (uno por rayo
+    del lidar); rotacion es una matriz 3x3 y traslacion un vector de 3
+    (la tf real que ubica la cámara respecto del lidar); fx, fy, cx, cy son
+    los intrínsecos de la cámara (de camera_info).
+
+    Pasos sugeridos:
+      1. Pasar cada (rango, ángulo) de polar a cartesiano, en el frame del
+         lidar (x = rango*cos(ángulo), y = rango*sin(ángulo), z = 0). Con
+         arrays de numpy esto sale vectorizado (sin loop): armá un array
+         Nx3 apilando (x, y, z) con np.stack(..., axis=1).
+      2. Pasar esos puntos al frame de la cámara aplicando la rotación y
+         la traslación: punto_camara = punto_laser @ rotacion.T + traslacion
+         (aplicado a los N puntos a la vez, con la misma cuenta).
+      3. Extraer x_cam, y_cam, z_cam de ese array Nx3.
+      4. Armar "adelante": un array de bool, True donde z_cam > 0.01 (si
+         z_cam <= 0, el punto está detrás de la cámara y no tiene sentido
+         proyectarlo).
+      5. Proyección pinhole: u = fx * x_cam / z_cam + cx,
+         v = fy * y_cam / z_cam + cy. Usá np.errstate(divide='ignore',
+         invalid='ignore') alrededor de esta cuenta — vas a dividir por
+         z_cam aunque tenga ceros o negativos en las posiciones que
+         "adelante" después descarta, y no querés que numpy tire warnings
+         por eso.
+      6. Devolver (u, v, adelante).
+    """
+    # x = rangos * np.cos(angulos)
+    # y = rangos * np.sin(angulos)
+    # z = np.zeros_like(rangos)
+    # puntos = np.stack((x, y, z), axis=1)
+    # puntos_camara = puntos @ rotacion.T + traslacion
+    puntos_laser = np.stack((rangos * np.cos(angulos), rangos * np.sin(angulos), np.zeros_like(rangos)), axis=1)
+    puntos_camara = puntos_laser @ rotacion.T + traslacion
+    x_cam = puntos_camara[:, 0]
+    y_cam = puntos_camara[:, 1]
+    z_cam = puntos_camara[:, 2]
+    adelante = z_cam > 0.01
+    with np.errstate(divide='ignore', invalid='ignore'):
+        u = fx * x_cam / z_cam + cx
+        v = fy * y_cam / z_cam + cy
+    return (u, v, adelante)
+
+    # puntos_laser = np.stack((rangos * np.cos(angulos), rangos * np.sin(angulos), np.zeros_like(rangos)), axis=1)
+    # puntos_camara = puntos_laser @ rotacion.T + traslacion
+    # x_cam, y_cam, z_cam = puntos_camara[:, 0], puntos_camara[:, 1], puntos_camara[:, 2]
+    # adelante = z_cam > 0
+
+    # with np.errstate(divide='ignore', invalid='ignore'):
+    #     u = fx * x_cam / z_cam + cx
+    #     v = fy * y_cam / z_cam + cy
+
+    # return (u, v, adelante)
+
+
+class DetectorScanColor(Node):
+    """
+    Proyecta cada punto del /scan sobre la imagen de la cámara (usando la
+    tf entre el lidar y la cámara, y los intrínsecos de camera_info) y
+    publica en /scan_rojo una copia del LaserScan donde solo sobreviven
+    los rangos cuyo punto cae, en la imagen, sobre un pixel rojo. El resto
+    se pone en infinito (sin retorno), como cualquier LaserScan filtrado.
+    """
+
+    def __init__(self):
+        super().__init__('detector_scan_color')
+
+        self.declare_parameter('hue_rojo_bajo_1', 0.0)
+        self.declare_parameter('hue_rojo_alto_1', 10.0)
+        self.declare_parameter('hue_rojo_bajo_2', 170.0)
+        self.declare_parameter('hue_rojo_alto_2', 180.0)
+        self.declare_parameter('saturacion_min', 120.0)
+        self.declare_parameter('valor_min', 80.0)
+        # Erosión de la máscara (en pixeles; 0 = sin erosión): los rayos que
+        # rozan el borde de la caja y siguen hasta la pared de atrás dejan
+        # de contar como rojos.
+        self.declare_parameter('erosion_mascara', 1)
+        # Más lejos que esto, un grado de error de amcl ya corre el punto
+        # más de 6 cm: no se reporta.
+        self.declare_parameter('rango_maximo', 3.5)
+        # Se usa la imagen más cercana al stamp del scan; si la diferencia
+        # pasa este valor (s), el scan se saltea. Negativo: sin chequeo.
+        self.declare_parameter('desfase_maximo_imagen', 0.2)
+        # Oclusión: la cámara y el lidar no están en el mismo lugar, así que
+        # de cerca un punto del lidar detrás de la caja (que la cámara no ve)
+        # cae sobre pixeles rojos de la caja. Un rayo rojo se descarta si otro
+        # rayo a menos de ventana_oclusion_px columnas es más corto por más de
+        # margen_oclusion (m).
+        self.declare_parameter('ventana_oclusion_px', 6.0)
+        self.declare_parameter('margen_oclusion', 0.15)
+
+        self.hue_rojo_bajo_1 = self.get_parameter('hue_rojo_bajo_1').value
+        self.hue_rojo_alto_1 = self.get_parameter('hue_rojo_alto_1').value
+        self.hue_rojo_bajo_2 = self.get_parameter('hue_rojo_bajo_2').value
+        self.hue_rojo_alto_2 = self.get_parameter('hue_rojo_alto_2').value
+        self.saturacion_min = self.get_parameter('saturacion_min').value
+        self.valor_min = self.get_parameter('valor_min').value
+        erosion = int(self.get_parameter('erosion_mascara').value)
+        self.nucleo_erosion = (
+            np.ones((2 * erosion + 1, 2 * erosion + 1), np.uint8) if erosion > 0 else None)
+        self.rango_maximo = self.get_parameter('rango_maximo').value
+        self.desfase_maximo = self.get_parameter('desfase_maximo_imagen').value
+        self.ventana_oclusion = self.get_parameter('ventana_oclusion_px').value
+        self.margen_oclusion = self.get_parameter('margen_oclusion').value
+
+        self.puente = CvBridge()
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        self.ultima_imagen = None
+        self.imagenes = collections.deque(maxlen=15)   # (stamp en s, mensaje)
+        self.aviso_desfase_mostrado = False
+        self.salteados = 0
+        self.info_camara = None
+        self.aviso_tf_mostrado = False
+
+        # Las tres suscripciones son a sensores, así que las tres van con
+        # qos_profile_sensor_data (best effort) — ver semana 03.
+        self.create_subscription(
+            Image, 'cam_1/color/image_raw', self.recibir_imagen,
+            qos_profile_sensor_data
+        )
+        self.create_subscription(
+            CameraInfo, 'cam_1/color/camera_info', self.recibir_info_camara,
+            qos_profile_sensor_data
+        )
+        self.create_subscription(
+            LaserScan, 'scan', self.recibir_scan, qos_profile_sensor_data
+        )
+
+        # TODO: arrancá por acá esta parte del workshop. Creá self.publisher_,
+        # el publisher de LaserScan en el tópico 'scan_rojo' (mismo patrón que
+        # create_subscription de arriba, pero con create_publisher).
+        self.publisher_ = self.create_publisher(LaserScan, 'scan_rojo', qos_profile_sensor_data)
+
+    def recibir_imagen(self, msg: Image):
+        # Se guarda el mensaje y se convierte solo la imagen que se usa.
+        self.ultima_imagen = msg
+        self.imagenes.append((Time.from_msg(msg.header.stamp).nanoseconds * 1e-9, msg))
+
+    def imagen_para(self, scan: LaserScan):
+        """La imagen más cercana al instante del scan, o None si están muy lejos."""
+        t_scan = Time.from_msg(scan.header.stamp).nanoseconds * 1e-9 + scan.scan_time / 2
+        desfase, msg = min(((abs(t - t_scan), m) for t, m in self.imagenes),
+                           key=lambda par: par[0])
+        if 0 <= self.desfase_maximo < desfase:
+            self.salteados += 1
+            if self.salteados <= 20:
+                if not self.aviso_desfase_mostrado:
+                    self.get_logger().warn(
+                        f'Imagen y scan desfasados {desfase:.2f} s: se saltean esos scans '
+                        '(desfase_maximo_imagen)')
+                    self.aviso_desfase_mostrado = True
+                return None
+            # Muchos seguidos: los relojes de la cámara y del lidar no coinciden.
+            # Mejor la imagen más reciente que quedarse sin detección.
+            self.get_logger().warn(
+                f'{self.salteados} scans seguidos desfasados ({desfase:.2f} s): '
+                'se usa la imagen más reciente', throttle_duration_sec=10.0)
+            msg = self.imagenes[-1][1]
+        else:
+            self.salteados = 0
+        return self.puente.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+    def recibir_info_camara(self, msg: CameraInfo):
+        # K es la matriz intrínseca 3x3 en fila: [fx 0 cx; 0 fy cy; 0 0 1]
+        self.info_camara = {
+            'fx': msg.k[0], 'fy': msg.k[4],
+            'cx': msg.k[2], 'cy': msg.k[5],
+            'frame_id': msg.header.frame_id,
+            'width': msg.width, 'height': msg.height,
+        }
+
+    def obtener_transform_laser_a_camara(self, frame_id_scan):
+        """Busca en tf2 la transformada del frame del lidar al frame
+        óptico de la cámara. None si todavía no está disponible (por
+        ejemplo, en el primer instante después de lanzar el nodo)."""
+        try:
+            return self.tf_buffer.lookup_transform(
+                self.info_camara['frame_id'], frame_id_scan, Time()
+            )
+        except tf2_ros.TransformException as e:
+            if not self.aviso_tf_mostrado:
+                self.get_logger().warn(f'Todavía no hay tf laser->cámara: {e}')
+                self.aviso_tf_mostrado = True
+            return None
+
+    def recibir_scan(self, msg: LaserScan):
+        """
+        TODO: callback del /scan — corre una vez por cada scan que llega.
+        Es el segundo corazón del workshop, el que junta todo:
+
+          1. Si todavía no llegó ninguna imagen o ningún camera_info
+             (self.ultima_imagen / self.info_camara son None), no hacer
+             nada (return).
+          2. Pedir la transformada con
+             self.obtener_transform_laser_a_camara(msg.header.frame_id).
+             Si da None (todavía no está en tf2), return.
+          3. De transform.transform sacar la traslación (.translation, con
+             .x/.y/.z) y la rotación (.rotation, con .x/.y/.z/.w), y armar
+             la matriz de rotación con cuaternion_a_rotacion(...).
+          4. Armar los arrays rangos (np.array(msg.ranges)) y angulos
+             (msg.angle_min + np.arange(n) * msg.angle_increment, con
+             n = len(rangos)).
+          5. Armar "validos": un array de bool, True donde el rango es
+             finito (np.isfinite) y está entre msg.range_min y
+             msg.range_max.
+          6. Llamar a puntos_laser_a_pixeles(...) con esos rangos/angulos,
+             la rotación, la traslación, y los intrínsecos de
+             self.info_camara (fx, fy, cx, cy) — te devuelve (u, v,
+             adelante).
+          7. Armar "dentro_de_imagen": adelante Y u/v caen dentro del
+             ancho/alto de self.info_camara (0 <= u < ancho, 0 <= v < alto).
+          8. Convertir self.ultima_imagen a HSV y llamar a mascara_rojo(...)
+             con los parámetros de self (hue_rojo_bajo_1, etc.) para
+             obtener la máscara de rojo de la imagen actual.
+          9. Armar "es_rojo": un array de bool del mismo largo que rangos,
+             en False por defecto, y en True donde dentro_de_imagen es
+             True Y la máscara vale >0 en el pixel (v, u) correspondiente
+             (ojo con el orden: las imágenes se indexan [fila, columna] =
+             [v, u], no [u, v]). Tip: primero sacá los índices donde
+             dentro_de_imagen es True con np.where(...), y usalos para
+             indexar u, v y la máscara de una sola vez (evita tener que
+             filtrar por fuera de rango antes de castear a int).
+          10. Armar rangos_filtrados con np.where(validos & es_rojo,
+              rangos, math.inf) — los puntos que no cumplen las dos
+              condiciones quedan en infinito (sin retorno).
+          11. Armar un LaserScan nuevo, copiando header, angle_min,
+              angle_max, angle_increment, time_increment, scan_time,
+              range_min y range_max del mensaje original, y poniendo
+              rangos_filtrados.tolist() como ranges. Publicarlo en
+              self.publisher_.
+        """
+        # 1. Sin imagen o sin intrínsecos no hay sobre qué proyectar
+        if self.ultima_imagen is None or self.info_camara is None:
+            return
+
+        imagen = self.imagen_para(msg)
+        if imagen is None:
+            return
+
+        # 2. Transformada lidar -> cámara
+        transform = self.obtener_transform_laser_a_camara(msg.header.frame_id)
+        if transform is None:
+            return
+
+        # 3. Traslación y rotación
+        t = transform.transform.translation
+        q = transform.transform.rotation
+        traslacion = np.array([t.x, t.y, t.z])
+        rotacion = cuaternion_a_rotacion(q.x, q.y, q.z, q.w)
+
+        # 4. Rangos y ángulos de cada rayo
+        rangos = np.array(msg.ranges)
+        angulos = msg.angle_min + np.arange(len(rangos)) * msg.angle_increment
+
+        # 5. Mediciones válidas
+        validos = (
+            np.isfinite(rangos)
+            & (rangos >= msg.range_min)
+            & (rangos <= min(msg.range_max, self.rango_maximo))
+        )
+
+        # 6. Proyección de cada punto a la imagen
+        info = self.info_camara
+        u, v, adelante = puntos_laser_a_pixeles(
+            rangos, angulos, rotacion, traslacion,
+            info['fx'], info['fy'], info['cx'], info['cy']
+        )
+
+        # 7. Puntos que caen adentro de la imagen (las comparaciones con nan
+        # dan False, así que los rayos inválidos se descartan solos)
+        ancho, alto = info['width'], info['height']
+        dentro_de_imagen = adelante & (u >= 0) & (u < ancho) & (v >= 0) & (v < alto)
+
+        # 8. Máscara de rojo de la imagen actual
+        imagen_hsv = cv2.cvtColor(imagen, cv2.COLOR_BGR2HSV)
+        mascara = mascara_rojo(
+            imagen_hsv,
+            self.hue_rojo_bajo_1, self.hue_rojo_alto_1,
+            self.hue_rojo_bajo_2, self.hue_rojo_alto_2,
+            self.saturacion_min, self.valor_min
+        )
+        if self.nucleo_erosion is not None:
+            mascara = cv2.erode(mascara, self.nucleo_erosion)
+
+        # 9. Rayos cuyo pixel es rojo (la imagen se indexa [fila, columna] = [v, u])
+        es_rojo = np.zeros(len(rangos), dtype=bool)
+        indices = np.where(dentro_de_imagen)[0]
+        columnas = u[indices].astype(int)
+        filas = v[indices].astype(int)
+        es_rojo[indices] = mascara[filas, columnas] > 0
+        es_rojo &= ~self.ocluidos(rangos, u, validos & dentro_de_imagen, es_rojo)
+
+        # 10. Lo que no es válido y rojo queda en infinito
+        rangos_filtrados = np.where(validos & es_rojo, rangos, math.inf)
+
+        # 11. Publicar el scan filtrado
+        scan_rojo = LaserScan()
+        scan_rojo.header = msg.header
+        scan_rojo.angle_min = msg.angle_min
+        scan_rojo.angle_max = msg.angle_max
+        scan_rojo.angle_increment = msg.angle_increment
+        scan_rojo.time_increment = msg.time_increment
+        scan_rojo.scan_time = msg.scan_time
+        scan_rojo.range_min = msg.range_min
+        scan_rojo.range_max = msg.range_max
+        scan_rojo.ranges = rangos_filtrados.tolist()
+        self.publisher_.publish(scan_rojo)
+
+    def ocluidos(self, rangos, u, visibles, es_rojo):
+        """Rayos rojos con otro rayo más corto en casi la misma columna de la imagen."""
+        ocluido = np.zeros(len(rangos), dtype=bool)
+        if self.ventana_oclusion <= 0:
+            return ocluido
+        vis = np.where(visibles)[0]
+        for i in np.where(es_rojo & visibles)[0]:
+            cerca = vis[np.abs(u[vis] - u[i]) < self.ventana_oclusion]
+            if np.any(rangos[cerca] < rangos[i] - self.margen_oclusion):
+                ocluido[i] = True
+        return ocluido
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    nodo = DetectorScanColor()
+    try:
+        rclpy.spin(nodo)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        nodo.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

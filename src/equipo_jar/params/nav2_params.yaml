@@ -1,0 +1,753 @@
+# nav2_params.yaml de semana-09-nav2 — Checkpoints 1-4 (workshop completo).
+#
+# amcl:/map_server: Checkpoint 1. global_costmap:/local_costmap: Checkpoint
+# 2. controller_server: Checkpoint 3. bt_navigator:/planner_server:
+# Checkpoint 4. Cada sección tiene comentario parámetro por parámetro,
+# salvo la plomería sin foco pedagógico propio (map_saver:, smoother_server:,
+# behavior_server:, robot_state_publisher:, waypoint_follower:,
+# velocity_smoother:, y la lista larga de plugin_lib_names de bt_navigator:)
+# — necesaria para que navigation_launch.py de nav2_bringup active el grupo
+# completo, pero no vinculada a ningún checkpoint puntual.
+# No es un archivo por checkpoint: un solo nav2_params.yaml que fue
+# creciendo a medida que se sumó cada uno.
+#
+# Referencia oficial de cada parámetro de amcl (la lista completa, con más
+# detalle del que entra en los comentarios de acá):
+# https://docs.nav2.org/configuration/packages/configuring-amcl.html
+
+amcl:
+  ros__parameters:
+    # use_sim_time lo pone el launch (true en el sim, false en el robot).
+
+    # alpha1-alpha4: ruido del modelo de movimiento (predicción), el mismo
+    # rol que gamma1-gamma6 en tu localizador.py de semana 06, aunque acá
+    # hay menos términos porque el modelo diferencial de Nav2 no separa
+    # x/y como el mecanum. alpha5 es la excepción: solo se usa con
+    # robot_model_type: OmniMotionModel (ver más abajo) y es el término
+    # extra de ruido que aparece por tener desplazamiento lateral — no es
+    # una traducción 1:1, pero cumple el mismo rol que gamma5 en tu fórmula
+    # de std_rot (gamma4·dx² + gamma5·dy² + gamma6·dθ²): ahí tampoco es
+    # ruido "del" desplazamiento lateral en sí, sino ruido rotacional que
+    # ese desplazamiento lateral termina metiendo.
+    alpha1: 0.2 # ruido de rotación causado por rotación
+    alpha2: 0.2 # ruido de rotación causado por traslación
+    alpha3: 0.2 # ruido de traslación causado por traslación
+    alpha4: 0.2 # ruido de traslación causado por rotación
+    alpha5: 0.2 # ruido de traslación lateral (solo con modelo omni)
+
+    # Frame del robot — mismo base_footprint que usaste en semana 06.
+    base_frame_id: "base_footprint"
+
+    # Beam skipping: un mecanismo opcional para que AMCL ignore, rayo por
+    # rayo, los que no calzan con ninguna partícula (útil si hay
+    # obstáculos dinámicos no mapeados que si no "envenenarían" la
+    # corrección entera). Lo dejamos apagado (do_beamskip: false) — no lo
+    # necesitamos para este mapa/mundo, y los tres parámetros de abajo
+    # solo importan si lo prendés.
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+
+    # Frame del mapa — el frame que AMCL va a publicar corrigiendo el
+    # drift, igual que hacía tu tf2_ros.TransformBroadcaster de semana 06.
+    global_frame_id: "map"
+
+    # Parámetro del modelo de sensor "beam" (rayos que rebotan antes de
+    # llegar a la pared). No se usa con laser_model_type: likelihood_field
+    # (el que tenemos abajo) — queda en su default porque no aplica.
+    lambda_short: 0.1
+
+    # Distancia máxima (m) considerada al precalcular el campo de
+    # verosimilitud — el mismo "halo" que vos armaste a mano en
+    # campo_de_probabilidad() (semana 06), acá resuelto adentro del nodo.
+    laser_likelihood_max_dist: 2.0
+
+    # Rango del lidar que AMCL considera válido. -1.0 en el mínimo quiere
+    # decir "usá el que reporta el sensor", no un piso fijo.
+    laser_max_range: 100.0
+    laser_min_range: -1.0
+
+    # El modelo de sensor: campo de verosimilitud precalculado (lo que
+    # programaste en campo_verosimilitud.py de semana 06) en vez de
+    # simular cada rayo del lidar en vivo contra el mapa — mismo motivo de
+    # performance que ahí.
+    laser_model_type: "likelihood_field"
+
+    # Cuántos rayos del scan completo (de 1080) se usan para pesar cada
+    # partícula — el equivalente directo de tu submuestreo_scan de
+    # semana 06 (ahí bajarlo = más preciso y más lento, acá también).
+    # 120 en vez de 60: en los pasillos largos del laberinto, con 60 la
+    # corrección no alcanzaba a compensar el drift de la odometría.
+    max_beams: 120
+
+    # Rango de partículas del filtro adaptativo. En semana 06 usabas un
+    # num_particulas fijo; acá AMCL ajusta solo la cantidad entre estos
+    # dos límites según qué tan concentrada esté la nube (ver pf_err/pf_z
+    # más abajo).
+    max_particles: 2000
+    min_particles: 500
+
+    # Frame de la odometría — igual que en semana 06.
+    odom_frame_id: "odom"
+
+    # Parámetros del muestreo adaptativo KLD: qué tan preciso (pf_err) y
+    # con qué confianza (pf_z) tiene que estar la nube para que AMCL deje
+    # de sumar partículas. No tienen equivalente en tu filtro de semana 06
+    # porque ahí el número de partículas era fijo, no adaptativo.
+    pf_err: 0.05
+    pf_z: 0.99
+
+    # Recuperación automática: inyectar partículas al azar si el filtro
+    # promedio empieza a pesar mal (señal de que se perdió). En 0.0 queda
+    # desactivada — con pose inicial aproximada no la necesitamos, pero es
+    # la respuesta de Nav2 al problema de "el filtro no se puede recuperar
+    # si diverge" que viste en el desafío extra de semana 06.
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+
+    # Cada cuántas correcciones se resamplea. 1 = en cada una, igual que
+    # tu remuestrear() de semana 06 (que también resampleaba en cada scan).
+    resample_interval: 1
+
+    # El modelo de movimiento (predicción): "nav2_amcl::DifferentialMotionModel"
+    # (el default de nav2_bringup, pensado para un robot que tiene que
+    # apuntar hacia donde quiere ir) o "nav2_amcl::OmniMotionModel". El
+    # ROSMASTER X3 es mecanum — holonómico, se puede desplazar de costado
+    # sin girar — así que usamos el segundo. Es exactamente el mismo
+    # dilema que resolviste en semana 06 al elegir el modelo mecanum en
+    # vez del de Thrun (rot1-trans-rot2) para mover_particulas(): con el
+    # modelo diferencial, un desplazamiento lateral puro le hace inventar
+    # una rotación que nunca ocurrió, y le mete ruido angular a un robot
+    # que no rotó.
+    #
+    # Igual usamos el diferencial: medido en el simulador con odometría
+    # perfecta, el OmniMotionModel de este nav2 acumulaba error con la
+    # distancia (0.6 m al cruzar el laberinto) y el robot terminaba contra
+    # las paredes. Con el diferencial el error queda en ~0.1 m. Funciona
+    # porque el controller (Regulated Pure Pursuit) nunca se desplaza de
+    # costado. Si se vuelve a DWB con strafe, el diferencial se pierde.
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+
+    # Cada cuánto (Hz) AMCL guarda la última pose estimada en el parameter
+    # server, para no perderla del todo si el nodo se reinicia.
+    save_pose_rate: 0.5
+
+    # Desvío (m) de la gaussiana del campo de verosimilitud — el mismo rol
+    # que sigma_sensor en tu campo_verosimilitud.py de semana 06 (chico =
+    # exigente, grande = permisivo). 0.1 en vez de 0.2: en pasillos de
+    # ~0.8 m, un halo de 0.2 casi no distingue estar en el centro de estar
+    # pegado a una pared.
+    sigma_hit: 0.1
+
+    # Si AMCL publica la transformada map -> odom. Tiene que ser true: es
+    # la transformada que corrige el drift, el objetivo central de todo
+    # esto (ver README, sección de teoría de semana 06 si hace falta
+    # repasar map/odom/base_link).
+    tf_broadcast: true
+
+    # Cuánto "en el futuro" extiende AMCL la validez de la transformada
+    # que publica, para que otros nodos (RViz, y más adelante los
+    # costmaps) no se quejen si les llega un toque tarde.
+    transform_tolerance: 1.0
+
+    # Cuánto tiene que rotar (rad) / trasladarse (m) el robot antes de que
+    # AMCL dispare una corrección nueva — evita recalcular en cada scan
+    # mientras el robot está parado. Más chicos que el default (0.2 rad /
+    # 0.25 m) para corregir más seguido y no dejar crecer el error.
+    update_min_a: 0.1
+    update_min_d: 0.1
+
+    # Pesos que combinan las distintas fuentes de probabilidad del modelo
+    # de sensor: qué tan seguido un rayo da justo en un obstáculo esperado
+    # (z_hit) vs. se va al rango máximo (z_max) vs. es ruido aleatorio
+    # (z_rand) vs. rebota corto (z_short). Tienen que sumar ~1. Con z_rand
+    # en 0.5 la mitad de cada rayo se trataba como ruido y el lidar casi no
+    # corregía; el laberinto es estático, así que se le cree más al lidar.
+    z_hit: 0.85
+    z_max: 0.05
+    z_rand: 0.05
+    z_short: 0.05
+
+    # Tópico del lidar — igual que en todas las semanas anteriores.
+    scan_topic: scan
+
+    # Sin pose inicial AMCL no publica map -> odom y nav2 no arranca. Ojo:
+    # esta pose entra con covarianza cero (todas las partículas exactamente
+    # en el origen), y los jueces ponen el robot *cerca* del origen (§1).
+    # Por eso, al recibir /map, nodo_equipo vuelve a inicializar el filtro
+    # con dispersión (dispersion_inicial_* en params.yaml) por el tópico
+    # equipo/pose_inicial (remapeado en el launch).
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
+
+# map_server:
+#   ros__parameters:
+#     use_sim_time: True
+#     # Se sobreescribe con el argumento `map` del launch (ver
+#     # launch/nav2_semana09.launch.py) — por eso queda vacío acá.
+#     yaml_filename: ""
+
+# ---------------------------------------------------------------------------
+# Checkpoint 2 — costmap global + local. Mismo problema que semana 03
+# (evasión: inflar obstáculos para no chocar) y semana 07 (obstáculos no
+# mapeados: comparar el scan en vivo contra el mapa estático), acá resuelto
+# por la arquitectura de dos costmaps de Nav2 en vez de código propio.
+# ---------------------------------------------------------------------------
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      # Recalcula el costmap completo 1 vez/seg — alcanza porque su única
+      # fuente es el mapa estático (no cambia) más el scan proyectado sobre
+      # ese mapa fijo; no hace falta la frecuencia del local.
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      # Frame `map`: fijo, global, el mismo que corrige AMCL. A diferencia
+      # del local (frame `odom`), acá "quieto" quiere decir quieto en el
+      # mundo real, no relativo al robot.
+      global_frame: map
+      robot_base_frame: base_footprint
+      # Footprint real del X3 (URDF: chasis 0.300 x 0.1994 m con ruedas
+      # incluidas, corrido 3 cm hacia atrás de base_footprint) en vez del
+      # círculo circunscripto (robot_radius: 0.18). Con el círculo el robot
+      # "medía" 0.36 m de ancho para Nav2 y los huecos de ~0.4 m entre las
+      # cajas y las paredes le parecían cerrados, aunque de costado (0.20 m)
+      # pasa holgado.
+      footprint: "[[0.12, 0.10], [0.12, -0.10], [-0.18, -0.10], [-0.18, 0.10]]"
+      footprint_padding: 0.04
+      resolution: 0.05
+      # true: las celdas fuera del rango de todos los sensores quedan
+      # "desconocido" en vez de "libre" — mismo criterio conservador que
+      # semana 07 (no asumir libre lo que nunca viste).
+      track_unknown_space: true
+      # Tres capas apiladas, cada una hace un trabajo: el mapa estático de
+      # semana 06 abajo, el scan en vivo encima (marca lo que el mapa no
+      # tiene) y la inflación arriba de todo (el margen de seguridad).
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # La capa que lee el mapa estático (el mismo .yaml de map_server) y
+      # lo pinta como ocupado — el equivalente de comparar contra el mapa
+      # que hacías a mano en semana 07, acá ya resuelto por la capa.
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      # La capa que agrega, encima del mapa estático, lo que el lidar ve
+      # ahora — el mismo dato que semana 07 comparaba contra el mapa para
+      # detectar "esto no debería estar acá". A diferencia del local (más
+      # abajo), acá se actualiza más espaciado y no arranca de cero cada
+      # vez, así que un objeto no mapeado que el robot ya dejó atrás puede
+      # seguir marcado acá por un rato más.
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+      # El "halo" alrededor de cada obstáculo (mapeado o no): mismo rol que
+      # el margen de seguridad que programabas a mano en la evasión de
+      # semana 03, acá una capa más en vez de un `if distancia < margen`.
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # Costmap global (el que usa el planner): más ancho y suave que el
+        # local, para que el camino vaya por el centro de los pasillos y
+        # abra las curvas. Con 0.35 / 5.0 el plan cortaba las esquinas de
+        # las vueltas en U (pasaba a 0.12 m de la punta de la pared) y el
+        # robot, que es un rectángulo de 0.30 x 0.20, no podía doblar ahí.
+        # El local (el que usa DWB para no chocar) sigue en 0.35 / 5.0.
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.5
+      always_send_full_costmap: True
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      # 5 Hz: mucho más seguido que el global (1 Hz) porque acá lo que
+      # importa es lo que el lidar ve ahora, no el mapa fijo — el mismo
+      # motivo por el que en semana 07 comparabas contra /scan en cada
+      # vuelta del loop.
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      # Frame `odom`, no `map`: el costmap local es una ventana que viaja
+      # con el robot, no le importa dónde está en el mapa global sino qué
+      # tiene alrededor ahora mismo.
+      global_frame: odom
+      robot_base_frame: base_footprint
+      # rolling_window + width/height: la ventana de 3x3 m se recentra sola
+      # en el robot en vez de ser un costmap fijo — por eso "local".
+      rolling_window: true
+      width: 3
+      height: 3
+      # 0.025 en el local: con 0.05 cada borde de un hueco pierde hasta una
+      # celda y el footprint "toca" paredes que en realidad están a 2-3 cm.
+      resolution: 0.025
+      footprint: "[[0.12, 0.10], [0.12, -0.10], [-0.18, -0.10], [-0.18, 0.10]]"
+      # Igual que el global: con 0.01 DWB llevaba el centro del robot a la zona
+      # inscripta del global en las puntas de pared y el planner fallaba con
+      # "Starting point in lethal space" hasta que un recovery lo sacaba.
+      footprint_padding: 0.03
+      # voxel_layer en vez de obstacle_layer: guarda una grilla 3D (con
+      # altura) en vez de un plano 2D — más caro, pero el costmap local sí
+      # se lo puede permitir porque su área es chica (3x3 m contra el mapa
+      # completo del global).
+      # Sin static_layer: el mapa se dibuja con la pose de amcl, y con 10 cm
+      # de error las paredes del mapa quedaban encima del robot ("No valid
+      # trajectories" con la pared real a 20 cm). El lidar ve todo alrededor
+      # y siempre está alineado con el robot.
+      plugins: ["voxel_layer", "inflation_layer"]
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # Más corto y empinado que el de nav2_bringup (0.55 / 3.0): con
+        # 0.55 todo el ancho de un pasillo de 0.8 m tenía costo alto y el
+        # robot no "se animaba" a cruzarlo. Con esto el costo cae rápido
+        # pasando el footprint y el centro del pasillo queda casi libre.
+        cost_scaling_factor: 5.0
+        inflation_radius: 0.35
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: True
+        publish_voxel_map: True
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        max_obstacle_height: 2.0
+        mark_threshold: 0
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          # clearing/marking true en el local: cada vuelta de scan marca lo
+          # nuevo Y borra lo que ya no ve — por eso un objeto no mapeado
+          # que el robot deja atrás desaparece rápido del local (a
+          # diferencia del global). Esa asimetría es el punto pedagógico
+          # central del checkpoint: local reactivo y de corto alcance,
+          # global estable y de mapa completo.
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+      # A diferencia del global, el local SÍ trae la capa estática (para
+      # que la ventana rodante también sepa dónde están las paredes reales
+      # cerca del robot, no solo lo que ve el lidar).
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      always_send_full_costmap: True
+
+# ---------------------------------------------------------------------------
+# Checkpoint 3 — controller (DWB). Mismo problema que la máquina de estados
+# reactiva de semana 03 (girar, avanzar, reintentar según lo que ve el
+# lidar), acá resuelto por un plugin de controller que sigue el plan del
+# global_costmap evitando lo que marca el local_costmap, en vez de un
+# `if`/`elif` a mano.
+# ---------------------------------------------------------------------------
+
+controller_server:
+  ros__parameters:
+    # 10 Hz: cada cuánto controller_server le pide una nueva velocidad al
+    # plugin — el mismo rol que la frecuencia de tu loop de control manual
+    # en semana 03, ahora declarativo en vez de un `rate.sleep()`.
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    # Cuántos segundos tolera controller_server que el plugin de controller
+    # falle en producir un comando de velocidad válido (p. ej. error interno
+    # de cómputo) antes de disparar una recovery. No tiene que ver con si el
+    # robot se mueve o no — esa detección es un mecanismo distinto, la hace
+    # `progress_checker` (ver abajo).
+    failure_tolerance: 0.5
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    # Un solo plugin de controller activo, con el nombre que usás abajo
+    # para configurarlo (`FollowPath`). Nav2 permite tener varios y
+    # cambiar entre ellos, pero acá no hace falta. `FollowPathDWB` (más
+    # abajo) queda configurado pero no se carga: para volver a DWB,
+    # intercambiá los nombres FollowPath/FollowPathDWB (el behavior tree
+    # pide el controller "FollowPath") y volvé amcl a OmniMotionModel.
+    controller_plugins: ["FollowPath"]
+
+    # Define "trabado": si en `movement_time_allowance` segundos el robot
+    # no se movió al menos `required_movement_radius` metros, no está
+    # progresando — dispara una recovery.
+    # PoseProgressChecker: girar también cuenta como progreso (en una vuelta
+    # en U el robot se acomoda girando antes de avanzar).
+    progress_checker:
+      plugin: "nav2_controller::PoseProgressChecker"
+      required_movement_radius: 0.3
+      required_movement_angle: 0.5
+      movement_time_allowance: 10.0
+    # Define "llegué": tolerancia en posición (xy) y orientación (yaw)
+    # para dar el goal por cumplido — el mismo margen que en semana 08
+    # usabas para decidir si ya estabas "en" un waypoint.
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.1
+      # Permisivo (~180°) a propósito: sin `RotateToGoal` (ver FollowPath
+      # más abajo) el robot no necesariamente termina mirando hacia la
+      # orientación final del goal. Con una tolerancia chica acá,
+      # NavigateToPose podría quedar reintentando/replanificando sin
+      # terminar nunca. Orientación final estricta queda como Desafío
+      # extra (ver README).
+      yaw_goal_tolerance: 3.15
+    # Regulated Pure Pursuit: sigue el plan global persiguiendo un punto
+    # que está `lookahead_dist` adelante sobre el camino. A diferencia de
+    # DWB no puntúa trayectorias contra un objetivo local, así que no se
+    # traba en los pasillos angostos donde el plan dobla en U (ver
+    # FollowPathDWB). Frena solo cerca de obstáculos y en curvas cerradas,
+    # y gira en el lugar cuando el camino cambia mucho de dirección. No usa
+    # el desplazamiento lateral del mecanum.
+    FollowPathRPP:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.25
+      # Distancia al punto que persigue: chica para no cortar esquinas en
+      # pasillos de ~0.8 m (con 0.2 o menos el robot no arrancaba).
+      lookahead_dist: 0.35
+      min_lookahead_dist: 0.25
+      max_lookahead_dist: 0.6
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: false
+      transform_tolerance: 0.2
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.6
+      # Frena antes de chocar con algo que no está en el plan.
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      # Más lento en curvas cerradas y cerca de las paredes.
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.1
+      cost_scaling_dist: 0.3
+      cost_scaling_gain: 1.0
+      # Tiene que coincidir con el inflation_layer de los costmaps.
+      inflation_cost_scaling_factor: 5.0
+      # Si el camino sale a más de 45° de donde mira, gira en el lugar.
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.785
+      rotate_to_heading_angular_vel: 1.0
+      max_angular_accel: 3.2
+      allow_reversing: false
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
+
+    # DWB (Dynamic Window Approach): en cada ciclo genera un lote de
+    # trayectorias candidatas de corto alcance, les pone puntaje según los
+    # `critics` de abajo, y ejecuta la de mejor puntaje — el reemplazo
+    # directo de la máquina de estados de semana 03 (ahí decidías "girar" o
+    # "avanzar" a mano; acá el plugin evalúa opciones y elige). No se carga
+    # (ver controller_plugins).
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      # En True publica en /evaluation todas las trayectorias de cada ciclo
+      # (miles): sirve para depurar, pero frena el loop de control y el
+      # watchdog del robot lo para si pasa 0.5 s sin /cmd_vel.
+      debug_trajectory_details: False
+      # Hasta dónde (m, medido sobre el plan) mira DWB para elegir su
+      # objetivo local. Con el default (2.0), cuando el plan dobla en U
+      # pasando una puerta angosta el objetivo queda del otro lado de la
+      # pared: GoalDist/GoalAlign tiran para un lado, PathDist/PathAlign
+      # para el otro, y gana quedarse quieto ("Failed to make progress").
+      # Con 1.0 pasaba algo parecido justo antes de las curvas: volviendo a
+      # la largada en maze_1, DWB retrocedía en vez de seguir el plan. Con
+      # 0.7 esa vuelta llega en 31 s y el circuito de prueba sale 12/12 en
+      # 57 s (con 1.0: aborta / 59.5 s; con 0.5: 43 s / 66.6 s).
+      forward_prune_distance: 0.7
+      # Límites de velocidad: los topes que aplica el propio robot (0.5 m/s
+      # en x, 0.5 m/s en y, 1 rad/s de giro). El reto es de velocidad, así
+      # que se usan enteros.
+      min_vel_x: -0.3
+      # min/max_vel_y: strafe lateral, ¡en 0 por default en nav2_bringup
+      # porque asume un robot diferencial que no puede moverse de costado!
+      # El X3 es mecanum — sí puede — así que este es el cambio central
+      # del checkpoint: sin esto, DWB nunca generaría una trayectoria
+      # lateral aunque el robot fuera capaz de hacerla.
+      min_vel_y: -0.3
+      max_vel_x: 0.3
+      max_vel_y: 0.3
+      max_vel_theta: 0.6
+      # Sin trayectorias "quieto": DWB descarta las de menos de 0.08 m/s que
+      # además giran menos de 0.3 rad/s. En las vueltas en U pegadas a una
+      # pared, quedarse quieto empataba con avanzar (GoalAlign/PathAlign) y
+      # el robot no se movía hasta que saltaba el progress checker.
+      min_speed_xy: 0.08
+      # El robot limita cada eje por separado, así que en diagonal puede ir
+      # a 0.3 en x y 0.3 en y a la vez: 0.3 * sqrt(2).
+      max_speed_xy: 0.42
+      min_speed_theta: 0.3
+      acc_lim_x: 1.2
+      acc_lim_y: 1.2
+      acc_lim_theta: 1.8
+      decel_lim_x: -1.2
+      decel_lim_y: -1.2
+      decel_lim_theta: -1.8
+      # vx/vy/vtheta_samples: cuántas velocidades distintas de cada eje
+      # prueba DWB por ciclo para armar el lote de trayectorias candidatas
+      # — más muestras = más opciones evaluadas, pero más costo. vy tiene
+      # menos que vx/vtheta porque el rango de velocidad lateral también
+      # es menor. Con 20/10/20 (4000 trayectorias) el loop no llegaba a
+      # 20 Hz: salían ~10 comandos por segundo. Con 0.5 m/s de tope hacen
+      # falta saltos de velocidad finos (~0.07 m/s en x, ~0.1 en y) para que
+      # pueda frenar y acomodarse en el objetivo sin quedar oscilando; con
+      # 15 x 11 x 9 (~1500) entra en 20 Hz.
+      vx_samples: 15
+      vy_samples: 11
+      vtheta_samples: 9
+      # Cuántos segundos hacia adelante simula cada trayectoria candidata
+      # antes de puntuarla. 1.2 s a 0.5 m/s = 0.6 m hacia adelante.
+      sim_time: 1.2
+      # Cada cuántos metros de la trayectoria simulada se chequea el
+      # footprint contra el costmap. Con 0.05 eran ~12 chequeos del
+      # rectángulo entero por trayectoria (x ~1500 trayectorias) y el loop
+      # no llegaba a 20 Hz; 0.1 sigue siendo el doble de fino que el
+      # footprint más angosto del robot (0.2 m).
+      linear_granularity: 0.1
+      angular_granularity: 0.025
+      transform_tolerance: 0.2
+      xy_goal_tolerance: 0.1
+      trans_stopped_velocity: 0.25
+      short_circuit_trajectory_evaluation: True
+      stateful: True
+      # Los "críticos" que puntúan cada trayectoria candidata, cada uno
+      # mirando algo distinto (evitar obstáculos, alinearse con el plan
+      # global, avanzar hacia el goal). Sin RotateToGoal (el crítico
+      # default de nav2_bringup que fuerza girar para encarar el goal
+      # antes de avanzar): para una base holonómica no hace falta girar
+      # para desplazarse, y ese crítico asume que sí. Sumamos Twirling en
+      # su lugar para evitar que DWB gire sobre el eje sin necesidad, ya
+      # que tiene grados de libertad de sobra al no depender de girar.
+      # ObstacleFootprint en vez de BaseObstacle: BaseObstacle solo mira la
+      # celda del centro del robot; ObstacleFootprint chequea el rectángulo
+      # entero con su orientación, que es lo que permite pasar de costado
+      # por un hueco angosto.
+      critics: ["Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"]
+      ObstacleFootprint.scale: 0.14
+      # forward_point_distance: PathAlign/GoalAlign miden un punto que está
+      # esta distancia delante del robot. Con 0.1 la orientación casi no
+      # pesaba y DWB cruzaba los huecos angostos de costado (0.30 m de ancho
+      # en vez de 0.20) y quedaba con una esquina del footprint tocando la
+      # pared. Con 0.4 se alineaba tanto que casi nunca iba en reversa y se
+      # trababa cuando el camino arrancaba hacia atrás. 0.25 es el punto
+      # medio: ida a V1 en 27 s (2 de 2), contra 93 s con 0.1 y timeouts
+      # con 0.4.
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.25
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.25
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      # Más bajo que antes (10) para que se anime a girar y alinearse.
+      Twirling.scale: 5.0
+
+# ---------------------------------------------------------------------------
+# Checkpoint 4 — bt_navigator + planner_server. bt_navigator es el "director
+# de orquesta": corre el behavior tree que, ante un pedido de NavigateToPose,
+# le pide un camino al planner_server (más abajo) y se lo va pasando en
+# tramos al controller_server del Checkpoint 3 — el mismo ciclo
+# planificar/seguir que tenías que orquestar vos a mano en semana 08 con tu
+# lista de waypoints, acá resuelto por un árbol de comportamiento
+# preconfigurado en vez de tu propio bucle de "siguiente punto".
+# ---------------------------------------------------------------------------
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /odom
+    # Cada cuánto (ms) se re-evalúa el árbol completo — no confundir con
+    # controller_frequency (Checkpoint 3), que es la frecuencia del
+    # controller, un nivel más abajo.
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    wait_for_service_timeout: 1000
+    # Lista de nodos de behavior tree que Nav2 trae de fábrica (registrar
+    # una acción/condición nueva implicaría código C++ propio, no config) —
+    # es boilerplate de registro, no hay parámetro por parámetro que
+    # explicar acá; el árbol default de nav2_bringup (no versionado en este
+    # repo, se instala junto con el paquete) ya combina estos nodos en la
+    # secuencia planificar → seguir → reintentar ante fallos que usa
+    # NavigateToPose.
+    plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_smooth_path_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_spin_action_bt_node
+      - nav2_wait_action_bt_node
+      - nav2_assisted_teleop_action_bt_node
+      - nav2_back_up_action_bt_node
+      - nav2_drive_on_heading_bt_node
+      - nav2_clear_costmap_service_bt_node
+      - nav2_is_stuck_condition_bt_node
+      - nav2_goal_reached_condition_bt_node
+      - nav2_goal_updated_condition_bt_node
+      - nav2_globally_updated_goal_condition_bt_node
+      - nav2_is_path_valid_condition_bt_node
+      - nav2_initial_pose_received_condition_bt_node
+      - nav2_reinitialize_global_localization_service_bt_node
+      - nav2_rate_controller_bt_node
+      - nav2_distance_controller_bt_node
+      - nav2_speed_controller_bt_node
+      - nav2_truncate_path_action_bt_node
+      - nav2_truncate_path_local_action_bt_node
+      - nav2_goal_updater_node_bt_node
+      - nav2_recovery_node_bt_node
+      - nav2_pipeline_sequence_bt_node
+      - nav2_round_robin_node_bt_node
+      - nav2_transform_available_condition_bt_node
+      - nav2_time_expired_condition_bt_node
+      - nav2_path_expiring_timer_condition
+      - nav2_distance_traveled_condition_bt_node
+      - nav2_single_trigger_bt_node
+      - nav2_goal_updated_controller_bt_node
+      - nav2_is_battery_low_condition_bt_node
+      - nav2_navigate_through_poses_action_bt_node
+      - nav2_navigate_to_pose_action_bt_node
+      - nav2_remove_passed_goals_action_bt_node
+      - nav2_planner_selector_bt_node
+      - nav2_controller_selector_bt_node
+      - nav2_goal_checker_selector_bt_node
+      - nav2_controller_cancel_bt_node
+      - nav2_path_longer_on_approach_bt_node
+      - nav2_wait_cancel_bt_node
+      - nav2_spin_cancel_bt_node
+      - nav2_back_up_cancel_bt_node
+      - nav2_assisted_teleop_cancel_bt_node
+      - nav2_drive_on_heading_cancel_bt_node
+      - nav2_is_battery_charging_condition_bt_node
+
+planner_server:
+  ros__parameters:
+    # Frecuencia esperada del plugin de abajo — solo para detectar si el
+    # planner está tardando de más, no cambia cómo planifica.
+    expected_planner_frequency: 20.0
+    # Un solo plugin de planner global, igual que `controller_plugins` en
+    # Checkpoint 3.
+    planner_plugins: ["GridBased"]
+    # NavFn: el mismo problema que tu A* de semana 08 (encontrar el camino
+    # más corto sobre una grilla de costos) resuelto por un planner de
+    # Nav2 en vez de tu propia implementación. Por default usa Dijkstra en
+    # vez de A* (ver use_astar más abajo) — la diferencia entre los dos es
+    # la misma que viste en semana 08: A* guía la búsqueda con una
+    # heurística hacia el objetivo, Dijkstra explora parejo en todas
+    # direcciones. Con `use_astar: false` el `GridBased` de acá corre
+    # Dijkstra puro sobre el costmap global del Checkpoint 2 — lo mismo
+    # que hacía tu implementación pero sin heurística.
+    # Smac 2D (A* sobre la grilla del costmap) en vez de NavFn. NavFn
+    # fallaba en los caminos largos con vueltas: "Failed to create a plan
+    # from potential when a legal potential was found" (calcula que el
+    # objetivo es alcanzable pero se pierde al reconstruir el camino), y sin
+    # plan el robot solo giraba en las recuperaciones. Se mantiene el nombre
+    # GridBased porque es el que pide el behavior tree.
+    GridBased:
+      plugin: "nav2_smac_planner/SmacPlanner2D"
+      # Si el objetivo cae en una celda ocupada, hasta qué distancia (m)
+      # acepta un punto alcanzable cerca (la misión ya corre los objetivos
+      # que caen sobre cajas, ver nodo_equipo).
+      tolerance: 0.25
+      downsample_costmap: false
+      downsampling_factor: 1
+      # Planificar cruzando celdas desconocidas del costmap global.
+      allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      # Cuánto pesa el costo de las celdas frente a la distancia: con más,
+      # el camino va por el centro de los pasillos y no pegado a las paredes.
+      cost_travel_multiplier: 3.0
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+
+# map_saver: parte del template default de nav2_bringup, pero ningún nodo
+# lo lee acá — ni localization_launch.py ni navigation_launch.py levantan
+# un map_saver_server (ese nodo sirve para volver a guardar el mapa desde
+# el costmap en vivo, no para navegar). Queda en el archivo por si en algún
+# momento hace falta ese flujo, inerte por ahora.
+map_saver:
+  ros__parameters:
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+    map_subscribe_transient_local: True
+
+smoother_server:
+  ros__parameters:
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors/AssistedTeleop"
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.1
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.6
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 1.8
+
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.5, 0.5, 1.0]
+    min_velocity: [-0.5, -0.5, -1.0]
+    max_accel: [2.5, 2.5, 3.2]
+    max_decel: [-2.5, -2.5, -3.2]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+# Si un nodo no responde al bond en este tiempo (s), el lifecycle_manager
+# resetea Nav2 entero (amcl vuelve a la pose inicial). 0 desactiva los bonds.
+lifecycle_manager:
+  ros__parameters:
+    bond_timeout: 4.0

@@ -1,0 +1,386 @@
+import math
+
+import numpy as np
+from scipy import ndimage
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
+                       QoSReliabilityPolicy, qos_profile_sensor_data)
+from rclpy.duration import Duration
+from rclpy.time import Time
+
+from nav_msgs.msg import OccupancyGrid, Odometry
+from sensor_msgs.msg import LaserScan
+from geometry_msgs.msg import Pose, PoseArray, Quaternion
+from visualization_msgs.msg import Marker, MarkerArray
+
+from tf2_ros import Buffer, TransformListener
+
+
+def yaw_de_quaternion(q: Quaternion) -> float:
+    """
+    Extrae el yaw de un quaternion.
+
+    Extrae el ángulo de yaw (rotación en el plano) de un quaternion.
+    Álgebra de siempre, no es el objetivo de este workshop — la misma
+    cuenta que ya usaste en semana 06.
+    """
+    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+
+def agrupar_en_rachas(booleanos: np.ndarray):
+    """
+    Agrupa los índices contiguos en rachas.
+
+    TODO: agrupar los índices contiguos de un array booleano en "rachas".
+
+    Un obstáculo real casi nunca genera un solo punto "no mapeado" suelto:
+    genera una racha de varios rayos seguidos del lidar pegando en la misma
+    cara del objeto (igual que ya viste con `/scan_rojo` en semana 04). Acá
+    identificamos esas rachas para después convertir cada una en un objeto.
+
+    Parámetro: `booleanos`, un array de N bools (uno por rayo del scan,
+    True donde ese rayo cayó en un punto "no mapeado").
+
+    Devolvé una lista de arrays de índices, uno por racha — por ejemplo,
+    para [F,F,T,T,T,F,T,T,F] tendría que devolver [[2,3,4], [6,7]].
+
+    Pasos sugeridos:
+      1. `np.flatnonzero(booleanos)` te da, en orden, los índices donde hay
+         `True`. Si viene vacío (no hay ningún `True`), devolvé `[]`
+         directamente.
+      2. Dos índices consecutivos de esa lista pertenecen a la misma racha
+         si difieren en exactamente 1 (son rayos contiguos del scan); una
+         racha nueva empieza donde el índice "salta" más que eso.
+         `np.diff(indices)` te da esas diferencias consecutivas;
+         `np.flatnonzero(diferencias > 1)` te da las posiciones (dentro de
+         `indices`) donde hay un salto — es decir, dónde cortar.
+      3. `np.split(indices, cortes)` parte el array de índices en esos
+         puntos. Ojo: `np.split` corta *antes* de cada posición que le
+         pasás, así que al array de cortes del paso 2 hay que sumarle 1
+         antes de pasárselo.
+      4. Caso especial — el scan es circular (el rayo en el índice 0 y el
+         último son angularmente contiguos, no hay "borde" real): si
+         quedó más de una racha, Y la primera empieza en el índice 0, Y la
+         última termina en el último índice del array, en realidad son la
+         misma racha partida en dos por el límite del array — hay que
+         unirlas (concatenar la última al principio de la primera, y sacar
+         la última de la lista).
+      5. Devolver la lista de rachas resultante.
+    """
+    indices = np.flatnonzero(booleanos)
+    if len(indices) == 0:
+        return []
+    diferencias = np.diff(indices)
+    cortes = np.flatnonzero(diferencias > 1) + 1
+    rachas = np.split(indices, cortes)
+    if len(rachas) > 1 and rachas[0][0] == 0 and rachas[-1][-1] == len(booleanos) - 1:
+        rachas[0] = np.concatenate([rachas[-1], rachas[0]])
+        rachas = rachas[:-1]
+    return [r.tolist() for r in rachas]
+
+
+class DetectorObstaculos(Node):
+    """
+    Detecta objetos rojos que no están en el mapa.
+
+    Toma los puntos rojos de /scan_rojo, los agrupa en objetos (rachas
+    contiguas del scan) y publica la coordenada en `map` de cada uno.
+
+    Como en la semana 10, corre con `umbral_probabilidad` en 101: pasan
+    todas las detecciones rojas y el mapa solo sirve para descartar los
+    puntos que caen fuera de sus límites.
+    """
+
+    def __init__(self):
+        super().__init__('detector_obstaculos')
+
+        self.declare_parameter('map_frame', 'map')
+        self.declare_parameter('umbral_probabilidad', 101.0)
+        self.declare_parameter('racha_minima', 3)
+        self.declare_parameter('distancia_minima_valida', 0.25)
+        # Mientras el robot gira más rápido que esto (rad/s) no se publican
+        # detecciones: en el giro los puntos rojos se corren por la pared
+        # (desfase entre imagen, scan y tf).
+        self.declare_parameter('giro_maximo_deteccion', 0.4)
+        # Puntos a menos de esto (m) de una celda no libre del mapa cuentan
+        # como pared. 0 (default) = como en el workshop. Hace falta cuando el
+        # detector corre sobre /scan completo (candidatos a víctima): con unos
+        # cm de error de localización, los rayos que pegan en las paredes caen
+        # en celdas libres y armarían objetos falsos a lo largo de ellas.
+        self.declare_parameter('margen_pared', 0.0)
+
+        self.map_frame = self.get_parameter('map_frame').value
+        self.umbral_probabilidad = self.get_parameter('umbral_probabilidad').value
+        self.racha_minima = self.get_parameter('racha_minima').value
+        self.distancia_minima_valida = self.get_parameter('distancia_minima_valida').value
+        self.giro_maximo = self.get_parameter('giro_maximo_deteccion').value
+        self.giro_actual = 0.0
+        self.margen_pared = self.get_parameter('margen_pared').value
+        self.dist_pared = None
+
+        self.campo = None
+        self.info_mapa = None
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+        self.aviso_tf_mostrado = False
+
+        # El juez publica /map una sola vez, retenido: transient local, para
+        # que igual llegue aunque este nodo arranque después.
+        qos_mapa = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(OccupancyGrid, '/map', self.recibir_mapa, qos_mapa)
+        # El lidar publica en Best Effort (qos_profile_sensor_data), como en
+        # las semanas 03, 04 y 06.
+        self.create_subscription(
+            LaserScan, 'scan_rojo', self.recibir_scan, qos_profile_sensor_data)
+        self.create_subscription(
+            Odometry, '/odom', lambda m: setattr(self, 'giro_actual', m.twist.twist.angular.z),
+            qos_profile_sensor_data)
+
+        self.pub_scan_no_mapeado = self.create_publisher(LaserScan, 'scan_no_mapeado', 10)
+        self.pub_objetos = self.create_publisher(PoseArray, 'objetos_rojos', 10)
+        self.pub_marcadores = self.create_publisher(MarkerArray, 'objetos_rojos_markers', 10)
+
+    # ---------- callbacks ----------
+
+    def recibir_mapa(self, msg: OccupancyGrid):
+        # /map en vez de /likelihood_map: sus valores (-1 a 100) quedan
+        # todos por debajo del umbral 101, así que, igual que con el campo
+        # de verosimilitud, solo importan los límites de la grilla.
+        alto, ancho = msg.info.height, msg.info.width
+        self.campo = np.array(msg.data, dtype=np.float64).reshape((alto, ancho))
+        libre = (self.campo >= 0) & (self.campo < 50)
+        self.dist_pared = ndimage.distance_transform_edt(libre) * msg.info.resolution
+        self.info_mapa = msg.info
+        self.get_logger().info('Mapa recibido.')
+
+    def obtener_transform_a_map(self, frame_id_scan, instante):
+        """
+        Busca la transformada del lidar a `map` en el instante del scan.
+
+        Busca en tf2 la transformada del frame del lidar a `map` en el
+        instante del scan (no la última: girando, 0.1 s de desfase corren el
+        punto varios centímetros). None si no está disponible.
+        """
+        try:
+            return self.tf_buffer.lookup_transform(
+                self.map_frame, frame_id_scan, Time.from_msg(instante),
+                timeout=Duration(seconds=0.1))
+        except Exception as e:
+            if not self.aviso_tf_mostrado:
+                self.get_logger().warn(
+                    f'Todavía no hay tf {frame_id_scan}->{self.map_frame}: {e}')
+                self.aviso_tf_mostrado = True
+            return None
+
+    def recibir_scan(self, msg: LaserScan):
+        """
+        Procesa un scan rojo y publica los objetos no mapeados.
+
+        TODO: el corazón del workshop — corre una vez por cada scan que
+        llega. Comparar cada punto contra /map y, con los que no
+        calzan, armar los objetos "no mapeados".
+
+          1. Si `self.campo` es `None` (todavía no llegó /map),
+             `return`.
+          2. Pedir la transformada con
+             `self.obtener_transform_a_map(msg.header.frame_id)`. Si da
+             `None`, `return`.
+          3. Armar `rangos` (`np.array(msg.ranges)`) y `angulos`
+             (`msg.angle_min + np.arange(n) * msg.angle_increment`, con
+             `n = len(rangos)`).
+          4. Armar `validos`: `True` donde el rango es finito
+             (`np.isfinite`) y está entre un mínimo y `msg.range_max`. Para
+             el mínimo usá `max(msg.range_min, self.distancia_minima_valida)`
+             en vez de `msg.range_min` solo — el lidar del robot rebota
+             contra su propia estructura (antena, soporte) y devuelve
+             rangos cortos pero "válidos" para el sensor;
+             `distancia_minima_valida` filtra ese rebote.
+          5. Pasar cada `(rango, ángulo)` de polar a cartesiano, en el
+             frame del lidar (mismo patrón que semana 04):
+               `xs_laser = rangos * cos(angulos)`
+               `ys_laser = rangos * sin(angulos)`
+          6. Aplicar la transformada del paso 2 a esos puntos para
+             llevarlos a `map`. De `transform.transform` sacá la
+             traslación (`tx, ty = .translation.x, .translation.y`) y el
+             yaw (`yaw_de_quaternion(transform.rotation)`); con
+             `c, s = cos(yaw), sin(yaw)`:
+               `xs_map = tx + c*xs_laser - s*ys_laser`
+               `ys_map = ty + s*xs_laser + c*ys_laser`
+          7. Convertir cada punto `(x, y)` en `map` a índices de fila y
+             columna de `self.campo`, usando `self.info_mapa.resolution` y
+             `self.info_mapa.origin.position.(x/y)` (mismo cálculo que ya
+             viste en `pesar_particulas` de `localizador.py`, semana 06):
+               `col  = ((xs_map - origen_x) / resolucion)`, redondeado a
+                      entero (`.astype(np.int32)`)
+               `fila = ((ys_map - origen_y) / resolucion)`, ídem
+          8. Armar `dentro_grilla`: `True` donde `0 <= col < ancho` Y
+             `0 <= fila < alto` (`alto, ancho = self.campo.shape`, en ese
+             orden porque una grilla se indexa `[fila, columna]`).
+          9. Armar `probabilidad`: un array de N ceros
+             (`np.zeros(len(rangos))`), y sobreescribirlo con
+             `self.campo[fila, col]` **solo** en las posiciones donde
+             `dentro_grilla` es `True` (indexá con la máscara booleana en
+             ambos lados:
+             `probabilidad[dentro_grilla] = self.campo[fila[dentro_grilla], col[dentro_grilla]]`).
+          10. Armar `no_mapeado`: `validos` Y `dentro_grilla` Y
+              `(probabilidad < self.umbral_probabilidad)`. El
+              `Y dentro_grilla` no es opcional: un punto que cae afuera del
+              área que cubre el mapa queda con probabilidad 0 en el paso
+              anterior (nunca se sobreescribe), y sin este filtro se
+              reportaría **siempre** como "obstáculo no mapeado" — el mapa
+              simplemente no tiene nada que decir sobre lo que está fuera
+              de sus límites, así que ahí no se puede concluir nada.
+          11. Llamar a `self.publicar_scan_filtrado(msg, rangos, no_mapeado)`
+              y `self.publicar_objetos(no_mapeado, xs_map, ys_map)`.
+        """
+        if self.campo is None or abs(self.giro_actual) > self.giro_maximo:
+            return
+        transform = self.obtener_transform_a_map(msg.header.frame_id, msg.header.stamp)
+        if transform is None:
+            return
+
+        rangos = np.array(msg.ranges, dtype=np.float64)
+        n = len(rangos)
+        angulos = msg.angle_min + np.arange(n) * msg.angle_increment
+
+        minimo = max(msg.range_min, self.distancia_minima_valida)
+        validos = np.isfinite(rangos) & (rangos >= minimo) & (rangos <= msg.range_max)
+
+        xs_laser = rangos * np.cos(angulos)
+        ys_laser = rangos * np.sin(angulos)
+
+        tx = transform.transform.translation.x
+        ty = transform.transform.translation.y
+        yaw = yaw_de_quaternion(transform.transform.rotation)
+        c, s = math.cos(yaw), math.sin(yaw)
+        xs_map = tx + c * xs_laser - s * ys_laser
+        ys_map = ty + s * xs_laser + c * ys_laser
+
+        resolucion = self.info_mapa.resolution
+        origen_x = self.info_mapa.origin.position.x
+        origen_y = self.info_mapa.origin.position.y
+        # Los rangos inf dan coordenadas inf/nan; los reemplazo antes de
+        # castear a entero (igual quedan descartados por `validos`).
+        col = np.floor(np.nan_to_num((xs_map - origen_x) / resolucion,
+                                     nan=-1, posinf=-1, neginf=-1)).astype(np.int32)
+        fila = np.floor(np.nan_to_num((ys_map - origen_y) / resolucion,
+                                      nan=-1, posinf=-1, neginf=-1)).astype(np.int32)
+
+        alto, ancho = self.campo.shape
+        dentro_grilla = (col >= 0) & (col < ancho) & (fila >= 0) & (fila < alto)
+
+        probabilidad = np.zeros(n)
+        probabilidad[dentro_grilla] = self.campo[fila[dentro_grilla], col[dentro_grilla]]
+
+        no_mapeado = validos & dentro_grilla & (probabilidad < self.umbral_probabilidad)
+        if self.margen_pared > 0.0:
+            lejos = np.zeros(n, dtype=bool)
+            lejos[dentro_grilla] = (
+                self.dist_pared[fila[dentro_grilla], col[dentro_grilla]] >= self.margen_pared)
+            no_mapeado &= lejos
+
+        self.publicar_scan_filtrado(msg, rangos, no_mapeado)
+        self.publicar_objetos(no_mapeado, xs_map, ys_map, msg.header.stamp)
+
+    # ---------- publishers ----------
+
+    def publicar_scan_filtrado(self, msg: LaserScan, rangos, no_mapeado):
+        """
+        Publica el scan con solo los puntos no mapeados.
+
+        Mismo truco que /scan_rojo en semana 04: una copia del scan de
+        entrada con `inf` (sin retorno) en todos los rangos salvo los "no
+        mapeados". Sirve para debug visual en RViz — el resultado que
+        importa de este workshop son los objetos de publicar_objetos().
+        """
+        salida = LaserScan()
+        salida.header = msg.header
+        salida.angle_min = msg.angle_min
+        salida.angle_max = msg.angle_max
+        salida.angle_increment = msg.angle_increment
+        salida.time_increment = msg.time_increment
+        salida.scan_time = msg.scan_time
+        salida.range_min = msg.range_min
+        salida.range_max = msg.range_max
+        salida.ranges = np.where(no_mapeado, rangos, math.inf).tolist()
+        self.pub_scan_no_mapeado.publish(salida)
+
+    def publicar_objetos(self, no_mapeado, xs_map, ys_map, instante):
+        """
+        Agrupa los puntos no mapeados en objetos y los publica.
+
+        Agrupa no_mapeado en rachas (con agrupar_en_rachas, de arriba),
+        descarta las muy cortas (ruido), y por cada racha que sobrevive
+        promedia sus puntos en `map` para obtener la coordenada del
+        objeto — publica esa lista como PoseArray (el dato) y como
+        MarkerArray (para verla en RViz sin agregar un display de
+        PoseArray).
+        """
+        ahora = self.get_clock().now().to_msg()
+
+        objetos = PoseArray()
+        objetos.header.frame_id = self.map_frame
+        # Con el instante del scan, para que juntar_victimas use la pose del
+        # robot de ese momento.
+        objetos.header.stamp = instante
+
+        marcadores = MarkerArray()
+        borrar_todos = Marker()
+        borrar_todos.action = Marker.DELETEALL
+        marcadores.markers.append(borrar_todos)
+
+        for i, indices in enumerate(agrupar_en_rachas(no_mapeado)):
+            if len(indices) < self.racha_minima:
+                continue
+
+            x = float(np.mean(xs_map[indices]))
+            y = float(np.mean(ys_map[indices]))
+
+            pose = Pose()
+            pose.position.x = x
+            pose.position.y = y
+            pose.orientation.w = 1.0
+            objetos.poses.append(pose)
+
+            marcador = Marker()
+            marcador.header.frame_id = self.map_frame
+            marcador.header.stamp = ahora
+            marcador.ns = 'objetos_rojos'
+            marcador.id = i
+            marcador.type = Marker.SPHERE
+            marcador.action = Marker.ADD
+            marcador.pose.position.x = x
+            marcador.pose.position.y = y
+            marcador.pose.orientation.w = 1.0
+            marcador.scale.x = marcador.scale.y = marcador.scale.z = 0.2
+            marcador.color.r = 1.0
+            marcador.color.g = 0.3
+            marcador.color.a = 1.0
+            marcadores.markers.append(marcador)
+
+        self.pub_objetos.publish(objetos)
+        self.pub_marcadores.publish(marcadores)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    nodo = DetectorObstaculos()
+    try:
+        rclpy.spin(nodo)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        nodo.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

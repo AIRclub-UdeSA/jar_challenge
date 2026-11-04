@@ -7,6 +7,114 @@
 #
 nodo_equipo:
   ros__parameters:
-    frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.30      # m/s
-    velocidad_angular_max: 1.00     # rad/s
+    frecuencia_control_hz: 5.0
+    tiempo_corrida_s: 600.0         # §5: la corrida dura 10 minutos
+    margen_vuelta_s: 30.0           # margen para llegar a la largada antes del final
+    velocidad_vuelta_estimada: 0.1  # m/s medios, para estimar cuánto tarda la vuelta
+    tolerancia_largada: 0.15        # m; el bono de vuelta exige <= 0.25 m (§8)
+    intentos_vuelta: 6               # después de estos, igual se sigue hasta 20 s antes del final
+    tiempo_sin_avance_s: 20.0       # el juez corta la corrida a los 60 s quieto
+    tiempo_sin_desplazamiento_s: 12.0  # s sin moverse en el mapa (amcl) con un objetivo: patina
+    distancia_encadenar: 0.45       # m; a esta distancia de un punto de vista se pasa al próximo
+    tiempo_quieto_vuelta_s: 35.0    # s quieto (según /odom) en la vuelta antes de publicar /done donde esté
+    inspecciones_maximas: 15        # tope de candidatos a mirar (un mapa corrido arma muchos falsos)
+    distancia_minima_inspeccion: 0.2  # m; más cerca la cámara no ve bien la caja
+    despeje_candidato_claro: 0.2    # m a la pared: estos se miran apenas aparecen, aunque se esté navegando
+    tiempo_mirar_dudoso_s: 4.0      # con 1 sola detección roja se sigue mirando hasta acá
+    recoveries_para_cortar: 2       # recoveries de Nav2 (Spin/Wait/BackUp) antes de cortar; 0 = nunca
+    margen_segunda_pasada_s: 120.0  # si faltan víctimas y sobra este tiempo, otra ruta más cerca
+    alcance_segunda_pasada: 1.8     # m de lidar que cuentan como visto en la segunda pasada
+    despeje_giro: 0.28              # m libres a la pared para girar en el lugar a mirar un candidato
+    despeje_giro_scan: 0.3         # m libres según el lidar (cajas incluidas) para empezar a girar
+    giro_minimo_inspeccion: 0.0     # rad/s; subir (~0.4) si el robot real no gira a baja velocidad
+    giro_maximo_inspeccion: 0.5     # rad/s (= max_vel_theta)
+    tiempo_giro_inspeccion: 6.0     # s
+    # Pose inicial: dispersión de amcl alrededor del origen y cuándo convergió.
+    dispersion_inicial_xy: 0.3      # m
+    dispersion_inicial_yaw: 0.6     # rad
+    sigma_localizado_xy: 0.05       # m
+    sigma_localizado_yaw: 0.1       # rad
+    tiempo_localizacion_s: 5.0
+    # Destrabe cuando un objetivo falla con el robot pegado a una pared.
+    radio_destrabe: 0.4             # m: puntos del lidar que empujan
+    velocidad_destrabe: 0.15        # m/s
+    tiempo_destrabe_s: 1.0
+    # Objetivos que caen sobre obstáculos que no están en /map (cajas).
+    costo_maximo_objetivo: 85       # costo del costmap global (0-100) tolerado; 99-100 = caja o pared
+    costo_libre_objetivo: 70        # costo de la celda a la que se lo corre (centro de un pasillo ~60)
+    radio_ajuste_objetivo: 0.8      # m
+    espera_nav2_s: 20.0             # s sin Nav2 activo antes de levantarlo desde la misión
+    reintentos_nav2: 2
+    # Candidatos a víctima (objetos fuera del mapa): mirarlos con la cámara.
+    radio_candidato: 0.35           # m para juntar detecciones del mismo objeto
+    detecciones_candidato: 5
+    distancia_inspeccion: 3.0       # m: se gira la cámara a los que estén más cerca
+    tiempo_mirar_s: 3.0
+    espera_reporte_s: 5.0           # s extra si se vio rojo, hasta que se reporte
+    # Exploración: puntos de vista desde donde el lidar ve todo el laberinto.
+    alcance_cobertura: 3.5          # m de lidar que cuentan como "visto"
+    despeje_punto_vista: 0.25       # m mínimos de un punto de vista a la pared
+    despeje_transito: 0.12          # m mínimos a la pared por donde pasa el robot
+    despeje_caja: 0.10              # m: donde puede estar el centro de una caja
+    fraccion_cobertura: 0.98
+    reintentos_punto_vista: 1
+
+# Semana 10, paso 5: una posición por caja a partir de /objetos_rojos.
+juntar_victimas:
+  ros__parameters:
+    detecciones_minimas: 12         # detecciones (~1.7 s viendo la caja) antes de reportar
+    distancia_minima_reportes: 0.7  # m: un grupo más cerca de una ya reportada es la misma caja
+    dispersion_maxima: 0.08         # m: grupos más dispersos no se reportan
+    puntos_recientes: 30            # la mediana y la dispersión se calculan con los últimos N puntos
+    distancia_minima_deteccion: 0.35  # m; rojo visto más cerca del robot no cuenta (cara corrida)
+    radio_grupo: 0.30               # m, distancia máxima a la mediana del grupo
+    # Media caja (m): corre cada detección de la cara al centro. Las cajas del
+    # simulador miden 0.25 m; las del robot real del workshop, ~0.18 (0.09).
+    mitad_caja: 0.125
+
+# Detección de objetos rojos (semana 07/10).
+detector_obstaculos:
+  ros__parameters:
+    umbral_probabilidad: 101.0      # 101 deja pasar todas las detecciones rojas (semana 10, paso 5)
+    racha_minima: 3                 # puntos contiguos mínimos para que una racha cuente como objeto
+    distancia_minima_valida: 0.25   # m; filtra el rebote contra el propio robot
+    giro_maximo_deteccion: 0.4      # rad/s: girando más rápido no se publican detecciones
+    margen_pared: 0.05              # m: rojo pegado a una pared del mapa no cuenta (rayos de la pared
+                                    # que caen sobre pixeles de una caja cercana)
+
+# Máscara de rojo de la cámara (OpenCV HSV: hue 0-180, saturación y valor 0-255).
+# El rojo cruza el 0 del hue, por eso son dos rangos. Recalibrar en la arena.
+detector_scan:
+  ros__parameters:
+    hue_rojo_bajo_1: 0.0
+    hue_rojo_alto_1: 10.0
+    hue_rojo_bajo_2: 170.0
+    hue_rojo_alto_2: 180.0
+    saturacion_min: 120.0
+    valor_min: 80.0
+    erosion_mascara: 1              # px; 0 = sin erosión
+    rango_maximo: 3.5               # m; rojo más lejos no cuenta
+    desfase_maximo_imagen: 0.2      # s entre imagen y scan; negativo = sin chequeo
+    ventana_oclusion_px: 6.0        # rojo detrás de algo más cercano no cuenta; 0 = sin filtro
+    margen_oclusion: 0.15           # m
+
+# Candidatos a víctima: objetos que el lidar ve fuera del mapa (cualquier color).
+detector_no_mapeados:
+  ros__parameters:
+    umbral_probabilidad: 50.0       # /map: 0 libre, 100 pared; los puntos en paredes no cuentan
+    # m: puntos más cerca de una pared del mapa no cuentan. Con 0.10 aparecían
+    # candidatos falsos en fila sobre las paredes (su superficie real queda unos cm
+    # más afuera que en el mapa) y revisarlos costaba el bono de 5 minutos.
+    margen_pared: 0.08
+    racha_minima: 4
+    distancia_minima_valida: 0.25
+    giro_maximo_deteccion: 0.4
+
+# Registro de la corrida para ajustar params/ entre las dos corridas de la clasificación
+# (plan_de_trabajo/LOGS_CLASIFICACION.md). Solo lee tópicos y escribe archivos chicos.
+registro:
+  ros__parameters:
+    registrar: true
+    carpeta: "~/.ros/polibots"      # se crea una subcarpeta por corrida (fecha-hora)
+    periodo_imagen_s: 5.0           # una imagen achicada (320x240) cada tantos segundos
+    periodo_color_s: 1.0            # estadísticas de color de los pixeles rojizos

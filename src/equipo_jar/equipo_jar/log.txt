@@ -1,0 +1,29 @@
+[nodo_equipo-1] Traceback (most recent call last):
+[nodo_equipo-1]   File "/home/alumno/rosmaster_ws/src/jar_challenge_PoliBots/install/equipo_jar/lib/equipo_jar/nodo_equipo", line 33, in <module>
+[nodo_equipo-1]     sys.exit(load_entry_point('equipo-jar==0.1.0', 'console_scripts', 'nodo_equipo')())
+[nodo_equipo-1]   File "/home/alumno/rosmaster_ws/src/jar_challenge_PoliBots/install/equipo_jar/lib/python3.10/site-packages/equipo_jar/nodo_equipo.py", line 91, in main
+[nodo_equipo-1]     rclpy.spin(nodo)
+[nodo_equipo-1]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 229, in spin
+[nodo_equipo-1]     executor.spin_once()
+[nodo_equipo-1]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 808, in spin_once
+[nodo_equipo-1]     self._spin_once_impl(timeout_sec)
+[nodo_equipo-1]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 805, in _spin_once_impl
+[nodo_equipo-1]     raise handler.exception()
+[nodo_equipo-1]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/task.py", line 272, in _execute_coroutine_step
+[nodo_equipo-1]     result = coro.send(None)
+[nodo_equipo-1]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 488, in handler
+[nodo_equipo-1]     await call_coroutine(entity, arg)
+[nodo_equipo-1]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 396, in _execute_timer
+[nodo_equipo-1]     await await_or_execute(tmr.callback)
+[nodo_equipo-1]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 110, in await_or_execute
+[nodo_equipo-1]     return callback(*args)
+[nodo_equipo-1]   File "/home/alumno/rosmaster_ws/src/jar_challenge_PoliBots/install/equipo_jar/lib/python3.10/site-packages/equipo_jar/nodo_equipo.py", line 74, in ciclo_de_control
+[nodo_equipo-1]     self.cobertura_mapa.next_goal()
+[nodo_equipo-1]   File "/home/alumno/rosmaster_ws/src/jar_challenge_PoliBots/install/equipo_jar/lib/python3.10/site-packages/equipo_jar/cobertura_mapa.py", line 43, in next_goal
+[nodo_equipo-1]     self.go_to_goal(self.possible_goals.pop(0))
+[nodo_equipo-1]   File "/home/alumno/rosmaster_ws/src/jar_challenge_PoliBots/install/equipo_jar/lib/python3.10/site-packages/equipo_jar/cobertura_mapa.py", line 30, in go_to_goal
+[nodo_equipo-1]     goal_msg.pose = goal_pose
+[nodo_equipo-1]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/nav2_msgs/action/_navigate_to_pose.py", line 133, in pose
+[nodo_equipo-1]     assert \
+[nodo_equipo-1] AssertionError: The 'pose' field must be a sub message of type 'PoseStamped'
+[ERROR] [nodo_equipo-1]: process has died [pid 1994, exit code 1, cmd '/home/alumno/rosmaster_ws/src/jar_challenge_PoliBots/install/equipo_jar/lib/equipo_jar/nodo_equipo --ros-args -r __node:=nodo_equipo --params-file /home/alumno/rosmaster_ws/src/jar_challenge_PoliBots/install/equipo_jar/share/equipo_jar/params/params.yaml --params-file /tmp/launch_params_56o1b_z4'].
