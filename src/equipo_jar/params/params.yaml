@@ -21,9 +21,9 @@ nodo_equipo:
 
 detector_scan:
   ros__parameters:
-    saturacion_min: 120.0
+    saturacion_min: 90.0
     giro_maximo: 0.5                # rad/s (IMU): girando más rápido no se marca rojo; 0 = apagado
-    erosion_mascara: 2              # px que se achica cada mancha roja (bordes de las cajas)
+    erosion_mascara: 1              # px que se achica cada mancha roja (bordes de las cajas)
     pixeles_rojo_minimos: 150       # px rojos para avisar "rojo a la vista" (de 320x240)
     tolerancia_profundidad: 0.3     # m: rayo rojo más atrás que esto de su grupo = se escapó por el borde
 
@@ -33,14 +33,14 @@ evasor:
     angulo_giro_deg: 25.0
     angulo_vision_deg: 40.0         # cono frontal angosto: las paredes del pasillo no lo frenan
     angulo_frente_deg: 180.0
-    velocidad_adelante: 0.3
-    velocidad_rapida: 0.45          # m/s en zonas abiertas (tope: nodo_equipo.velocidad_lineal_max)
+    velocidad_adelante: 0.2
+    velocidad_rapida: 0.3           # m/s en zonas abiertas (tope: nodo_equipo.velocidad_lineal_max)
     abierto_lateral_desde: 0.4      # m a la pared lateral más cercana: empieza a acelerar
     abierto_lateral_hasta: 0.8      # m: a velocidad_rapida
     abierto_frente_desde: 1.0       # m libres adelante: empieza a acelerar
     abierto_frente_hasta: 1.5       # m: a velocidad_rapida
-    velocidad_angular: 0.5          # rad/s: giro normal
-    velocidad_angular_rojo: 0.3     # rad/s con rojo a la vista (por debajo de giro_maximo)
+    velocidad_angular: 0.3          # rad/s: giro normal
+    velocidad_angular_rojo: 0.2     # rad/s con rojo a la vista (por debajo de giro_maximo)
     tiempo_giro_lento: 1.5          # s que sigue lento después de dejar de ver rojo
     # Mejoras (cada una se apaga con false; todo en false = evasor original):
     girar_hacia_libre: true         # girar hacia el lado más libre hasta despejar el frente
@@ -115,7 +115,7 @@ detector_obstaculos:
 gestor_victimas:
   ros__parameters:
     radio_asociacion: 0.35              # m: dos detecciones más cerca son la misma caja
-    observaciones_minimas: 8            # veces que hay que ver una caja para reportarla
+    observaciones_minimas: 5            # veces que hay que ver una caja para reportarla
     tiempo_olvido: 5.0                  # s sin ver un candidato no confirmado antes de descartarlo
     distancia_maxima_observacion: 1.0   # m: detecciones más lejanas se ignoran (> evasor.distancia_acercamiento)
     medio_lado_caja: 0.125              # m: de la cara que ve el lidar al centro de la caja
