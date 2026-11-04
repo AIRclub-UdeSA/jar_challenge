@@ -62,7 +62,7 @@ class NodoEquipo(Node):
             'recuperacion_std_xy_m': .30, 'recuperacion_std_yaw_rad': .35,
             'velocidad_lineal_max': 0.30, 'velocidad_angular_max': 1.0,
             'cantidad_victimas': 5, 'localizacion_activa': True,
-            'giro_velocidad_rad_s': 0.15, 'giro_objetivo_rad': math.radians(20),
+            'giro_velocidad_rad_s': 0.75, 'giro_objetivo_rad': math.radians(20),
             'max_giros': 3, 'presupuesto_localizacion_s': 35.0,
             'plazo_giro_s': 12.0, 'plazo_verificacion_s': 5.0,
             'huella_x_min_m': -0.19, 'huella_x_max_m': 0.13,
