@@ -41,11 +41,11 @@ nodo_percepcion:
     saturacion_min: 120             # S mínima (0-255) para contar un píxel como rojo
     valor_min: 80                   # V mínimo (0-255)
     hue_max_bajo: 10                # rojo en H [0, esto]. Subirlo deja pasar naranjas
-    hue_min_alto: 170               # rojo en H [esto, 180]. Bajarlo deja pasar magentas
+    hue_min_alto: 165               # rojo en H [esto, 180]. Bajarlo deja pasar magentas
     limpieza_px: 3                  # borra de la máscara lo más fino que esto (bordes de otros colores)
     # Forma: que la mancha parezca una caja entera
     area_minima_px: 400.0           # una mancha roja más chica que esto (px) se descarta
-    margen_borde_px: 5              # a menos de esto (px) de un borde, la mancha está cortada (de costado: se descarta)
+    margen_borde_px: 0              # a menos de esto (px) de un borde, la mancha está cortada (de costado: se descarta)
     relleno_min: 0.65               # área / rectángulo: una caja da ~0,9, un hilo o una L mucho menos
     proporcion_min: 0.55            # ancho / alto de la mancha. Caja entera: 0,83 a 1,18
     proporcion_max: 1.6
@@ -54,7 +54,7 @@ nodo_percepcion:
     tramo_min_deg: 3.0              # ancho mínimo (grados) de ese tramo
     tolerancia_tramo_m: 0.10        # un rayo a menos de esto de la mediana es "parejo"
     fraccion_tramo_min: 0.6         # menos rayos parejos que esto: es un borde, se descarta
-    ancho_oclusion_deg: 4.0         # cuánto se mira al costado de la mancha buscando algo delante
+    ancho_oclusion_deg: 1.5         # cuánto se mira al costado de la mancha buscando algo delante
     salto_oclusion_m: 0.15          # algo al costado más cerca que la caja por esto: la tapa
     distancia_min_deteccion_m: 0.35 # rango de distancias donde la medición sirve
     distancia_max_deteccion_m: 3.0
@@ -173,7 +173,7 @@ nodo_mision:
     frame_odom: odom
     frame_robot: base_footprint
     radio_paso_m: 0.17              # por dónde puede pasar el centro del robot: igual al radio de Nav2
-    despeje_meta_m: 0.30            # distancia mínima a un obstáculo de cada meta (m)
+    despeje_meta_m: 0.25            # distancia mínima a un obstáculo de cada meta (m)
     tiempo_regreso_s: 480.0         # a los cuántos segundos se deja de explorar y se vuelve
     # Tiempo para llegar a una meta: max(tiempo_max_meta_s, camino / velocidad_min_meta_mps); más
     # que eso, se abandona. Por camino el robot avanza 0,14 m/s de mediana (tandas del 1/11): 45 s
@@ -189,7 +189,7 @@ nodo_mision:
     despeje_giro_m: 0.25            # con menos que esto (m) no se gira para mirar
     radio_duplicado_m: 0.40         # a menos de esto (m) de una caja ya reportada, es la misma
     radio_objeto_conocido_m: 0.50   # a menos de esto (m) de un objeto ya visto, es el mismo
-    margen_pared_objetos_m: 0.20    # lo que el lidar ve a menos de esto (m) de una pared del mapa no es objeto
+    margen_pared_objetos_m: 0.10    # lo que el lidar ve a menos de esto (m) de una pared del mapa no es objeto
     # No inspeccionar lo que la cámara ya vio sin rojo (distractoras, señuelos, paredes que faltan
     # en el mapa). Con false, se inspecciona todo objeto, como antes.
     descartar_con_camara: true
@@ -247,7 +247,7 @@ controller_server:
       yaw_goal_tolerance: 3.15      # la orientación final no importa: para mirar gira nodo_mision
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
-      desired_linear_vel: 0.30      # m/s
+      desired_linear_vel: 0.50      # m/s
       # Punto del camino al que apunta RPP. Con 0,40, en las U alrededor de la punta de un panel
       # cortaba la curva ~10 cm hacia adentro (con 0,25, ~3 cm): rozaba la punta y se trababa.
       # Tandas del 2/11 (4 mapas x 3 spawns): trabas en maze_2/3 de 21 a 5, choques con la caja
@@ -324,7 +324,7 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [0.30, 0.21, 1.0]
+    max_velocity: [0.50, 0.21, 1.0]
     min_velocity: [-0.15, -0.21, -1.0]
     max_accel: [2.5, 2.5, 3.2]
     max_decel: [-2.5, -2.5, -3.2]
