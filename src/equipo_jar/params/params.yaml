@@ -10,7 +10,7 @@ nodo_equipo:
     frecuencia_control_hz: 5.0
     tiempo_corrida_s: 600.0         # §5: la corrida dura 10 minutos
     margen_vuelta_s: 30.0           # margen para llegar a la largada antes del final
-    velocidad_vuelta_estimada: 0.2  # m/s medios, para estimar cuánto tarda la vuelta
+    velocidad_vuelta_estimada: 0.1  # m/s medios, para estimar cuánto tarda la vuelta
     tolerancia_largada: 0.15        # m; el bono de vuelta exige <= 0.25 m (§8)
     intentos_vuelta: 6               # después de estos, igual se sigue hasta 20 s antes del final
     tiempo_sin_avance_s: 20.0       # el juez corta la corrida a los 60 s quieto
@@ -18,16 +18,16 @@ nodo_equipo:
     distancia_encadenar: 0.45       # m; a esta distancia de un punto de vista se pasa al próximo
     tiempo_quieto_vuelta_s: 35.0    # s quieto (según /odom) en la vuelta antes de publicar /done donde esté
     inspecciones_maximas: 15        # tope de candidatos a mirar (un mapa corrido arma muchos falsos)
-    distancia_minima_inspeccion: 0.5  # m; más cerca la cámara no ve bien la caja
+    distancia_minima_inspeccion: 0.2  # m; más cerca la cámara no ve bien la caja
     despeje_candidato_claro: 0.2    # m a la pared: estos se miran apenas aparecen, aunque se esté navegando
-    tiempo_mirar_dudoso_s: 2.0      # con 1 sola detección roja se sigue mirando hasta acá
+    tiempo_mirar_dudoso_s: 4.0      # con 1 sola detección roja se sigue mirando hasta acá
     recoveries_para_cortar: 2       # recoveries de Nav2 (Spin/Wait/BackUp) antes de cortar; 0 = nunca
     margen_segunda_pasada_s: 120.0  # si faltan víctimas y sobra este tiempo, otra ruta más cerca
     alcance_segunda_pasada: 1.8     # m de lidar que cuentan como visto en la segunda pasada
-    despeje_giro: 0.22              # m libres a la pared para girar en el lugar a mirar un candidato
-    despeje_giro_scan: 0.26         # m libres según el lidar (cajas incluidas) para empezar a girar
+    despeje_giro: 0.28              # m libres a la pared para girar en el lugar a mirar un candidato
+    despeje_giro_scan: 0.3         # m libres según el lidar (cajas incluidas) para empezar a girar
     giro_minimo_inspeccion: 0.0     # rad/s; subir (~0.4) si el robot real no gira a baja velocidad
-    giro_maximo_inspeccion: 1.0     # rad/s (= max_vel_theta)
+    giro_maximo_inspeccion: 0.5     # rad/s (= max_vel_theta)
     tiempo_giro_inspeccion: 6.0     # s
     # Pose inicial: dispersión de amcl alrededor del origen y cuándo convergió.
     dispersion_inicial_xy: 0.3      # m
@@ -49,7 +49,7 @@ nodo_equipo:
     radio_candidato: 0.35           # m para juntar detecciones del mismo objeto
     detecciones_candidato: 5
     distancia_inspeccion: 3.0       # m: se gira la cámara a los que estén más cerca
-    tiempo_mirar_s: 1.2
+    tiempo_mirar_s: 3.0
     espera_reporte_s: 5.0           # s extra si se vio rojo, hasta que se reporte
     # Exploración: puntos de vista desde donde el lidar ve todo el laberinto.
     alcance_cobertura: 3.5          # m de lidar que cuentan como "visto"
@@ -79,7 +79,7 @@ detector_obstaculos:
     racha_minima: 3                 # puntos contiguos mínimos para que una racha cuente como objeto
     distancia_minima_valida: 0.25   # m; filtra el rebote contra el propio robot
     giro_maximo_deteccion: 0.4      # rad/s: girando más rápido no se publican detecciones
-    margen_pared: 0.08              # m: rojo pegado a una pared del mapa no cuenta (rayos de la pared
+    margen_pared: 0.05              # m: rojo pegado a una pared del mapa no cuenta (rayos de la pared
                                     # que caen sobre pixeles de una caja cercana)
 
 # Máscara de rojo de la cámara (OpenCV HSV: hue 0-180, saturación y valor 0-255).
@@ -105,7 +105,7 @@ detector_no_mapeados:
     # m: puntos más cerca de una pared del mapa no cuentan. Con 0.10 aparecían
     # candidatos falsos en fila sobre las paredes (su superficie real queda unos cm
     # más afuera que en el mapa) y revisarlos costaba el bono de 5 minutos.
-    margen_pared: 0.15
+    margen_pared: 0.08
     racha_minima: 4
     distancia_minima_valida: 0.25
     giro_maximo_deteccion: 0.4

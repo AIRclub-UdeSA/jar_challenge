@@ -219,7 +219,7 @@ global_costmap:
       # cajas y las paredes le parecían cerrados, aunque de costado (0.20 m)
       # pasa holgado.
       footprint: "[[0.12, 0.10], [0.12, -0.10], [-0.18, -0.10], [-0.18, 0.10]]"
-      footprint_padding: 0.03
+      footprint_padding: 0.04
       resolution: 0.05
       # true: las celdas fuera del rango de todos los sensores quedan
       # "desconocido" en vez de "libre" — mismo criterio conservador que
@@ -361,7 +361,7 @@ controller_server:
     # 10 Hz: cada cuánto controller_server le pide una nueva velocidad al
     # plugin — el mismo rol que la frecuencia de tu loop de control manual
     # en semana 03, ahora declarativo en vez de un `rate.sleep()`.
-    controller_frequency: 10.0
+    controller_frequency: 20.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
@@ -471,31 +471,31 @@ controller_server:
       # Límites de velocidad: los topes que aplica el propio robot (0.5 m/s
       # en x, 0.5 m/s en y, 1 rad/s de giro). El reto es de velocidad, así
       # que se usan enteros.
-      min_vel_x: -0.5
+      min_vel_x: -0.3
       # min/max_vel_y: strafe lateral, ¡en 0 por default en nav2_bringup
       # porque asume un robot diferencial que no puede moverse de costado!
       # El X3 es mecanum — sí puede — así que este es el cambio central
       # del checkpoint: sin esto, DWB nunca generaría una trayectoria
       # lateral aunque el robot fuera capaz de hacerla.
-      min_vel_y: -0.5
-      max_vel_x: 0.5
-      max_vel_y: 0.5
-      max_vel_theta: 1.0
+      min_vel_y: -0.3
+      max_vel_x: 0.3
+      max_vel_y: 0.3
+      max_vel_theta: 0.6
       # Sin trayectorias "quieto": DWB descarta las de menos de 0.08 m/s que
       # además giran menos de 0.3 rad/s. En las vueltas en U pegadas a una
       # pared, quedarse quieto empataba con avanzar (GoalAlign/PathAlign) y
       # el robot no se movía hasta que saltaba el progress checker.
       min_speed_xy: 0.08
       # El robot limita cada eje por separado, así que en diagonal puede ir
-      # a 0.5 en x y 0.5 en y a la vez: 0.5 * sqrt(2).
-      max_speed_xy: 0.707
+      # a 0.3 en x y 0.3 en y a la vez: 0.3 * sqrt(2).
+      max_speed_xy: 0.42
       min_speed_theta: 0.3
-      acc_lim_x: 2.5
-      acc_lim_y: 2.5
-      acc_lim_theta: 3.2
-      decel_lim_x: -2.5
-      decel_lim_y: -2.5
-      decel_lim_theta: -3.2
+      acc_lim_x: 1.2
+      acc_lim_y: 1.2
+      acc_lim_theta: 1.8
+      decel_lim_x: -1.2
+      decel_lim_y: -1.2
+      decel_lim_theta: -1.8
       # vx/vy/vtheta_samples: cuántas velocidades distintas de cada eje
       # prueba DWB por ciclo para armar el lote de trayectorias candidatas
       # — más muestras = más opciones evaluadas, pero más costo. vy tiene
@@ -536,7 +536,7 @@ controller_server:
       # entero con su orientación, que es lo que permite pasar de costado
       # por un hueco angosto.
       critics: ["Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"]
-      ObstacleFootprint.scale: 0.02
+      ObstacleFootprint.scale: 0.14
       # forward_point_distance: PathAlign/GoalAlign miden un punto que está
       # esta distancia delante del robot. Con 0.1 la orientación casi no
       # pesaba y DWB cruzaba los huecos angostos de costado (0.30 m de ancho
@@ -718,9 +718,9 @@ behavior_server:
     robot_base_frame: base_footprint
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
+    max_rotational_vel: 0.6
     min_rotational_vel: 0.4
-    rotational_acc_lim: 3.2
+    rotational_acc_lim: 1.8
 
 waypoint_follower:
   ros__parameters:
