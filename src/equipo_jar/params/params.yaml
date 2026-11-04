@@ -10,8 +10,8 @@ supervisor:
   ros__parameters:
     frecuencia_hz: 20.0
     duracion_corrida_s: 600.0
-    vel_lineal_max: 0.4
-    vel_lateral_max: 0.25
+    vel_lineal_max: 0.5
+    vel_lateral_max: 0.5
     vel_angular_max: 1.0
     acel_lineal_max: 1.00
     acel_angular_max: 3.00
