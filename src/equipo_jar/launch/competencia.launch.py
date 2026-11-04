@@ -13,6 +13,9 @@ cada corrida, y se pasa así:  ros2 launch equipo_jar competencia.launch.py vict
 `use_sim_time` es false por defecto porque el robot real no publica /clock
 (§7.3). En el simulador se pasa en true (lo hacen tools/correr_simulador.sh y
 el CI).
+
+`evasor` (true por defecto) permite apagar el evasor para teleoperar en las pruebas:
+    ros2 launch equipo_jar competencia.launch.py evasor:=false
 """
 import os
 
@@ -34,16 +37,20 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('victimas', default_value='5',
                               description='cantidad de víctimas a buscar (N)'),
+        DeclareLaunchArgument('evasor', default_value='true',
+                              description='false para teleoperar sin que el evasor se pelee'),
+        # Todos los nodos del equipo (nodo_equipo, detector_scan, localizador,
+        # campo_verosimilitud, detector_obstaculos, gestor_victimas y evasor) corren en un solo
+        # proceso para ahorrar CPU: ver equipo_jar/principal.py. Siguen siendo nodos separados,
+        # cada uno con su sección en params.yaml. Sin `name=`: renombraría a todos igual.
         Node(
             package='equipo_jar',
-            executable='nodo_equipo',
-            name='nodo_equipo',
+            executable='principal',
             output='screen',
+            arguments=['--evasor', LaunchConfiguration('evasor')],
             parameters=[params, {
                 'use_sim_time': use_sim_time,
                 'cantidad_victimas': ParameterValue(victimas, value_type=int),
             }],
         ),
-        # Acá se agregan el resto de los nodos del equipo (localización,
-        # navegación, percepción...). Todos con el mismo `parameters=[params, ...]`.
     ])
