@@ -291,7 +291,9 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      footprint_padding: 0.02         # margen sobre el rectángulo del chasis (footprint: lo arma
+      # Qualy run 2: 0.01. With 0.02, a 0.38 m door fits MPPI's rectangle only within ~±10° of
+      # heading in 5 cm cells; with 0.01, ~±15°. The global costmap keeps 0.02.
+      footprint_padding: 0.01         # margen sobre el rectángulo del chasis (footprint: lo arma
                                       # navegacion.launch.py con las medidas del URDF)
       transform_tolerance: 0.5
       plugins: [obstacle_layer, inflation_layer]

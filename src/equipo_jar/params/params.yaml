@@ -14,7 +14,9 @@ cobertura:
     # the door to the upper third is 0.41 m, so the plan stopped at y 4.2 and missed 2 victims.
     # 0.15 + 0.03 opens doors from 0.38 m, which MPPI passes with pauses; 0.16 or less (0.34 m doors)
     # lost a whole simulated run (14 blocked goals, no return). Viewpoint clearance is view_clearance.
-    robot_radius: 0.15
+    # Qualy run 2: 0.13 + 0.03 = 0.16 (doors from 0.34 m). Walls come out thicker in /map, so a
+    # 0.38-0.41 m door can show as 0.35-0.38 m; 0.18 may leave the upper third closed again.
+    robot_radius: 0.13
     safety_margin: 0.03
     #PARAM: bounded initial planning-anchor shift from a known-free pose (m; 0 disables).
     start_max_shift_m: 0.20
@@ -32,7 +34,10 @@ cobertura:
     view_range: 2.0
     fov_degrees: 61.0
     heading_count: 8
-    travel_speed: 0.25
+    # Qualy run 1: real trips cost ~4 s fixed + 2.8 s/m, but the plan charges distance / speed + 1 s,
+    # so it split the headings of one spot into separate visits (6 spots got 2-3 trips). Lower
+    # speed: more headings per stop. Offline on 6 maps: route 10-15 % shorter.
+    travel_speed: 0.15
     turn_speed: 0.7
     observation_time: 1.0
     max_views: 120                    # the whole qualy arena needs 76 views; the cap must not cut the plan
