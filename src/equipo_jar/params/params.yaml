@@ -14,9 +14,11 @@ cobertura:
     # the door to the upper third is 0.41 m, so the plan stopped at y 4.2 and missed 2 victims.
     # 0.15 + 0.03 opens doors from 0.38 m, which MPPI passes with pauses; 0.16 or less (0.34 m doors)
     # lost a whole simulated run (14 blocked goals, no return). Viewpoint clearance is view_clearance.
-    # Qualy run 2: 0.13 + 0.03 = 0.16 (doors from 0.34 m). Walls come out thicker in /map, so a
-    # 0.38-0.41 m door can show as 0.35-0.38 m; 0.18 may leave the upper third closed again.
-    robot_radius: 0.13
+    # Qualy run 2: 0.15 + 0.03 = 0.18. Checked on the real qualy /map (174x383 @ 0.02 m): the door
+    # to the upper third is ~0.45 m there, so 0.21 closed it (run 1: 58 views, 327 samples out)
+    # and 0.18 opens it: 81 views, 905/1056 visible, both upper victims in view. 0.16 adds only
+    # 13 samples in pockets behind 0.36-0.40 m passages; 0.14 adds nothing more.
+    robot_radius: 0.15
     safety_margin: 0.03
     #PARAM: bounded initial planning-anchor shift from a known-free pose (m; 0 disables).
     start_max_shift_m: 0.20
@@ -223,7 +225,7 @@ mision:
     extra_max_positions: 256
     extra_max_targets: 2048
     extra_max_views: 80
-    extra_transit_radius_m: 0.16     # same transit as coverage (0.13 + 0.03): doors from 0.34 m
+    extra_transit_radius_m: 0.18     # same transit as coverage (0.15 + 0.03): doors from 0.38 m
     extra_view_clearance_m: 0.24
     extra_preferred_clearance_m: 0.30
     extra_turn_speed_rads: 0.7
