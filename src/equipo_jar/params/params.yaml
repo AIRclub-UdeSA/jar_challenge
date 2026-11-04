@@ -5,13 +5,13 @@
 nodo_equipo:
   ros__parameters:
     frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.20        # m/s
+    velocidad_lineal_max: 0.15        # m/s (0.20 en corrida 1: hubo un choque)
     velocidad_angular_max: 0.80       # rad/s
 
     # LiDAR y navegación (seguidor de pared derecha)
     offset_angulo_lidar: 3.14159      # rad, montaje del LiDAR en el Rosmaster
-    distancia_seguridad: 0.30         # m, frena y gira si hay algo más cerca adelante
-    distancia_liberacion: 0.45        # m, histéresis para dejar de girar
+    distancia_seguridad: 0.35         # m, frena y gira si hay algo más cerca adelante
+    distancia_liberacion: 0.50        # m, histéresis para dejar de girar
     distancia_pared: 0.30             # m, distancia deseada a la pared derecha
     ganancia_pared: 2.0
 
@@ -28,12 +28,12 @@ nodo_equipo:
     rojo_h_bajo_max: 10
     rojo_h_alto_min: 170
     area_min_px: 400.0
-    distancia_max_deteccion: 2.0      # m
+    distancia_max_deteccion: 1.2      # m (2.0 en corrida 1: reporte a 1.8 m errado)
     ventana_rumbo_rad: 0.05
     profundidad_caja: 0.05            # m, de la cara visible al centro de la caja
-    giro_max_para_detectar: 0.4       # rad/s
-    radio_agrupado: 0.35              # m
-    observaciones_min: 5
+    giro_max_para_detectar: 0.3       # rad/s
+    radio_agrupado: 0.50              # m
+    observaciones_min: 8
 
     # Fin de corrida
     tiempo_max_s: 540.0
