@@ -124,11 +124,7 @@ motion:
                                 # ~0.4 (the wheels at ~0.7: it slides), accelerates at 0.2-0.35
     alfa_max: 0.8               # rad/s^2, the same for turning (sim: ~1.0); measure on the base
     w_max: 1.0                  # rad/s: the robot clamps yaw to 1.0 (organizers, email 2)
-    llegada_rumbo: 0.3          # rad, heading error a path may end with. The real base doesn't
-                                # start turning below ~0.55-0.6 rad/s, which k_rumbo commands
-                                # under ~0.2 rad of error: at 0.08, 14 turns to face a box
-                                # sat 6-12 deg off until mission.turn() timed out (10 s each,
-                                # run 1 of 2026-11-04). 0.3 is commanded at 0.69 rad/s
+    llegada_rumbo: 0.08         # rad, heading error a path may end with (the code default)
     reaccion_s: 0.4             # s from a scan to its command acting (scan period, latency).
                                 # Real base: 0.26-0.42 s from a command to motion
     v_lento: 0.12               # m/s and rad/s at most on a look sweep (/equipo/ruta_lenta):
