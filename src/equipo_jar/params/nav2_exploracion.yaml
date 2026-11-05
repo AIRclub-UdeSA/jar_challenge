@@ -89,7 +89,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
-        inflation_radius: 0.27      # radio normal de TODO el equipo: el explorador lo lee de acá al arrancar.
+        inflation_radius: 0.25      # radio normal de TODO el equipo: el explorador lo lee de acá al arrancar.
                                     # >= radio de giro del X3 con padding (0.22 m); si se traba lo baja hasta
                                     # inflacion_minima_m (exploracion.yaml) y después vuelve a este valor
       always_send_full_costmap: True
@@ -202,7 +202,7 @@ controller_server:
       short_circuit_trajectory_evaluation: True
       stateful: True
       critics: ["Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"]
-      ObstacleFootprint.scale: 0.2
+      ObstacleFootprint.scale: 0.4
       PathAlign.scale: 16.0
       PathAlign.forward_point_distance: 0.1
       GoalAlign.scale: 12.0

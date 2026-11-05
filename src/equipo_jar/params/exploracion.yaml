@@ -40,7 +40,7 @@ exploracion:
     fraccion_agotado: 0.30      # goal que ya perdió el 70% de su ganancia en el camino -> siguiente
     cobertura_objetivo: 0.97    # objetivo del modo NBV global
     modo_exploracion: sectores_nbv # sectores_nbv: BCD y NBV dentro de cada sector; nbv: modo global original
-    cobertura_objetivo_sector: 0.70 # pasar al siguiente sector cuando se vio el 68% de su piso libre
+    cobertura_objetivo_sector: 0.70 # pasar al siguiente sector cuando se vio el 70% de su piso libre
     area_residual_ignorable_m2: 0.09 # omitir hasta 30x30 cm pendientes tras revisar al menos la mitad del sector
     area_caja_m2: 0.09          # huecos aislados sin ver de menos de 30x30 cm cuentan como vistos
                                 # (antes 0.04 = una caja de 20x20: el robot iba a mirar rincones mínimos)
@@ -83,16 +83,16 @@ exploracion:
     # (false = modo anterior: entrada/medio/salida + uniones, hasta seis poses por acción)
     # Nav2 traza el camino entre referencias; nunca se envía la ruta completa.
     paso_maximo_portal_m: 0.50  # muestreo de ruta antes de elegir entrada/medio/salida por zona
-    margen_parada_portal_m: 0.22 # prefiere paradas lejos de paredes; reduce margen si el paso es angosto
+    margen_parada_portal_m: 0.20 # prefiere paradas lejos de paredes; reduce margen si el paso es angosto
     desvio_maximo_ruta_m: 0.30  # límite absoluto para preferir más holgura o menos giros
     fraccion_desvio_ruta: 0.15  # además, el desvío no puede superar el 15% de la ruta más corta
     anticipacion_portal_m: 0.30 # actualiza al siguiente tramo cerca de la salida, sin detenerse en cada guía
     area_minima_sector_m2: 0.35
     ancho_minimo_sector_m: 0.45
     inspeccionar_objetos: true  # observa obstáculos persistentes ausentes del mapa
-    lado_bloque_objeto_m: 0.26 # bloque cuadrado por objeto confirmado (cajas de 25 cm; 0.30 angostaba
+    lado_bloque_objeto_m: 0.22 # bloque cuadrado por objeto confirmado; 0.22 evita el encierro de maze_3 con un fantasma a 10 cm (0.26 encerraba)
                                 # de más el paso junto a la caja roja de maze_1)
-    distancia_pared_bloque_m: 0.10 # más cerca de una pared: no se bloquea (probable eco),
+    distancia_pared_bloque_m: 0.08 # más cerca de una pared: no se bloquea (probable eco). 0.08: el cono de la final (10 cm) se bloquea;
                                 # aunque la cámara aporte un color
     celdas_max_cortadas_por_bloque: 20 # un bloque nunca puede dejar zonas libres sin camino
     tiempo_observacion_objeto_s: 0.8 # mirada breve; si falta cámara conserva la posición del LiDAR y sigue
@@ -150,7 +150,7 @@ exploracion:
                                 # 6-7 cm y con 0.07 frenaba/bajaba la velocidad de más. Ver líneas [loc].
     error_reloc_ok: 0.05
     segundos_loc_mala: 1.5
-    espera_entre_relocalizaciones: 12.0
+    espera_entre_relocalizaciones: 10.0
     rango_laser_localizacion_m: 8.0 # incluye extremos de pasillos; el escape sigue usando 3 m
     relocalizacion_std_xy_m: 0.18
     relocalizacion_std_yaw_rad: 0.25
@@ -166,7 +166,7 @@ exploracion:
     velocidad_mover_reloc: 0.12
     fallos_para_relocalizar: 3 # también detecta hipótesis equivocadas en pasillos repetidos
     ventana_fallos_relocalizacion_s: 90.0
-    distancia_lenta: 0.40       # m libres delante del chasis, en la dirección de avance
+    distancia_lenta: 0.35      # m libres delante del chasis, en la dirección de avance
     distancia_muy_lenta: 0.20   # m libres delante del chasis, en la dirección de avance
     porcentaje_lenta: 70.0      # % de 0.5 m/s a menos de distancia_lenta
     porcentaje_muy_lenta: 50.0  # % de 0.5 m/s a menos de distancia_muy_lenta
@@ -185,8 +185,8 @@ exploracion:
     inflacion_desde_nav2: true  # el radio normal es el inflation_radius de nav2_exploracion.yaml (se lee
                                 # del global_costmap al arrancar): cambialo SOLO allá
     espera_radio_nav2_s: 15.0   # si Nav2 no lo informa en este tiempo, se usa inflacion_normal_m
-    inflacion_normal_m: 0.27  # SÓLO respaldo si Nav2 no responde (o con inflacion_desde_nav2: false)
-    inflacion_minima_m: 0.23  # nunca por debajo del radio de giro del chasis + padding (0.22 m):
+    inflacion_normal_m: 0.25  # SÓLO respaldo si Nav2 no responde (o con inflacion_desde_nav2: false)
+    inflacion_minima_m: 0.21  # nunca por debajo del radio de giro del chasis + padding (0.22 m):
                                 # con 0.15 Nav2 planificaba donde la esquina trasera choca (4 de 4 reducciones
                                 # a 0.15 terminaron en atasco en la corrida de las 15:33)
     paso_inflacion_m: 0.02  # 0.27 -> 0.25 -> 0.23 m
