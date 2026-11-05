@@ -51,7 +51,7 @@ exploracion:
                                 # hay más lugar a paredes/obstáculos, sin cambiar de sector y en línea recta
     holgura_guia_m: 0.30        # buscar al menos esta distancia a la pared (más no suma)
     peso_holgura_nbv: 0.6       # NBV: un punto pegado a la pared vale 40% del mismo punto a holgura_guia_m
-    holgura_paso_estrecho_m: 0.11 # si se atasca donde hay menos holgura que esto, las rutas evitan ese paso
+    holgura_paso_estrecho_m: 0.18 # si se atasca donde hay menos holgura que esto, las rutas evitan ese paso
     radio_paso_fallido_m: 0.15
     margen_objeto_ruta_m: 0.22  # las rutas pasan a >= esto de cajas/objetos aunque a paredes dejen 13 cm
                                 # (entre una caja y la punta de una pared quedaba un hueco de ~30 cm)
