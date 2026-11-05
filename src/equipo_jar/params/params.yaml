@@ -28,9 +28,7 @@ cobertura:
     #PARAM: retry a failed initial plan with current TF, even within the same cell (s, > 0).
     retry_interval_s: 2.0
     #PARAM: minimum observation clearance, including the padded turning envelope (m, >= 0).
-    # Final: 0.27 (was 0.24). Turning in place sweeps the rear corners 0.207 m from the center, so
-    # 0.24 left ~3 cm. On the real qualy map: -1 % visible samples, plan ~40 s shorter.
-    view_clearance: 0.27
+    view_clearance: 0.24
     #PARAM: prefer this clearance; tighter views only recover otherwise unseen targets (m, >= 0).
     view_preferred_clearance: 0.30
     candidate_spacing: 0.45

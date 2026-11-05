@@ -10,10 +10,10 @@
 # 1.0 rad/s (physical_rosmaster #72).
 limites:
   ros__parameters:
-    # Final: 0.35 (was 0.5). The real robot answers ~0.4 s late. On the real robot MPPI asked for more
-    # than 0.35 m/s only 6-8 % of the moving time (cap cost ~3-6 s per run); the simulator, where it
-    # drives faster, overstates the cost. Every team that covered the qualy arena without collisions
-    # drove at <= 0.35 m/s (Grupo_de_Lie, BoBots). Details: docs/team/ajuste/README.md.
+    # Final: 0.35 (was 0.5). The real robot moves 0.3-0.45 s after the command (/cmd_vel vs /odom in
+    # both qualy runs; Wi-Fi is ~15 ms of it). On the real robot MPPI asked for more than 0.35 m/s
+    # only 6-8 % of the moving time (cap cost ~3-6 s per run); the simulator, where it drives faster,
+    # overstates the cost. The teams that covered the qualy arena without collisions drove at <= 0.35.
     lineal_max_ms: 0.35               # forward and sideways
     reversa_max_ms: 0.25
     giro_max_rads: 1.0
@@ -288,7 +288,11 @@ local_costmap:
   local_costmap:
     ros__parameters:
       update_frequency: 7.0           # el LiDAR va a ~7.2 Hz
-      publish_frequency: 2.0
+      # Final: 10 (was 2.0). Spin and BackUp check "Collision Ahead" on this published copy, not on
+      # the costmap MPPI reads; at 2 Hz it was up to ~0.57 s old and kept ghosts the 0.3 s
+      # persistence had already dropped. Nav2 publishes after an update only once a full period has
+      # passed, so 10 (0.1 s) publishes after every 7 Hz update. 60 x 60 cells: negligible CPU.
+      publish_frequency: 10.0
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
