@@ -23,7 +23,10 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'nodo_equipo = equipo_jar.nodo_equipo:main',
+            'localizer = equipo_jar.localizer:main',
+            'world_model = equipo_jar.world_model_node:main',
+            'mission = equipo_jar.mission:main',
+            'motion = equipo_jar.motion_node:main',
         ],
     },
 )

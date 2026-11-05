@@ -1,12 +1,134 @@
-# Parámetros del equipo (reglamento §9.1).
+# Parámetros del equipo (reglamento §9.1): solo valores generales, nada del mapa.
 #
-# Acá solo van valores GENERALES: umbrales, ganancias, límites de velocidad,
-# rangos de color. Nada que dependa del mapa de la competencia: nada de
-# coordenadas, rutas ni posiciones de víctimas. El CI (tools/verificar_params.py)
-# rechaza estos archivos si rompen la regla.
-#
-nodo_equipo:
+# Una sección por nodo (competencia.launch.py los levanta): localizer, world_model, mission,
+# motion. Además, `competencia`, que no es un nodo: lo que el launch lee para armar el resto.
+
+competencia:   # not a node: the choices competencia.launch.py reads, to switch on site
   ros__parameters:
-    frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.30      # m/s
-    velocidad_angular_max: 1.00     # rad/s
+    # How much the robot risks: rapido, normal or cuidadoso (params/perfiles.yaml). The
+    # launch argument perfil:= overrides it.
+    perfil: normal
+    # Where home is: origen (the map origin) or inicio (where the robot started: its pose once
+    # localized, before it moves). The organizers have said both; their latest word is the
+    # map origin. The launch passes it to the mission.
+    casa: origen
+
+localizer:   # scan_matcher.py: scan-to-map matcher (publishes map -> odom)
+  ros__parameters:
+    use_sim_time: false  # launch arg use_sim_time rewrites it
+    transform_tolerance: 0.3    # s, map -> odom is post-dated by this
+    max_range: 8.0              # m, ignore returns farther than this
+    max_points: 360             # subsample each scan to at most this many points
+    deskew: true                # undistort each scan with odometry (needs time_increment)
+    sweep_reversed: true        # the driver lists the rays against the sweep: the last is
+                                # measured first (real bag). Also in motion
+    use_gyro: true              # rotation between scans from the gyro, not the wheels
+    use_prior: true             # the odometry prediction as a prior in the matcher
+    huber: 0.03                 # m, robust loss knee
+    gate_min: 0.15              # m, points farther from a wall are not matched (boxes, decoys)
+    gate_max: 0.5               # m, widest starting gate, after a big prediction error
+    point_sigma: 0.03           # m, scan point vs map noise
+    point_correlation: 10.0     # neighbouring points are not independent: discount them
+    odom_trans_noise: 0.10      # prediction sigma per m travelled (mecanum slips)
+    odom_rot_noise: 0.10        # per rad turned, wheel odometry
+    gyro_rot_noise: 0.03        # per rad turned, gyro
+    init_xy_window: 0.5         # m, startup search around the start point
+    init_yaw_window: 3.14159    # rad, startup heading search: every heading
+    min_init_score: 0.5         # startup needs this fraction of points within 5 cm of a wall
+    min_inlier_ratio: 0.45      # below this for bad_scans_to_relocalize scans: search again
+    bad_scans_to_relocalize: 5
+    reloc_xy_window: 0.5        # m
+    reloc_yaw_window: 0.5       # rad
+    unexplained_dist: 0.10      # m, farther from a wall: to /equipo/no_mapeado
+    # The map may draw walls thicker than they are (the practice maps: 0 to ~2.5 cm): the
+    # offset is estimated online from the scan residuals, starting from wall_offset.
+    estimate_wall_offset: true
+    wall_offset: 0.0            # m, positive: the map's walls are thicker than the real ones
+    wall_offset_rate: 0.05      # fraction of the residual median taken per scan
+    max_wall_offset: 0.05       # m
+
+# Objects the map doesn't show, which are red, and where an undetected box could still be.
+# Every key in world_model.DEFAULTS can be set here; victimas comes from the launch.
+world_model:   # world_model_node.py, docs/WORLD_MODEL.md
+  ros__parameters:
+    use_sim_time: false  # launch arg use_sim_time rewrites it
+    mundo_hz: 2.0               # updates per second (objects, fits, publishing)
+    camara_hz: 10.0             # images processed per second
+    profundidad: false          # depth cloud while the camera sees red and the robot drives
+                                # slowly (a look sweep, a turn): red goes to its depth. Off: the
+                                # organizers warn the cloud lags the robot over Wi-Fi, and the
+                                # real bags don't carry it (herramientas/bag_real). Red seen
+                                # through a cage's slats goes to the box behind without it
+                                # (world_model.rojo_tras_pared)
+    profundidad_retener: 3.0    # s subscribed after the last image that wanted it
+    profundidad_v_max: 0.15     # m/s: driving faster, no cloud (motion v_lento: a sweep's)
+    rojo_borde: 0.0             # m from the arena's edge: red on an outer wall there is outside,
+                                # seen through a window, and seeds no object. 0.0: off (a float:
+                                # a plain 0 stops the node). Off until the benchmark settles
+                                # v02_pillars, which lost the fast bonus in 2 of 3 runs with 0.25
+                                # (world_model.rojo_borde)
+    vista_angulo: 0.17          # rad, a cell's color counts again only from a new line of sight
+    mapa_logodds: 1.5           # trust in the map: prior log-odds of its walls and free space
+    sigma_pose_min: 0.04        # m, floor for the localizer's sigma (its covariance is overconfident)
+    sigma_mapa: 0.03            # m, the map's own error; with cambio_k sets the change tolerance
+    cambio_k: 2.0
+    busqueda_huella: 0.10       # m, smallest box to find minus pose error
+    busqueda_eps_lidar: 0.3     # chance one scan misses a box its rays pass through
+    busqueda_eps_camara: 0.5    # chance one camera view misses a box it shows
+    caja_lado_min: 0.10         # m, box side bounds (the rules don't give the size)
+    caja_lado_max: 0.50
+    caja_lado_prior: 0.20       # m, weak prior on the sides
+    caja_lado_sigma: 0.05
+    rojo_h_bajo: 10.0           # red: hue <= bajo or >= alto (OpenCV 0-180)
+    rojo_h_alto: 160.0          # cooler light turns the boxes toward magenta
+    rojo_s_min: 110.0           # 0-255. Real bag (herramientas/bag_real/calibrar_rojo.py): boxes
+                                # 120-170, walls up to ~110; 100 turns a shadowed wall red. 110/160
+                                # keep the boxes with 10% cooler or less saturated light; 120/170
+                                # lost them
+    rojo_croma_min: 15.0        # 0-255, max - min of RGB: camera noise. Not a brightness floor
+    rojo_p_si_rojo: 0.8         # P(red pixel | red surface)
+    rojo_p_si_otro: 0.05        # P(red pixel | other surface)
+    reporte_p_min: 0.97         # P(victim) of a confirmed box; the profile's modelo_p_min
+                                # (params/perfiles.yaml) overrides it
+
+# Plans with the world model's posterior map, search belief and objects, and reports what it
+# confirms. Every key in mission.PARAMS and planner.DEFAULTS can be set here.
+mission:   # mission.py, planner.py, docs/MISSION.md
+  ros__parameters:
+    use_sim_time: false  # launch arg use_sim_time rewrites it
+    mission_deadline: 570.0     # s after /map: home and /done by then
+    goal_timeout: 30.0          # s per target
+    velocidad: 0.25             # m/s, average along a path: travel time estimates
+    t_fijo: 4.0                 # s per target on top of the travel
+    t_mirada: 4.0               # s, turning to face the object
+    rango_vista: 3.5            # m, belief the lidar counts as seen from a spot
+    holgura_meta: 0.28          # m, wall clearance of a goal
+    mirada_min: 0.6             # m, look spots: distance range to the object's center
+    mirada_max: 1.6
+    mirada_angulo_min: 0.35     # rad, each look at an object from a new line of sight
+    barrido: true               # a look slides along a sweep, camera on the object
+    barrido_largo: 0.8          # m, a sweep's path at most
+    barrido_angulo: 0.6         # rad of new lines of sight (seen from the object) it aims for
+    reporte_p_min: 0.97         # P(victim) to report (and to stop looking); the profile's
+                                # reporte_p_min (params/perfiles.yaml) overrides it
+    reporte_p_radio: 0.99       # P(center within 25 cm) to report
+    llegada_casa_max: 0.07      # m: a home leg that ends stuck this close is home (mission.py)
+
+# Follows the mission's paths (motion.py, motion_node.py); every key of motion.DEFAULTS and
+# motion_node.PARAMS can be set here. The profile sets v_max and margen_seguridad.
+motion:
+  ros__parameters:
+    use_sim_time: false  # launch arg use_sim_time rewrites it
+    a_max: 0.35                 # m/s^2, the base's acceleration and braking (sim: ~1.0). Real
+                                # base (herramientas/bag_real/respuesta.py): the body brakes at
+                                # ~0.4 (the wheels at ~0.7: it slides), accelerates at 0.2-0.35
+    alfa_max: 0.8               # rad/s^2, the same for turning (sim: ~1.0); measure on the base
+    w_max: 1.0                  # rad/s: the robot clamps yaw to 1.0 (organizers, email 2)
+    llegada_rumbo: 0.08         # rad, heading error a path may end with (the code default)
+    reaccion_s: 0.4             # s from a scan to its command acting (scan period, latency).
+                                # Real base: 0.26-0.42 s from a command to motion
+    v_lento: 0.12               # m/s and rad/s at most on a look sweep (/equipo/ruta_lenta):
+    w_lento: 0.6                # the wheels slip less, and each line of sight gets more images
+    sweep_reversed: true        # as the localizer's: the last ray is measured first
+    cuerpo_x: [-0.156, 0.119]   # m, scan returns inside this body (and huella_y) are the robot:
+                                # the real rear, shorter than the URDF's -0.181 (motion_node.py)
