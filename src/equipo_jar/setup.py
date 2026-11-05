@@ -13,17 +13,23 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/params', glob('params/*.yaml')),
+        ('share/' + package_name + '/params', glob('params/*.rviz')),
+        ('share/' + package_name + '/behavior_trees', glob('behavior_trees/*.xml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='Nombre del equipo',
+    maintainer='Stack&Queue',
     maintainer_email='equipo@example.com',
-    description='Software del equipo para el Challenge JAR 2026.',
+    description='Exploración autónoma y detección de víctimas de Stack&Queue.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
+        'ros2launch.option': [
+            'stackqueue_log = equipo_jar.registro_jar:RegistroJarOption',
+        ],
         'console_scripts': [
-            'nodo_equipo = equipo_jar.nodo_equipo:main',
+            'exploracion = equipo_jar.exploracion:main',
+            'deteccion_victimas = equipo_jar.deteccion_victimas:main',
         ],
     },
 )

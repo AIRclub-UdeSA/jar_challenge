@@ -1,0 +1,15 @@
+ESPERANDO_MAPA = 'ESPERANDO_MAPA'
+LOCALIZANDO = 'LOCALIZANDO'
+ACTIVANDO_NAV2 = 'ACTIVANDO_NAV2'
+ELIGIENDO = 'ELIGIENDO'
+NAVEGANDO = 'NAVEGANDO'
+COMPORTAMIENTO = 'COMPORTAMIENTO'   # Spin de behavior_server
+DESENCAJANDO = 'DESENCAJANDO'       # escape propio con /scan + /cmd_vel
+RELOCALIZANDO = 'RELOCALIZANDO'     # frenado: corrige AMCL calzando el láser con el mapa
+OBSERVANDO_OBJETO = 'OBSERVANDO_OBJETO'
+ENVIAR_PENDIENTE = 'ENVIAR_PENDIENTE'  # terminó de encarar la ruta: mandar el goal guardado
+REGRESAR = 'REGRESAR'               # pedido de volver (se resuelve en el ciclo)
+VOLVIENDO = 'VOLVIENDO'
+APROXIMANDO = 'APROXIMANDO'         # ajuste fino final con /cmd_vel
+TERMINADO = 'TERMINADO'
+FINALIZANDO = 'FINALIZANDO'         # quieto: publica los reportes restantes antes de /done

@@ -10,3 +10,6 @@ __pycache__/
 .venv/
 .vscode/
 .idea/
+
+# Registro público de cada corrida: no se versiona.
+logs_jar/

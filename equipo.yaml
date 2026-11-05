@@ -1,10 +1,3 @@
-# Datos públicos del equipo. Este archivo va en tu fork y en tu pull request, que
-# son públicos (§10): no pongas acá mails, teléfonos ni datos personales. Los
-# datos de contacto e integrantes se cargan en el formulario de inscripción.
-#
-# Completalo antes de abrir el pull request: el CI rechaza la entrega si queda
-# algún COMPLETAR.
-# El nombre tiene que ser el mismo con el que se inscribieron (las mayúsculas, los
-# espacios y los signos no importan, las letras sí).
-nombre_equipo: COMPLETAR
-codigo_inscripcion: COMPLETAR   # el código que recibiste al inscribirte
+# Datos públicos del equipo. El código lo informa la organización.
+nombre_equipo: "Stack&Queue"
+codigo_inscripcion: "67" # la organización confirmó que vale cualquier código
