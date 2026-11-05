@@ -10,11 +10,11 @@
 # 1.0 rad/s (physical_rosmaster #72).
 limites:
   ros__parameters:
-    # Final: 0.35 (was 0.5). The real robot answers commands ~0.4 s late: at 0.5 m/s it runs 20 cm
-    # past what MPPI planned. Qualy run 2 touched walls 16 times at 0.25-0.44 m/s. Grupo_de_Lie
-    # used 0.35 m/s and a 4 cm margin and touched nothing (docs/team/ajuste/README.md).
-    lineal_max_ms: 0.35               # forward and sideways
-    reversa_max_ms: 0.25
+    # Kept at the run-2 values. 0.35 was tried in the simulator (docs/team/ajuste/README.md): it lost
+    # the 5-minute bonus in 3 of 5 conos_pista runs (0 of 3 at 0.5), and only 3 of the 16 real wall
+    # contacts of qualy run 2 came after commands above 0.35 m/s; most followed Spin/BackUp.
+    lineal_max_ms: 0.5                # forward and sideways
+    reversa_max_ms: 0.35
     giro_max_rads: 1.0
     margen_giro_smoother: 1.0         # smoother turn limit = giro_max_rads x this
 
