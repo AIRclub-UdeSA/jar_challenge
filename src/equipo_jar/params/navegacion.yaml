@@ -10,11 +10,12 @@
 # 1.0 rad/s (physical_rosmaster #72).
 limites:
   ros__parameters:
-    # Kept at the run-2 values. 0.35 was tried in the simulator (docs/team/ajuste/README.md): it lost
-    # the 5-minute bonus in 3 of 5 conos_pista runs (0 of 3 at 0.5), and only 3 of the 16 real wall
-    # contacts of qualy run 2 came after commands above 0.35 m/s; most followed Spin/BackUp.
-    lineal_max_ms: 0.5                # forward and sideways
-    reversa_max_ms: 0.35
+    # Final: 0.35 (was 0.5). The real robot answers ~0.4 s late. On the real robot MPPI asked for more
+    # than 0.35 m/s only 6-8 % of the moving time (cap cost ~3-6 s per run); the simulator, where it
+    # drives faster, overstates the cost. Every team that covered the qualy arena without collisions
+    # drove at <= 0.35 m/s (Grupo_de_Lie, BoBots). Details: docs/team/ajuste/README.md.
+    lineal_max_ms: 0.35               # forward and sideways
+    reversa_max_ms: 0.25
     giro_max_rads: 1.0
     margen_giro_smoother: 1.0         # smoother turn limit = giro_max_rads x this
 
