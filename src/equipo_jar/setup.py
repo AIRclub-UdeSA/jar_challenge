@@ -13,6 +13,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/params', glob('params/*.yaml')),
+        ('share/' + package_name + '/behavior_trees', glob('behavior_trees/*.xml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -23,7 +24,14 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'nodo_equipo = equipo_jar.nodo_equipo:main',
+            'cobertura = equipo_jar.cobertura:main',
+            'deteccion = equipo_jar.deteccion:main',
+            'fusion = equipo_jar.fusion:main',
+            'mision = equipo_jar.mision:main',
+            'parada = equipo_jar.parada:main',
+            'registro = equipo_jar.registro:main',
+            'localizacion = equipo_jar.localizacion:main',
+            'odometria_imu = equipo_jar.odometria_imu:main',
         ],
     },
 )

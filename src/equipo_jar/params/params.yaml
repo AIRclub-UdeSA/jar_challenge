@@ -5,8 +5,300 @@
 # coordenadas, rutas ni posiciones de víctimas. El CI (tools/verificar_params.py)
 # rechaza estos archivos si rompen la regla.
 #
-nodo_equipo:
+# Una sección por nodo. Los nombres no pueden contener victim, coord, spawn ni
+# posicion_ (docs/team/INTERFACES.md).
+cobertura:
   ros__parameters:
-    frecuencia_control_hz: 10.0
-    velocidad_lineal_max: 0.30      # m/s
-    velocidad_angular_max: 1.00     # rad/s
+    # Transit clearance = robot_radius + safety_margin; coverage plans only through passages that
+    # wide (cell rounding on a 0.02 m map: 0.21 -> 0.46 m, 0.18 -> 0.38 m, 0.16 -> 0.34 m). Qualy run 1:
+    # the door to the upper third is 0.41 m, so the plan stopped at y 4.2 and missed 2 victims.
+    # 0.15 + 0.03 opens doors from 0.38 m, which MPPI passes with pauses; 0.16 or less (0.34 m doors)
+    # lost a whole simulated run (14 blocked goals, no return). Viewpoint clearance is view_clearance.
+    # Qualy run 2: 0.15 + 0.03 = 0.18. Checked on the real qualy /map (174x383 @ 0.02 m): the door
+    # to the upper third is ~0.45 m there, so 0.21 closed it (run 1: 58 views, 327 samples out)
+    # and 0.18 opens it: 81 views, 905/1056 visible, both upper victims in view. 0.16 adds only
+    # 13 samples in pockets behind 0.36-0.40 m passages; 0.14 adds nothing more.
+    robot_radius: 0.15
+    safety_margin: 0.03
+    #PARAM: bounded initial planning-anchor shift from a known-free pose (m; 0 disables).
+    start_max_shift_m: 0.20
+    #PARAM: first recovered goal must be at least this far from actual TF (m).
+    # Keep above mission's turn_in_place_m (0.20); does not constrain Nav2's approach.
+    start_min_goal_distance_m: 0.25
+    #PARAM: retry a failed initial plan with current TF, even within the same cell (s, > 0).
+    retry_interval_s: 2.0
+    #PARAM: minimum observation clearance, including the padded turning envelope (m, >= 0).
+    view_clearance: 0.24
+    #PARAM: prefer this clearance; tighter views only recover otherwise unseen targets (m, >= 0).
+    view_preferred_clearance: 0.30
+    candidate_spacing: 0.45
+    target_spacing: 0.15
+    view_range: 2.0
+    fov_degrees: 61.0
+    heading_count: 8
+    # Qualy run 1: real trips cost ~4 s fixed + 2.8 s/m, but the plan charges distance / speed + 1 s,
+    # so it split the headings of one spot into separate visits (6 spots got 2-3 trips). Lower
+    # speed: more headings per stop. Offline on 6 maps: route 10-15 % shorter.
+    travel_speed: 0.15
+    turn_speed: 0.7
+    observation_time: 1.0
+    max_views: 120                    # the whole qualy arena needs 76 views; the cap must not cut the plan
+    max_positions: 256
+    max_targets: 2048
+    free_threshold: 25
+    #PARAM: preserve sampled coverage at predicted clock checks (>= observation_time).
+    order_check_interval_s: 60.0
+    #PARAM: estimated delay before route start; does not control mission's clock (>= 0).
+    order_start_delay_s: 8.0
+    base_frame: base_footprint
+    camera_frame: cam_1_color_optical_frame
+    tf_max_age: 1.0
+
+# Detection: red in the camera + LiDAR range -> /jar/observaciones. All values apply live.
+# Ranges and reasoning for each one: vision.py and deteccion.py (#PARAM comments).
+deteccion:
+  ros__parameters:
+    # Red in OpenCV HSV (H in [0,180), S and V in [0,255]); two ranges because red wraps at 0.
+    # Lists of 3 on purpose: the CI rejects numeric lists of 4 or more.
+    #PARAM: first thing to retune under the venue's lighting.
+    #       Upper H of range 1 = 8: brown cardboard sits at H 10-13 and passed at 10; boxes in two
+    #       real bags have 99 % of pixels at H <= 2 and <= 8 (8 keeps 99.9 % and 99.25 %; 7 cuts more).
+    hsv_red_low_1: [0, 100, 60]
+    hsv_red_high_1: [8, 255, 255]
+    hsv_red_low_2: [170, 100, 60]
+    hsv_red_high_2: [180, 255, 255]
+    #PARAM: morphology kernel (odd, >= 1; 1 disables). 3 at 320x240.
+    morphology_kernel_px: 3
+    #PARAM: min contour area, px (> 0). A 0.25 m box at 4 m is ~290 px here.
+    min_area_px: 80
+    #PARAM: width/height of the bounding box (0 < min < 1 <= max). Box face is 0.25 x 0.30.
+    aspect_min: 0.4
+    aspect_max: 1.8
+    #PARAM: area / convex hull ((0, 1]). A box is convex.
+    min_solidity: 0.85
+    #PARAM: box side, m (> 0). Sim: 0.25. Real box TO BE CONFIRMED with the organizers.
+    box_side_m: 0.25
+    #PARAM: tolerance of the area-vs-distance check (> 1; 0 disables).
+    max_area_factor: 3.0
+    #PARAM: part of the blob's half-angle whose LiDAR beams are used ((0, 1]). 0.6 keeps the
+    #       middle of the box and leaves out the edges, where a wall corner intrudes.
+    central_fraction: 0.6
+    #PARAM: range gap that separates two surfaces, m (> 0; ~box side).
+    lidar_cluster_depth_m: 0.30
+    #PARAM: minimum LiDAR beams on the box (>= 1).
+    lidar_min_points: 3
+    #PARAM: share of the central beams the chosen cluster must hold ((0.5, 1]).
+    min_cluster_coverage: 0.6
+    # --- Checks against false positives (a false report costs -100 and the -200 bonus) ---
+    #PARAM: blob width / expected width of a box at the LiDAR distance (0 < min < 1 < max).
+    #       Coarse sanity check: the central beams already fix the corner case (ratio ~0.5).
+    #       Real boxes seen while passing a doorway at 0.8 m measured 0.53-0.60 (a practice
+    #       recording replay); 0.45 keeps them. Raise it only if false boxes slip past the central beams.
+    width_ratio_min: 0.45
+    width_ratio_max: 1.8
+    #PARAM: observations farther than this are dropped, m (> 0). Coverage looks from 2.0 m.
+    max_range_m: 3.0
+    #PARAM: drop a LiDAR hit that lies on a wall of /map (true/false). Off: the central beams
+    #       already reject a wall corner in front of a box, and on the real bag this check
+    #       dropped only correct views of boxes standing against walls.
+    map_wall_check: false
+    #PARAM: how close to the map's wall distance counts as "on the wall", m (> AMCL error).
+    map_wall_tolerance_m: 0.15
+    #PARAM: a mapped obstacle smaller than this is a drawn box, not a wall, m (> box side).
+    map_box_extent_m: 0.40
+    #PARAM: drop a LiDAR range that the depth cloud inside the blob contradicts (true/false).
+    #       Off by default: in the simulator it rejected 16 % of correct observations (the cloud
+    #       disagrees by 0.6-1.5 m beyond ~2.5 m and below 0.6 m) and never a false one, because
+    #       the central beams catch those first. The real depth camera is worse. Extra guard only.
+    cloud_check: false
+    #PARAM: |cloud distance - LiDAR distance| above this is a contradiction, m (> cloud noise at 3 m).
+    cloud_lidar_max_gap_m: 0.5
+    #PARAM: use the depth cloud when the LiDAR finds nothing in the wedge (true/false).
+    #       Off by default: subscribing pulls the whole cloud over the robot's Wi-Fi all run,
+    #       and it has not been needed so far (0 of 247 observations from the cloud in the
+    #       simulator; the LiDAR ranged 324 of 324 red blobs in the real week-10 bag, 0.4-1.3 m).
+    #       With this and cloud_check off, no cloud subscription.
+    #       Read at startup only.
+    use_cloud_fallback: false
+    #PARAM: max age of the cloud relative to the scan, s (> 0).
+    cloud_max_age_s: 0.5
+    #PARAM: blob edge not read from the cloud, px (>= 0).
+    erosion_px: 2
+    #PARAM: valid cloud distances, m (0 < min < max). The real sensor is valid from 0.6 m.
+    z_min_m: 0.6
+    z_max_m: 4.0
+    #PARAM: minimum valid cloud points inside the blob (>= 1).
+    min_3d_points: 15
+    #PARAM: per-observation std handed to fusion: sigma = base + per_m * distance (both >= 0).
+    obs_sigma_base_m: 0.05
+    obs_sigma_per_m: 0.03
+    #PARAM: image+scan pairs processed per second (> 0, <= camera rate).
+    processing_rate_hz: 5.0
+    #PARAM: max image-scan timestamp gap to pair them, s (> 0; LiDAR period is ~0.14 s).
+    #       Read at startup only.
+    sync_tolerance_s: 0.1
+    #PARAM: messages held per topic while waiting for a partner (>= 1). Must cover the images
+    #       (30 Hz) taken while a scan is in transit: 10 lost 80 % of pairs with scans 0.3 s
+    #       late; 60 kept 99.5 % up to 1.5 s late (week-10 bag, delays injected). ~14 MB of
+    #       images. 120: 4 s of images; other teams' qualy logs showed scans up to 2.8 s late
+    #       over the venue Wi-Fi. Read at startup only.
+    sync_queue_size: 120
+    #PARAM: robot base frame in /tf (base_footprint on this robot).
+    robot_frame: base_footprint
+    #PARAM: frame used to bridge image time and scan time (odom: smooth, always available).
+    fixed_frame: odom
+    #PARAM: look up the camera-LiDAR transform at the time the LiDAR measured the middle of the blob
+    #       (~0.13 s sweep, ray i at stamp + (n-1-i) * time_increment) instead of the scan stamp.
+    #       No effect when time_increment is 0 (simulator).
+    per_ray_time: true
+    #PARAM: skip frames until localization has said its pose is trusted once
+    #       (/jar/localizacion_lista true; true/false). Before that the start pose is still being
+    #       fixed: a box seen from a wrong pose would give fusion a candidate in the wrong place,
+    #       and a wrong candidate with >= 5 observations is never dropped. Nothing is lost: the
+    #       robot does not move until mission sees the same flag. No flag published = no wait.
+    wait_localization_start: true
+    #PARAM: ...but at most this long after /map, s (> 0). Mission starts anyway after its own
+    #       localization_wait_max_s (10 s): keep both equal so detection is never blind while
+    #       the robot moves.
+    localization_wait_max_s: 10.0
+    #PARAM: also skip frames while the flag is false after a turn (true/false). Off: mission
+    #       does not wait for the flag after trips, coverage looks 1.0 s at each view and the
+    #       fix takes 1.2-1.7 s (sim), so detection would miss the view. With the IMU heading
+    #       the error at stops is ~1.8 deg (0.05 m at 1.5 m, inside obs_sigma). Turn on if the
+    #       real robot shows boxes landing off right after turns.
+    skip_heading_doubt: false
+    #PARAM: publish /jar/deteccion/debug (costs CPU; false in competition). Startup only.
+    publish_debug: false
+
+# Fusion: /jar/observaciones -> /jar/candidatas with an honest covariance. All values apply live.
+# Ranges and reasoning: candidate_fusion.py (#PARAM comments).
+fusion:
+  ros__parameters:
+    #PARAM: radius to attach an observation to a candidate, m (0.15 < v < 0.5).
+    association_dist_m: 0.4
+    #PARAM: candidates closer than this merge, m (0 < v <= association_dist_m).
+    merge_dist_m: 0.3
+    #PARAM: robot displacement needed to lift the single-view floor, m (>= 0; 0 disables).
+    min_baseline_m: 0.3
+    #PARAM: covariance floor (std) while seen from one spot, m. Above mission's max_deviation_m
+    #       (0.10) a candidate never confirms from one spot and needs an inspection; 0.09 lets a
+    #       box seen >= min_observations times from one spot with a tight spread confirm. Qualy
+    #       run 1: both real boxes measured within 7 cm from one spot; the second waited 300 s
+    #       (its only free side was the one it was first seen from). Boxes behind windows or in
+    #       slots are only ever seen from one side.
+    single_view_sigma_m: 0.09
+    #PARAM: seconds without observations before a weak candidate is dropped (> 0).
+    stale_timeout_s: 20.0
+    #PARAM: candidates with at least this many observations are never dropped (>= 1).
+    min_obs_to_keep: 5
+    #PARAM: robot poses kept per candidate for the baseline (>= 2).
+    max_poses: 50
+    #PARAM: robot base frame in /tf.
+    robot_frame: base_footprint
+    #PARAM: min seconds between "changed" publications (0 < v < 1).
+    publish_min_period_s: 0.2
+
+mision:
+  ros__parameters: 
+    extra_search_enabled: true       # qualy run 2: after the plan, look at the floor the camera did not see
+    extra_history_max: 1200
+    extra_history_interval_s: 1.0
+    extra_history_shift_m: 0.10
+    extra_history_turn_rad: 0.30
+    extra_pose_max_age_s: 1.0
+    return_estimate_speed_mps: 0.20
+    return_estimate_factor: 1.5
+    return_estimate_overhead_s: 8.0
+    return_reserve_s: 45.0
+    extra_look_s: 2.0
+    extra_max_goals: 10              # sim trials hit 6 with near-repeated views; the time budget still limits it
+    extra_max_failed: 2
+    extra_goal_timeout_s: 45.0       # a trip to the upper third through a door can pass 30 s
+    extra_plan_timeout_s: 15.0       # the venue laptop took 10 s for the coverage plan
+    extra_costmap_max_age_s: 2.5
+    extra_failed_shift_m: 1.0        # do not go back behind the cone where three trips failed in run 1
+    extra_range_m: 2.0
+    extra_fov_deg: 61.0
+    extra_heading_count: 8
+    extra_spacing_m: 0.45
+    extra_target_spacing_m: 0.15
+    extra_max_positions: 256
+    extra_max_targets: 2048
+    extra_max_views: 80
+    extra_transit_radius_m: 0.18     # same transit as coverage (0.15 + 0.03): doors from 0.38 m
+    extra_view_clearance_m: 0.24
+    extra_preferred_clearance_m: 0.30
+    extra_turn_speed_rads: 0.7
+    extra_camera_frame: cam_1_color_optical_frame
+    min_observations: 5
+    max_deviation_m: 0.10
+    min_report_distance_m: 0.40
+    same_point_distance_m: 0.02
+    same_point_angle_rad: 0.1
+    return_time_s: 480.0
+    min_observations_final: 1
+    max_deviation_final_m: 0.30
+    finish_time_s: 570.0
+    idle_spin_s: 10.0
+    idle_spin_rad: 1.57
+    visit_min_observations: 2         # run 1 had no inspection of a 2-observation candidate: no reason to change it
+    visit_distance_m: 0.8
+    visit_clearance_m: 0.25
+    visit_angles: 12
+    visit_min_shift_m: 0.4
+    visit_box_margin_m: 0.15          # 0.25 hid a wall right next to the box: a blind inspection spot (qualy run 1)
+    localization_wait_max_s: 10.0
+    # Hard cap per trip (s). Good trips in the qualification took <= 15 s; return legs ~20 s.
+    goal_timeout_s: 60.0
+    goal_accept_timeout_s: 5.0
+    stop_confirm_max_age_s: 0.5
+    stuck_time_s: 20.0
+    stuck_distance_m: 0.05
+    stuck_angle_rad: 0.2
+    stop_wait_s: 1.0
+    done_limit_s: 590.0
+    turn_in_place_m: 0.20
+    visit_max_attempts: 3
+    box_min_observations: 2
+    box_clearance_m: 0.42
+    box_clearance_sigmas: 1.0
+    visit_transit_radius_m: 0.15
+    visit_free_threshold: 25
+    settle_s: 0.0
+    # Give up a trip after this many Nav2 recoveries. Good trips used <= 3; the trips blocked
+    # by a cone reached 10 after 37-66 s each. 4 gives up after ~15-20 s.
+    max_recoveries: 4
+    return_tolerance_m: 0.05
+    return_max_tries: 3
+    return_still_s: 2.0
+    return_still_m: 0.01
+    return_check_max_s: 10.0
+    costmap_blocked_value: 99
+    # After arriving at an inspection spot, wait this long (s) for fusion to confirm the
+    # candidate. Still doubtful after it: one attempt, and the next view is another spot.
+    inspection_wait_s: 2.0
+    # No plan points nor doubtful candidates left: wait this long (s) before going back, so
+    # perception and fusion can report a box seen only from the last plan point.
+    final_look_s: 1.0
+    # Trip back in legs (vuelta.py): Nav2's NavFn cannot plan paths longer than ~2x the map side.
+    # Legs from the start if the way back on /map is longer than this (m; 0 = only after a
+    # failed direct try).
+    return_direct_max_m: 10.0
+    return_leg_m: 5.0                 # length of each leg on /map (m)
+    return_max_legs: 10               # legs per run; then straight to the start, as before
+    return_max_failed_legs: 2         # failed legs in a row before going straight to the start
+    return_snap_m: 0.3                # start or robot this close to a wall still count (m)
+    # Still guard, on the wall clock like the judge's 60 s rule. Still = /odom x-y speed and
+    # turn rate at or below these: the judge's own limits, so a slow creep the judge calls
+    # still is still here too. After still_rescue_s still: cancel the trip in progress.
+    # After still_finish_s: the end-of-run reports round, once (no /done: it may move again).
+    # Counted from the first accepted goal, not from launch (the robot waits still for /map).
+    still_linear_mps: 0.02
+    still_angular_rads: 0.05
+    still_rescue_s: 30.0
+    still_finish_s: 45.0
+    # A cancel with no result after this long (s): the trip counts as failed and mission
+    # goes on (seen when planner_server died: the robot stood still until the 60 s rule).
+    cancel_timeout_s: 10.0
+    # Goal acceptance timeouts (goal_accept_timeout_s) in a row before the terminal stop.
+    goal_accept_max_timeouts: 3

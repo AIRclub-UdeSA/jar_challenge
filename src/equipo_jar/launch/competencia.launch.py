@@ -18,32 +18,45 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    params = os.path.join(
-        get_package_share_directory('equipo_jar'), 'params', 'params.yaml')
+    share = get_package_share_directory('equipo_jar')
+    params = os.path.join(share, 'params', 'params.yaml')
     use_sim_time = LaunchConfiguration('use_sim_time')
     victimas = LaunchConfiguration('victimas')
+
+    def nodo(nombre, extra=None):
+        return Node(
+            package='equipo_jar',
+            executable=nombre,
+            name=nombre,
+            output='screen',
+            parameters=[params, {'use_sim_time': use_sim_time, **(extra or {})}],
+        )
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('victimas', default_value='5',
                               description='cantidad de víctimas a buscar (N)'),
-        Node(
-            package='equipo_jar',
-            executable='nodo_equipo',
-            name='nodo_equipo',
-            output='screen',
-            parameters=[params, {
+        DeclareLaunchArgument('localizacion', default_value='true',
+                              description='false: sin AMCL (pruebas.launch.py)'),
+        nodo('cobertura'),
+        nodo('deteccion'),
+        nodo('fusion'),
+        nodo('mision', {'cantidad_victimas': ParameterValue(victimas, value_type=int)}),
+        # Localización (AMCL) y navegación (Nav2).
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(share, 'launch', 'navegacion.launch.py')),
+            launch_arguments={
                 'use_sim_time': use_sim_time,
-                'cantidad_victimas': ParameterValue(victimas, value_type=int),
-            }],
+                'localizacion': LaunchConfiguration('localizacion'),
+            }.items(),
         ),
-        # Acá se agregan el resto de los nodos del equipo (localización,
-        # navegación, percepción...). Todos con el mismo `parameters=[params, ...]`.
     ])
